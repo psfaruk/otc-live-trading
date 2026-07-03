@@ -340,7 +340,15 @@ class QuotexFeed:
                     if k != key:
                         s.interested_cids.discard(cid)
             stream.idle_since = None
-            return {"ok": True, "status": "streaming"}
+            # A joining viewer only gets ongoing tick/eoc broadcasts from here
+            # on — without handing back the CURRENT candles/prediction, their
+            # chart stays empty until the next candle close (up to a full
+            # period away) even though the stream has been live the whole
+            # time. Include the snapshot directly in the response so the
+            # frontend can paint immediately, same as a brand-new stream's
+            # first broadcast.
+            return {"ok": True, "status": "streaming", "asset": asset, "period": period,
+                    "candles": stream.candles[-300:], "prediction": stream.prediction}
 
         if time.time() < self._cooldown_until:
             return {"ok": False, "status": "cooldown",

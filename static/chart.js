@@ -394,14 +394,24 @@ async function sendSubscribe() {
       body:    JSON.stringify({ asset: currentAsset, period: currentPeriod, cid: CLIENT_ID }),
     });
     const data = await res.json().catch(() => null);
+    if (!data) return;
     // ok:false means the server declined to START a NEW stream (an already
     // -running one is never declined) — surface why via the existing
     // no-data overlay instead of silently doing nothing.
-    if (data && data.ok === false) {
+    if (data.ok === false) {
       const msg = data.status === 'at_capacity'
         ? `Server is at capacity (${data.max} pairs live) — try again shortly`
         : `Cooling down after connection errors — retry in ~${Math.ceil(data.retry_after || 5)}s`;
       showNoData(true, msg);
+      return;
+    }
+    // Joining an ALREADY-running stream (someone else already has this pair
+    // open) skips the initial WS "snapshot" broadcast entirely — the server
+    // hands the current candles/prediction back in this response instead so
+    // the chart doesn't sit empty until the next candle close. Guard against
+    // the pair having changed again while this request was in flight.
+    if (data.candles && data.asset === currentAsset && data.period === currentPeriod) {
+      applySnapshot(data.candles, data.prediction);
     }
   } catch (_) {}
 }
