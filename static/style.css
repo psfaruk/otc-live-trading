@@ -249,13 +249,18 @@ html, body {
 
 /* ── Signal bar ──────────────────────────────────────────────────────────── */
 #signal-bar {
-  height: var(--sh);
+  /* min-height, not height: .signal-meta now stacks 4 lines (score, conf
+     bar, confidence, payout) — a fixed height shorter than that content
+     caused it to overflow both up AND down out of the box (align-items:
+     center spills evenly), visually colliding with #controls above it. */
+  min-height: var(--sh);
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 14px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 6px 14px;
   flex-shrink: 0;
 }
 #signal-bar.hidden { display: none; }
