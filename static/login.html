@@ -33,7 +33,8 @@
       text-align: center;
       box-shadow: 0 20px 60px rgba(0,0,0,0.5);
     }
-    .logo { width: 88px; height: 88px; margin: 0 auto 6px; display: block; }
+    .logo { width: 88px; height: 88px; margin: 0 auto 6px; display: block; object-fit: contain; }
+    .logo.hidden { display: none; }
     .brand {
       font-size: 22px;
       font-weight: 800;
@@ -100,8 +101,12 @@
 </head>
 <body>
   <div class="card">
-    <!-- Logo: layered flame/drop — red-gold, cream, blue-violet -->
-    <svg class="logo" viewBox="0 0 120 120" aria-hidden="true">
+    <!-- Real brand logo: drop the file at static/logo.png and it's used
+         automatically; until then the inline SVG below is the fallback. -->
+    <img class="logo hidden" id="logo-img" src="/logo.png" alt="Plybit AI logo"
+         onload="this.classList.remove('hidden'); document.getElementById('logo-fallback').classList.add('hidden');" />
+    <!-- Fallback: layered flame/drop — red-gold, cream, blue-violet -->
+    <svg class="logo" id="logo-fallback" viewBox="0 0 120 120" aria-hidden="true">
       <defs>
         <linearGradient id="gRed" x1="0" y1="0" x2="0.6" y2="1">
           <stop offset="0" stop-color="#e8322e"/>

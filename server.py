@@ -47,9 +47,10 @@ def _cookie_ok(cookie_header: str | None) -> bool:
 
 
 # Paths reachable WITHOUT a session: the health probe, the login page
-# itself, and the login API it posts to. login.html is fully self-contained
-# (inline CSS/JS/logo) precisely so no other asset needs exempting.
-_OPEN_PATHS = {"/healthz", "/login", "/api/login"}
+# itself, the login API it posts to, and the brand logo the login page
+# displays (it renders BEFORE authentication, so its image can't sit
+# behind the gate). Everything else on the login page is inline.
+_OPEN_PATHS = {"/healthz", "/login", "/api/login", "/logo.png"}
 
 
 async def _broadcast(data: dict) -> None:
