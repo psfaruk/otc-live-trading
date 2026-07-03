@@ -1201,29 +1201,40 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     signal     = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
     confidence = round(min(abs(score) / MAX_SCORE, 1.0), 2)
 
-    # AGREEMENT — how many DISTINCT theories vote the winning side. Web research:
-    # a pattern only beats a coin-flip with confirmation, so the count of
-    # independent theories that agree is the best reliability gauge.
-    # Filtered to _ALL_THEORIES (2026-07-03 fix) — REGIME's reason lines still
-    # say "-> CALL/PUT" (it still adjusts score as a filter, see above) but it
-    # must NOT count as a confirming "theory" here, the same way it's already
-    # excluded from theory_votes grading; without this filter REGIME (which
-    # fires on almost every non-SIDEWAYS candle) was cheaply padding `agree`
-    # to 2+ and helping trigger STRONG on signals with no real confirmation.
-    side = "CALL" if score > 0 else "PUT"
-    agree = len({r.split()[0] for r in reasons
-                 if f"-> {side}" in r and r.split()[0] in _ALL_THEORIES})
-    # Thresholds tightened 2026-07-03: a 1594-row audit showed the OLD
-    # agree>=2 bar did NOT separate STRONG (49.4%) from WEAK (52.7%) — STRONG
-    # was actually worse. Raised the bar to agree>=3 (real independent
-    # confirmation, now that REGIME can no longer pad the count for free).
-    # NOTE: this must be re-audited once ~2-4 weeks of fresh data has
-    # accumulated under the new theory weights above (GAP/HARAMI/THREE
-    # removed, T7/MARB/WICKWALL-PUT reduced) — the old bucket rates were
-    # measured under the OLD weights and no longer describe this code.
-    if signal != "NEUTRAL" and agree >= 3 and abs(score) >= 10:
+    # AGREEMENT — how many DISTINCT theories NET-vote the winning side.
+    # Counted from per-theory NET votes (same _parse_votes aggregation that
+    # feed.py uses to grade theory_votes), NOT raw reason lines — a theory
+    # like RUN emits sub-votes on BOTH sides in one candle ("Buyers WON ->
+    # CALL" plus "Long upper wick -> PUT"), and the old line-based count
+    # credited it to the winning side even when its NET vote opposed the
+    # signal, silently inflating `agree` (the STRONG/MEDIUM gate) with
+    # theories that actually disagreed. REGIME is excluded the same way it
+    # already is from theory_votes grading (filter, not a theory).
+    _net_votes: dict[str, int] = {}
+    for _code, _vdir, _vmag in _parse_votes(reasons):
+        _net_votes[_code] = _net_votes.get(_code, 0) + _vdir * _vmag
+    _want = 1 if score > 0 else -1
+    agree = sum(1 for _nv in _net_votes.values() if _nv * _want > 0)
+
+    # Strength calibration (2026-07-04 re-audit, 389 fresh rows under the
+    # new theory weights + the full 1900-row history):
+    #   |score| >= 10  — measured ANTI-signal in BOTH samples independently
+    #                    (all-time 41.9% n=136, fresh 33.3% n=27): when the
+    #                    ensemble piles on this hard it's usually the trend-
+    #                    echo failure mode. Label demoted to WEAK with an
+    #                    explicit reason (score/votes untouched — flipping an
+    #                    ensemble-level effect was already shown not to work,
+    #                    see REGIME-flip postmortem).
+    #   agree>=3 & 3<=|score|<=9 — the only band above noise in both samples
+    #                    (fresh 57.4% n=155, all-time 52.5% n=486) -> STRONG.
+    if signal != "NEUTRAL" and abs(score) >= 10:
+        strength = "WEAK"
+        reasons.append(
+            f"OVERHEATED: |score|={abs(score)} >= 10 measured anti-signal"
+            f" (~40% win rate, n~165) => strength capped to WEAK")
+    elif signal != "NEUTRAL" and agree >= 3 and abs(score) >= 3:
         strength = "STRONG"
-    elif signal != "NEUTRAL" and (agree >= 2 and abs(score) >= 5):
+    elif signal != "NEUTRAL" and agree >= 2 and abs(score) >= 3:
         strength = "MEDIUM"
     else:
         strength = "WEAK"

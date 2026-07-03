@@ -126,29 +126,34 @@ async def stream_status():
     return feed.stream_status()
 
 
+# NOTE: these four are deliberately plain `def`, not `async def` — they do
+# synchronous sqlite work (db.py), and an async endpoint would run that ON
+# the event loop, stalling every live stream's tick processing while a
+# query runs. FastAPI executes sync endpoints in its threadpool instead;
+# db.py's threading.Lock makes that safe.
 @app.get("/api/stats")
-async def stats(asset: str | None = None, period: int | None = None):
+def stats(asset: str | None = None, period: int | None = None):
     import db as _db
     return _db.get_stats(asset, period)
 
 
 @app.get("/api/theory-report")
-async def theory_report(asset: str | None = None, period: int | None = None):
+def theory_report(asset: str | None = None, period: int | None = None):
     import db as _db
     return _db.theory_report(asset, period)
 
 
 @app.get("/api/signals")
-async def signals(asset: str | None = None, period: int | None = None,
-                  limit: int = 50):
+def signals(asset: str | None = None, period: int | None = None,
+            limit: int = 50):
     """Recent resolved signals with full postmortem (why won / why lost)."""
     import db as _db
     return _db.get_signals(asset, period, limit)
 
 
 @app.get("/api/theory-perf")
-async def theory_perf(asset: str | None = None, period: int | None = None,
-                      days: int = 7):
+def theory_perf(asset: str | None = None, period: int | None = None,
+                days: int = 7):
     """Live per-theory accuracy — the data feeding the disable gate."""
     import db as _db
     return _db.theory_perf(asset, period, days=days)
