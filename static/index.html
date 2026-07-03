@@ -29,9 +29,42 @@
           <span class="cdl">Next</span>
           <span id="countdown">--</span>
         </div>
+        <button type="button" id="history-btn" class="history-btn" title="View past signal history">History</button>
         <div id="status" class="status disconnected">● Connecting</div>
       </div>
     </header>
+
+    <!-- ── History modal ───────────────────────────────────────────── -->
+    <div id="history-modal" class="hidden">
+      <div id="history-backdrop"></div>
+      <div id="history-panel">
+        <div id="history-head">
+          <span id="history-title">Signal History</span>
+          <select id="history-pair-filter" class="ctrl-select" title="Filter by pair">
+            <option value="">All pairs</option>
+          </select>
+          <button type="button" id="history-refresh" class="history-btn">↻ Refresh</button>
+          <button type="button" id="history-close" class="history-btn history-close">✕</button>
+        </div>
+        <div id="history-body">
+          <table id="history-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Pair</th>
+                <th>Signal</th>
+                <th>Strength</th>
+                <th>Result</th>
+                <th>Why</th>
+              </tr>
+            </thead>
+            <tbody id="history-rows">
+              <tr><td colspan="6" class="history-empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
 
     <!-- ── Controls ────────────────────────────────────────────────── -->
     <div id="controls">

@@ -1058,3 +1058,71 @@ function bootChart(attempt) {
   setInterval(loadStats, 30000);
 }
 bootChart();
+
+// ── History modal — browse past resolved signals from the DB ──────────────
+function _fmtHistTime(ctime) {
+  const d = new Date(ctime * 1000);
+  return d.toLocaleString([], { month: 'short', day: 'numeric',
+                                hour: '2-digit', minute: '2-digit' });
+}
+
+function _renderHistoryFilterOptions() {
+  const sel = document.getElementById('history-pair-filter');
+  if (!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">All pairs</option>';
+  pairsList.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = p.asset;
+    opt.textContent = p.display;
+    sel.appendChild(opt);
+  });
+  sel.value = keep;
+}
+
+async function loadHistory() {
+  const rows = document.getElementById('history-rows');
+  if (!rows) return;
+  const asset = document.getElementById('history-pair-filter').value;
+  try {
+    const q = asset ? `?asset=${encodeURIComponent(asset)}&limit=150` : '?limit=150';
+    const data = await fetch('/api/signals' + q).then((r) => r.json());
+    if (!Array.isArray(data) || !data.length) {
+      rows.innerHTML = '<tr><td colspan="6" class="history-empty">No resolved signals yet</td></tr>';
+      return;
+    }
+    rows.innerHTML = data.map((s) => {
+      const sigCls  = (s.signal || 'neutral').toLowerCase();
+      const resCls  = s.result || '';
+      const resTxt  = s.result === 'correct' ? '✓ Correct'
+                    : s.result === 'draw'    ? '– Draw'
+                    : s.result === 'wrong'   ? '✗ Wrong' : '–';
+      return `<tr>
+        <td>${_fmtHistTime(s.ctime)}</td>
+        <td>${s.asset}</td>
+        <td class="hist-signal ${sigCls}">${s.signal || '–'}</td>
+        <td>${s.strength || '–'}</td>
+        <td class="hist-result ${resCls}">${resTxt}</td>
+        <td class="hist-why">${s.postmortem || ''}</td>
+      </tr>`;
+    }).join('');
+  } catch (_) {
+    rows.innerHTML = '<tr><td colspan="6" class="history-empty">Failed to load — try Refresh</td></tr>';
+  }
+}
+
+function openHistory() {
+  _renderHistoryFilterOptions();
+  document.getElementById('history-modal').classList.remove('hidden');
+  loadHistory();
+}
+
+function closeHistory() {
+  document.getElementById('history-modal').classList.add('hidden');
+}
+
+document.getElementById('history-btn').addEventListener('click', openHistory);
+document.getElementById('history-close').addEventListener('click', closeHistory);
+document.getElementById('history-backdrop').addEventListener('click', closeHistory);
+document.getElementById('history-refresh').addEventListener('click', loadHistory);
+document.getElementById('history-pair-filter').addEventListener('change', loadHistory);

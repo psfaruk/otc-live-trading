@@ -171,6 +171,79 @@ html, body {
 .status.disconnected { color: var(--red); }
 .status.loading      { color: var(--yellow); }
 
+/* ── History button + modal ─────────────────────────────────────────────── */
+.history-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: var(--r);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.history-btn:hover { border-color: var(--blue); color: var(--blue); }
+.history-close { padding: 5px 9px; margin-left: auto; }
+
+#history-modal { position: fixed; inset: 0; z-index: 50; }
+#history-modal.hidden { display: none; }
+#history-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.6);
+}
+#history-panel {
+  position: relative;
+  width: min(920px, 94vw);
+  height: min(640px, 88vh);
+  margin: 5vh auto 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#history-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#history-title { font-weight: 700; font-size: 14px; margin-right: 6px; }
+#history-body { flex: 1; overflow: auto; }
+
+#history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#history-table th {
+  position: sticky; top: 0;
+  background: var(--bg3);
+  text-align: left;
+  padding: 8px 10px;
+  color: #8888a0;
+  font-size: 11px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+#history-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: top;
+}
+#history-table td.hist-why {
+  white-space: normal;
+  color: #8888a0;
+  max-width: 360px;
+}
+.history-empty { text-align: center; color: #555566; padding: 20px !important; font-style: italic; }
+.hist-signal.call { color: var(--green); font-weight: 700; }
+.hist-signal.put  { color: var(--red);   font-weight: 700; }
+.hist-signal.neutral { color: #666677; }
+.hist-result.correct { color: var(--green); font-weight: 700; }
+.hist-result.wrong   { color: var(--red);   font-weight: 700; }
+.hist-result.draw    { color: #ffc107;      font-weight: 700; }
+
 /* ── Controls ────────────────────────────────────────────────────────────── */
 #controls {
   height: var(--ch);
