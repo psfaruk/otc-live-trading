@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in — Plybit AI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d1117'/%3E%3Crect x='8' y='14' width='4' height='12' fill='%2300e676'/%3E%3Cline x1='10' y1='6' x2='10' y2='14' stroke='%2300e676' stroke-width='2'/%3E%3Crect x='20' y='8' width='4' height='10' fill='%23ff1744'/%3E%3Cline x1='22' y1='4' x2='22' y2='24' stroke='%23ff1744' stroke-width='2'/%3E%3C/svg%3E" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      background: #090910;
+      color: #dddde8;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      /* soft radial glow behind the card */
+      background:
+        radial-gradient(600px 400px at 50% 30%, rgba(68,138,255,0.07), transparent 70%),
+        #090910;
+    }
+    .card {
+      width: 100%;
+      max-width: 380px;
+      background: #111118;
+      border: 1px solid #25252f;
+      border-radius: 14px;
+      padding: 40px 32px 32px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .logo { width: 88px; height: 88px; margin: 0 auto 6px; display: block; }
+    .brand {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 2.5px;
+      color: #fff;
+      margin-bottom: 2px;
+    }
+    .brand em { color: #448aff; font-style: normal; }
+    .tag {
+      font-size: 12px;
+      color: #55556a;
+      margin-bottom: 28px;
+      letter-spacing: 0.4px;
+    }
+    .field { margin-bottom: 14px; text-align: left; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #7777a0;
+      margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%;
+      background: #18181f;
+      border: 1px solid #25252f;
+      border-radius: 8px;
+      color: #dddde8;
+      font-size: 15px;
+      padding: 12px 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .field input:focus { border-color: #448aff; }
+    button {
+      width: 100%;
+      margin-top: 8px;
+      background: #448aff;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      padding: 12px;
+      cursor: pointer;
+      transition: filter 0.15s, transform 0.05s;
+    }
+    button:hover  { filter: brightness(1.12); }
+    button:active { transform: scale(0.99); }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .err {
+      margin-top: 14px;
+      font-size: 13px;
+      color: #ff5b76;
+      min-height: 18px;
+    }
+    @media (max-width: 420px) {
+      .card { padding: 32px 22px 26px; }
+      .logo { width: 74px; height: 74px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <!-- Logo: layered flame/drop — red-gold, cream, blue-violet -->
+    <svg class="logo" viewBox="0 0 120 120" aria-hidden="true">
+      <defs>
+        <linearGradient id="gRed" x1="0" y1="0" x2="0.6" y2="1">
+          <stop offset="0" stop-color="#e8322e"/>
+          <stop offset="0.55" stop-color="#e05a3a"/>
+          <stop offset="1" stop-color="#d9a552"/>
+        </linearGradient>
+        <linearGradient id="gCream" x1="0.3" y1="0" x2="0.7" y2="1">
+          <stop offset="0" stop-color="#aebfae"/>
+          <stop offset="0.5" stop-color="#f2f0dc"/>
+          <stop offset="1" stop-color="#d8d4b8"/>
+        </linearGradient>
+        <linearGradient id="gBlue" x1="0.2" y1="0" x2="0.8" y2="1">
+          <stop offset="0" stop-color="#7b8fd9"/>
+          <stop offset="0.5" stop-color="#4a3fd4"/>
+          <stop offset="1" stop-color="#3b2fbf"/>
+        </linearGradient>
+      </defs>
+      <!-- red-gold left flame -->
+      <path fill="url(#gRed)" d="M58 6
+        C 42 34, 26 48, 26 74
+        C 26 88, 32 98, 42 104
+        C 36 92, 36 82, 42 70
+        C 50 52, 58 36, 58 6 Z"/>
+      <!-- cream middle sweep -->
+      <path fill="url(#gCream)" d="M63 18
+        C 58 44, 44 58, 42 78
+        C 41 92, 48 103, 58 108
+        C 52 96, 53 86, 59 74
+        C 66 58, 68 40, 63 18 Z"/>
+      <!-- blue-violet right petal -->
+      <path fill="url(#gBlue)" d="M88 44
+        C 84 60, 72 70, 68 84
+        C 65 96, 70 106, 80 110
+        C 76 100, 78 92, 84 82
+        C 92 70, 92 56, 88 44 Z"/>
+    </svg>
+    <div class="brand">PLYBIT <em>AI</em></div>
+    <div class="tag">Binary Trading Signals</div>
+
+    <form id="login-form">
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password"
+               placeholder="Enter access password" autofocus />
+      </div>
+      <button type="submit" id="submit-btn">Sign in</button>
+      <div class="err" id="err"></div>
+    </form>
+  </div>
+
+  <script>
+    'use strict';
+    const form = document.getElementById('login-form');
+    const btn  = document.getElementById('submit-btn');
+    const err  = document.getElementById('err');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      try {
+        const res = await fetch('/api/login', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ password: document.getElementById('password').value }),
+        });
+        if (res.ok) {
+          location.href = '/';
+          return;
+        }
+        err.textContent = 'Wrong password — try again';
+      } catch (_) {
+        err.textContent = 'Connection failed — try again';
+      }
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+    });
+  </script>
+</body>
+</html>

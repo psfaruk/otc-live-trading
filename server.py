@@ -1,10 +1,11 @@
 import asyncio
-import base64
+import hashlib
 import hmac
 import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
@@ -20,22 +21,35 @@ _clients: set[WebSocket] = set()
 # Single shared password for the whole site (no per-user accounts — matches
 # the rest of this app's "one shared feed, many anonymous viewers" model).
 # APP_PASSWORD unset => gate disabled (local dev doesn't need a login).
-APP_USERNAME = os.environ.get("APP_USERNAME", "plybit")
+# Cookie-based (not HTTP Basic) so the login screen is our own styled page
+# (static/login.html) instead of the browser's unstylable native popup.
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+_COOKIE_NAME = "plybit_auth"
 
 
-def _check_basic_auth(header_value: str | None) -> bool:
+def _session_token() -> str:
+    # Derived from the password: changing APP_PASSWORD invalidates every
+    # previously-issued cookie at once, with no server-side session store.
+    return hmac.new(APP_PASSWORD.encode(), b"plybit-session-v1",
+                    hashlib.sha256).hexdigest()
+
+
+def _cookie_ok(cookie_header: str | None) -> bool:
     if not APP_PASSWORD:
         return True
-    if not header_value or not header_value.startswith("Basic "):
+    if not cookie_header:
         return False
-    try:
-        decoded = base64.b64decode(header_value[6:]).decode("utf-8")
-        username, _, password = decoded.partition(":")
-    except Exception:
-        return False
-    return (hmac.compare_digest(username, APP_USERNAME)
-            and hmac.compare_digest(password, APP_PASSWORD))
+    for part in cookie_header.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == _COOKIE_NAME:
+            return hmac.compare_digest(value, _session_token())
+    return False
+
+
+# Paths reachable WITHOUT a session: the health probe, the login page
+# itself, and the login API it posts to. login.html is fully self-contained
+# (inline CSS/JS/logo) precisely so no other asset needs exempting.
+_OPEN_PATHS = {"/healthz", "/login", "/api/login"}
 
 
 async def _broadcast(data: dict) -> None:
@@ -67,18 +81,20 @@ app = FastAPI(title="Plybit AI", lifespan=lifespan)
 
 
 @app.middleware("http")
-async def basic_auth_middleware(request, call_next):
+async def auth_middleware(request, call_next):
     # Covers everything: the static-file mount (index.html/chart.js/style.css)
     # AND every /api/* route, since it runs before routing decides which one
-    # handles the request. /healthz is exempt — Railway's healthcheck can't
-    # send credentials, and gating it made Railway mark password-protected
-    # deployments unhealthy (observed live: repeated 401s from the
-    # healthcheck IP the moment APP_PASSWORD was set).
-    if request.url.path == "/healthz" or _check_basic_auth(
-            request.headers.get("authorization")):
+    # handles the request. /healthz stays open — Railway's healthcheck can't
+    # authenticate, and gating it made password-protected deployments get
+    # marked unhealthy (observed live).
+    if (request.url.path in _OPEN_PATHS
+            or _cookie_ok(request.headers.get("cookie"))):
         return await call_next(request)
-    return Response(status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="Plybit AI"'})
+    # Page loads go to the styled login screen; API calls get a plain 401
+    # (a redirect would just confuse fetch() callers).
+    if request.method == "GET" and not request.url.path.startswith("/api"):
+        return RedirectResponse("/login", status_code=302)
+    return Response(status_code=401)
 
 
 @app.get("/healthz")
@@ -88,12 +104,36 @@ async def healthz():
     return {"ok": True}
 
 
+@app.get("/login")
+async def login_page():
+    resp = FileResponse("static/login.html")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+class LoginReq(BaseModel):
+    password: str = ""
+
+
+@app.post("/api/login")
+async def login(req: LoginReq):
+    if not APP_PASSWORD or hmac.compare_digest(req.password, APP_PASSWORD):
+        resp = Response(status_code=200, content='{"ok":true}',
+                        media_type="application/json")
+        resp.set_cookie(
+            _COOKIE_NAME, _session_token(),
+            max_age=30 * 86400, httponly=True, samesite="lax")
+        return resp
+    return Response(status_code=401, content='{"ok":false}',
+                    media_type="application/json")
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
-    # Browsers resend the SAME cached Basic-Auth header on the WS handshake
-    # once the page itself required it — checked here since @app.middleware
-    # ("http") only wraps HTTP routes, not the WebSocket protocol.
-    if not _check_basic_auth(ws.headers.get("authorization")):
+    # Cookies ride along on the WS handshake automatically (same-origin),
+    # so the same session check works here — checked explicitly since
+    # @app.middleware("http") doesn't wrap the WebSocket protocol.
+    if not _cookie_ok(ws.headers.get("cookie")):
         await ws.close(code=1008)
         return
     await ws.accept()
