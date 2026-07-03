@@ -35,6 +35,9 @@
     }
     .logo { width: 88px; height: 88px; margin: 0 auto 6px; display: block; object-fit: contain; }
     .logo.hidden { display: none; }
+    /* the raster logo sits on its own black square — round it like an
+       app icon so the square edge doesn't fight the card background */
+    img.logo { border-radius: 20px; }
     .brand {
       font-size: 22px;
       font-weight: 800;
