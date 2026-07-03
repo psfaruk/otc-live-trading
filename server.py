@@ -1,8 +1,10 @@
 import asyncio
+import base64
+import hmac
 import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
@@ -13,6 +15,27 @@ from feed import QuotexFeed
 
 feed = QuotexFeed()
 _clients: set[WebSocket] = set()
+
+# ── Access gate ───────────────────────────────────────────────────────────
+# Single shared password for the whole site (no per-user accounts — matches
+# the rest of this app's "one shared feed, many anonymous viewers" model).
+# APP_PASSWORD unset => gate disabled (local dev doesn't need a login).
+APP_USERNAME = os.environ.get("APP_USERNAME", "plybit")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+
+
+def _check_basic_auth(header_value: str | None) -> bool:
+    if not APP_PASSWORD:
+        return True
+    if not header_value or not header_value.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header_value[6:]).decode("utf-8")
+        username, _, password = decoded.partition(":")
+    except Exception:
+        return False
+    return (hmac.compare_digest(username, APP_USERNAME)
+            and hmac.compare_digest(password, APP_PASSWORD))
 
 
 async def _broadcast(data: dict) -> None:
@@ -43,8 +66,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Plybit AI", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def basic_auth_middleware(request, call_next):
+    # Covers everything: the static-file mount (index.html/chart.js/style.css)
+    # AND every /api/* route, since it runs before routing decides which one
+    # handles the request.
+    if _check_basic_auth(request.headers.get("authorization")):
+        return await call_next(request)
+    return Response(status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="Plybit AI"'})
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
+    # Browsers resend the SAME cached Basic-Auth header on the WS handshake
+    # once the page itself required it — checked here since @app.middleware
+    # ("http") only wraps HTTP routes, not the WebSocket protocol.
+    if not _check_basic_auth(ws.headers.get("authorization")):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     _clients.add(ws)
     cid    = ws.query_params.get("cid")
