@@ -21,6 +21,16 @@ let pairsList      = [];          // [{asset, display, status}] — unified list
 let lastPrediction = null;
 let lastDataAt     = 0;           // Date.now() of the last real candle/tick update
 
+// True from the moment a pair/timeframe switch clears the chart until the
+// authoritative candle history for the NEW selection actually arrives.
+// Without this, a live "tick" broadcast for the new asset (which the WS
+// connection keeps delivering in the background regardless of the pending
+// /api/subscribe request) can land BEFORE that request's response — and
+// since the chart was just cleared to empty, rendering that one tick alone
+// makes it look like most of the history is missing until the real
+// snapshot catches up a moment later.
+let _awaitingSnapshot = false;
+
 // One id per page load — lets the backend track which pair THIS tab/window
 // is interested in (server now runs one independent stream per distinct
 // asset/period, not just one shared feed — see the multi-viewer refactor).
@@ -452,7 +462,11 @@ function handleMsg(msg, perfNow) {
       break;
 
     case 'tick':
-      if (msg.candle) {
+      // Ignore ticks for chart rendering until the real snapshot for this
+      // selection has landed (see _awaitingSnapshot) — otherwise a single
+      // early tick paints one bar on an otherwise-empty chart, looking like
+      // most of the history is missing until the snapshot catches up.
+      if (msg.candle && !_awaitingSnapshot) {
         document.getElementById('chart-loading').classList.add('hidden');
         lastDataAt = Date.now();
         showNoData(false);
@@ -473,6 +487,10 @@ function handleMsg(msg, perfNow) {
 
 // ── Data handlers ──────────────────────────────────────────────────────────
 function applySnapshot(candles, prediction) {
+  // Set unconditionally, before any early return below — this is the
+  // authoritative reply for the current selection either way (even an
+  // empty history is a real answer, not a reason to keep gating ticks).
+  _awaitingSnapshot = false;
   if (!mainSeries || !predSeries || !chart) return;   // chart never booted — nothing to draw into
 
   const loadEl = document.getElementById('chart-loading');
@@ -896,6 +914,7 @@ document.querySelectorAll('.tf-btn').forEach((btn) => {
 });
 
 function resetAndSubscribe() {
+  _awaitingSnapshot = true;
   if (mainSeries) mainSeries.setData([]);
   if (predSeries) predSeries.setData([]);
   _resetRaf(null);
