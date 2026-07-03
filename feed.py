@@ -1451,6 +1451,17 @@ class QuotexFeed:
         needed manual mid-await guards against."""
         key = (stream.asset, stream.period)
         try:
+            # Wait for the shared Quotex connection FIRST. Viewers' tabs
+            # subscribe the instant the server comes up after a deploy —
+            # before connect() has finished — and starting then meant
+            # start_candles_stream went out on a not-yet-authorized socket
+            # (a dead subscription: zero ticks until the 90s stale re-arm),
+            # the history fetch burned its full ~25s of timeouts, and the
+            # resulting _record_stream_error hits tripped the cooldown,
+            # blocking every OTHER pair for 2 more minutes. Observed live
+            # on Railway as "blank chart for minutes after every deploy".
+            while not (self._connected and self._client):
+                await asyncio.sleep(0.5)
             async with self._new_stream_gate:
                 await self._start_stream(stream)
                 await asyncio.sleep(self._stagger_gap)   # paces the NEXT waiting stream
