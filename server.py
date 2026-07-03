@@ -70,11 +70,22 @@ app = FastAPI(title="Plybit AI", lifespan=lifespan)
 async def basic_auth_middleware(request, call_next):
     # Covers everything: the static-file mount (index.html/chart.js/style.css)
     # AND every /api/* route, since it runs before routing decides which one
-    # handles the request.
-    if _check_basic_auth(request.headers.get("authorization")):
+    # handles the request. /healthz is exempt — Railway's healthcheck can't
+    # send credentials, and gating it made Railway mark password-protected
+    # deployments unhealthy (observed live: repeated 401s from the
+    # healthcheck IP the moment APP_PASSWORD was set).
+    if request.url.path == "/healthz" or _check_basic_auth(
+            request.headers.get("authorization")):
         return await call_next(request)
     return Response(status_code=401,
                     headers={"WWW-Authenticate": 'Basic realm="Plybit AI"'})
+
+
+@app.get("/healthz")
+async def healthz():
+    # Deliberately data-free (no pair list, no stats) so leaving it open
+    # reveals nothing — just "the process is up and serving HTTP".
+    return {"ok": True}
 
 
 @app.websocket("/ws")
