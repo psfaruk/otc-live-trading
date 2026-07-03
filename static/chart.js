@@ -1017,13 +1017,11 @@ function bootChart(attempt) {
     initChart();
     hideFatalError();
   } catch (err) {
-    console.error('[chart] init failed:', err);
     showFatalError('Chart failed to start', 'Reloading…');
     setTimeout(() => location.reload(), 2500);
     return;
   }
-  loadPairs().then(() => connect()).catch((err) => {
-    console.error('[chart] boot failed:', err);
+  loadPairs().then(() => connect()).catch(() => {
     showFatalError('Failed to start', 'Reloading…');
     setTimeout(() => location.reload(), 2500);
   });
