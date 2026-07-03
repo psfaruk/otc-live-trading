@@ -1,0 +1,18 @@
+# Secrets — never commit these
+.env
+session.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# App data (grows continuously, redeploy-ephemeral unless a volume is mounted
+# at QX_DB_PATH — see .env.example)
+candle_micro.db
+candle_micro.backup-*.db
+*.log
+
+# Editor / local tooling
+.vscode/
+.claude/

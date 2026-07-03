@@ -1,0 +1,1254 @@
+"""
+End-of-candle (EOC) analysis — price-action multi-signal predictor.
+
+Design: classic lagging indicators (EMA, RSI) are intentionally NOT used.
+On binary color-prediction they lag and add noise. Signals are built only
+from what price actually does:
+
+  - Tick microstructure : buy/sell pressure, effort vs result, wick rejection (RUN)
+  - Single-candle pattern: engulfing/piercing at S/R (T7), pin bar at S/R (T2),
+                           marubozu momentum continuation (MARB)
+  - Multi-candle pattern : morning/evening star 3-candle reversal (STAR),
+                           consecutive streak exhaustion (STREAK)
+  - Market structure     : liquidity sweep / stop-hunt (SWEEP)
+
+Note: Academic research confirms 1-minute binary options are near-random.
+      This system aims to reduce false signals, not guarantee wins.
+"""
+import math
+import re
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _round_level(price: float) -> tuple[float, float, str]:
+    """
+    Nearest significant round number → (level, distance, strength).
+    BIG  = every 1% of magnitude  (e.g. 1.08, 1.09 for EURUSD; 155, 156 for JPY)
+    MID  = every 0.5% of magnitude (e.g. 1.085, 155.5)
+    SMALL= every 0.1% of magnitude (e.g. 1.081, 155.1)
+    NONE = not near any round level
+    """
+    if price <= 0:
+        return price, 0.0, "NONE"
+    mag = 10.0 ** math.floor(math.log10(abs(price)))
+    best: tuple[float, float, str] | None = None
+    for frac, label, thr in [(0.01, "BIG", 0.05), (0.005, "MID", 0.06), (0.001, "SMALL", 0.10)]:
+        step  = mag * frac
+        level = round(round(price / step) * step, 8)
+        dist  = abs(price - level)
+        if dist < step * thr and (best is None or dist < best[1]):
+            best = (level, dist, label)
+    if best:
+        return best
+    step  = mag * 0.01
+    level = round(round(price / step) * step, 8)
+    return level, abs(price - level), "NONE"
+
+
+def _key_levels(candles: list[dict], lookback: int = 40) -> list[tuple[float, int]]:
+    """
+    Detect KEY support/resistance levels from recent price action.
+
+    A key level is a price that has been TESTED multiple times — every swing
+    high / swing low is a test, and nearby tests cluster into one level. The
+    more touches, the stronger the level (and the more powerful a candle
+    reaction there). Returns [(price, touches), ...] for levels with 2+ touches.
+    """
+    recent = candles[-lookback:]
+    if len(recent) < 5:
+        return []
+
+    # Swing pivots: a high higher than both neighbours, a low lower than both.
+    pivots: list[float] = []
+    for i in range(1, len(recent) - 1):
+        hi, lo = recent[i]["high"], recent[i]["low"]
+        if hi >= recent[i - 1]["high"] and hi >= recent[i + 1]["high"]:
+            pivots.append(hi)
+        if lo <= recent[i - 1]["low"] and lo <= recent[i + 1]["low"]:
+            pivots.append(lo)
+    if not pivots:
+        return []
+
+    # Cluster pivots within a small tolerance → one level, N touches. Compare to
+    # the cluster ANCHOR (first point), not the last, so dense pivots can't
+    # chain-merge into one giant cluster spanning a wide price range.
+    pivots.sort()
+    levels: list[tuple[float, int]] = []
+    cluster = [pivots[0]]
+    for p in pivots[1:]:
+        if abs(p - cluster[0]) <= cluster[0] * 0.0006:     # ~0.06% wide max
+            cluster.append(p)
+        else:
+            if len(cluster) >= 2:
+                levels.append((sum(cluster) / len(cluster), len(cluster)))
+            cluster = [p]
+    if len(cluster) >= 2:
+        levels.append((sum(cluster) / len(cluster), len(cluster)))
+    return levels
+
+
+def _wick_wall(candles: list[dict], lookback: int = 12
+               ) -> tuple[list[tuple[float, int]], list[tuple[float, int]], float]:
+    """
+    Detect repeated wick rejection zones — the 'wick wall'.
+
+    _key_levels() uses formal swing PIVOTS (a low lower than BOTH neighbours).
+    It misses the common case where 4-6 CONSECUTIVE RANGING candles all put
+    wicks at the same tight zone without any one being a formal pivot.
+
+    This function clusters ALL lower/upper wick tips from the last N candles.
+    Clustering tolerance = 25% of avg candle ATR — auto-adjusts across all
+    instruments (EUR/USD 0.0001 scale, USD/JPY 0.01 scale, crypto, etc.)
+    without hardcoded pip values.
+
+    Returns (support_walls, resistance_walls, avg_range):
+      support_walls    : [(price, count), ...] — lower wick clusters
+      resistance_walls : [(price, count), ...] — upper wick clusters
+      avg_range        : mean candle range (for scoring tolerance calibration)
+    """
+    recent = candles[-lookback:]
+    if len(recent) < 4:
+        return [], [], 0.0
+
+    avg_rng = sum(c["high"] - c["low"] for c in recent) / len(recent)
+    tol     = avg_rng * 0.25   # 25% of ATR — instrument-agnostic cluster width
+
+    def _cluster(tips: list[float]) -> list[tuple[float, int]]:
+        s = sorted(tips)
+        out: list[tuple[float, int]] = []
+        grp = [s[0]]
+        for t in s[1:]:
+            if t - grp[0] <= tol:   # anchor-based: first element sets the window
+                grp.append(t)
+            else:
+                if len(grp) >= 3:
+                    out.append((sum(grp) / len(grp), len(grp)))
+                grp = [t]
+        if len(grp) >= 3:
+            out.append((sum(grp) / len(grp), len(grp)))
+        return out
+
+    return (_cluster([c["low"]  for c in recent]),
+            _cluster([c["high"] for c in recent]),
+            avg_rng)
+
+
+def _market_regime(candles: list[dict], lookback: int = 20) -> tuple[str, str]:
+    """
+    Detect market regime + current price zone from recent candle structure.
+
+    Splits the lookback window in half: if the second half shows higher highs
+    AND higher lows vs the first half -> UPTREND; lower highs + lower lows ->
+    DOWNTREND; mixed -> SIDEWAYS.
+
+    Zone measures where the current close sits in the full lookback range:
+    bottom 25% = SUPPORT, top 25% = RESISTANCE, middle = NEUTRAL.
+
+    Returns (regime, zone).
+    """
+    recent = candles[-lookback:]
+    if len(recent) < 8:
+        return "SIDEWAYS", "NEUTRAL"
+
+    half        = len(recent) // 2
+    first_half  = recent[:half]
+    second_half = recent[half:]
+
+    fh_hi = max(c["high"] for c in first_half)
+    fh_lo = min(c["low"]  for c in first_half)
+    sh_hi = max(c["high"] for c in second_half)
+    sh_lo = min(c["low"]  for c in second_half)
+
+    if sh_hi > fh_hi and sh_lo > fh_lo:
+        regime = "UPTREND"
+    elif sh_hi < fh_hi and sh_lo < fh_lo:
+        regime = "DOWNTREND"
+    else:
+        regime = "SIDEWAYS"
+
+    full_hi = max(fh_hi, sh_hi)
+    full_lo = min(fh_lo, sh_lo)
+    full_rng = full_hi - full_lo
+    if full_rng <= 0:
+        zone = "NEUTRAL"
+    else:
+        close_pos = (recent[-1]["close"] - full_lo) / full_rng
+        if close_pos <= 0.25:
+            zone = "SUPPORT"
+        elif close_pos >= 0.75:
+            zone = "RESISTANCE"
+        else:
+            zone = "NEUTRAL"
+
+    return regime, zone
+
+
+def _zigzag_signal(candles: list[dict], min_len: int = 4) -> tuple[int, int]:
+    """
+    Detect alternating bull/bear zigzag pattern in the last 8 candles.
+
+    OTC RNG often produces alternating candles (G-R-G-R ...). When 4+ candles
+    alternate consistently, predicting opposite of the last candle has edge.
+
+    Returns (predict, length):
+      predict : +1 (CALL), -1 (PUT), 0 (no pattern)
+      length  : length of the alternating sequence (0 if no pattern)
+    """
+    window = candles[-8:]
+    if len(window) < min_len:
+        return 0, 0
+
+    directions = [1 if c["close"] >= c["open"] else -1 for c in window]
+
+    # Count alternating run from the end backwards
+    seq_len = 1
+    for i in range(len(directions) - 2, -1, -1):
+        if directions[i] != directions[i + 1]:
+            seq_len += 1
+        else:
+            break
+
+    if seq_len < min_len:
+        return 0, 0
+
+    predict = -directions[-1]   # opposite of last candle direction
+    return predict, seq_len
+
+
+# ── Main analysis ─────────────────────────────────────────────────────────────
+
+def _parse_votes(reasons: list[str]) -> list[tuple[str, int, int]]:
+    """
+    Extract individual theory votes from reason strings.
+
+    Returns [(theory_code, direction, magnitude), ...] where direction is
+    +1 (CALL) / -1 (PUT). Attenuation/coordination adjustment lines are
+    skipped — they are score corrections, not theory votes. Used both by the
+    live theory-performance gate below and by feed.py for theory_votes logging.
+    """
+    out: list[tuple[str, int, int]] = []
+    for r in reasons:
+        if "(attenuation)" in r or "(coordination" in r:
+            continue
+        code = r.split()[0]
+        if code not in _ALL_THEORIES:
+            continue
+        if "-> CALL" in r:
+            d = +1
+        elif "-> PUT" in r:
+            d = -1
+        else:
+            continue
+        m = re.search(r"\(x(\d+)\)", r)
+        out.append((code, d, int(m.group(1)) if m else 1))
+    return out
+
+
+_ALL_THEORIES = {"RUN", "T7", "T2", "SWEEP", "MARB", "TRAP", "STAR", "STREAK",
+                 "MICRO", "OUTSIDE", "SPIN",
+                 "ZIGZAG", "WICKWALL"}
+# HARAMI, THREE, GAP: theories removed 2026-07-03 (see inline comments where
+# their scoring blocks used to be). REGIME: converted from an independent
+# vote to a score-only filter (2026-07-03) — its reasons still adjust score
+# but are intentionally excluded here so it's no longer graded as its own
+# theory or counted toward `agree` (WITH_REGIME measured 44.6% vs
+# COUNTER_REGIME 54.5% — a real signal, but on being right about the
+# ensemble's OTHER votes, not on REGIME being a reliable standalone caller).
+
+
+def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
+                micro_history: list[dict] | None = None,
+                period: int | None = None) -> dict:
+    """
+    Predict next candle direction from the just-closed candle.
+
+    Eight independent signal sources:
+      RUN    — running-candle tick reaction (who won / exhaust vs defend)
+      T7     — engulfing / piercing at a key support/resistance level
+      T2     — pin bar (hammer / shooting star) at a key level
+      MARB   — marubozu (large body, tiny wicks) → momentum continuation
+      STAR   — morning star / evening star 3-candle reversal
+      STREAK — 4+ consecutive same-color candles → exhaustion → reversal
+      SWEEP  — liquidity sweep / stop-hunt: pierce a key level then reclaim
+      MICRO  — multi-candle tick microstructure from DB: pressure chains,
+               exhaustion sequences, fight-zone breakouts, late-phase
+               inversions, congestion hold levels acting as live S/R
+
+    candles       : OHLC history, most-recent last. Need 2+ minimum.
+    ticks         : price values from the just-closed candle (for RUN).
+    micro_history : list of micro dicts for the N candles BEFORE the
+                    just-closed one (from db.get_micro_history). Oldest first.
+    period        : candle period in seconds — used to verify micro_history[-1]
+                    really is the immediately-previous candle (freshness gate).
+    Returns : {signal, score, confidence, agree, strength, reasons}
+    """
+    # MAX_SCORE calibrates the confidence% shown to the user (confidence =
+    # |score|/MAX_SCORE). The naive theoretical ceiling (every theory's max
+    # magnitude summed) is ~55, but theories rarely all stack on one candle —
+    # audited against 1,392 real signal_log rows (2026-07-03): the highest
+    # |score| ever actually produced was 17, p99=14, median=4. At MAX_SCORE=55
+    # confidence never exceeded 31% even on that all-time-best signal, so the
+    # number was permanently squashed near zero and meaningless to the user.
+    # Recalibrated to the empirical ceiling (+small headroom) so confidence
+    # actually spans close to 0-100%. Re-check this constant if the theory
+    # set changes materially.
+    MAX_SCORE = 18
+
+    if len(candles) < 2:
+        return {"signal": "NEUTRAL", "score": 0,
+                "confidence": 0.0, "reasons": ["insufficient candles"]}
+
+    cur  = candles[-1]
+    prev = candles[-2]
+    o, h, l, c = cur["open"], cur["high"], cur["low"], cur["close"]
+    total_range = h - l
+
+    if total_range == 0:
+        return {"signal": "NEUTRAL", "score": 0,
+                "confidence": 0.0, "reasons": ["zero-range candle"]}
+
+    body       = abs(c - o)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+    is_bull    = c >= o
+
+    score   = 0
+    reasons = []
+
+    # Market regime / zigzag state (populated later; defaults allow safe return)
+    _regime     = "SIDEWAYS"
+    _zone       = "NEUTRAL"
+    _zz_predict = 0
+    _zz_len     = 0
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PRIMARY — evaluated FIRST, weighted HIGHEST.
+    #
+    # Core thesis (user): the next candle's colour is decided INSIDE the last
+    # 4-7 candles. So the recent window drives everything. We read that window
+    # four ways (R47) and use its high/low as the live support/resistance for
+    # the engulfing (T7) and pin-bar (T2) reactions — the web-researched most
+    # reliable reversals, which only beat a coin-flip when they fire AT an S/R.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── RUN  WHO WON the running candle → NEXT candle's colour (#1 method) ───
+    # Read the candle the way order-flow traders do (web-researched):
+    #   RESULT  = where price CLOSED in its range (close near high = buyers won,
+    #             near low = sellers won) — the scoreboard.
+    #   EFFORT  = tick pressure (what % of ticks pushed up vs down) — who fought
+    #             harder.
+    #   ABSORPTION = effort vs result DIVERGE (closed up but sellers pushed, or
+    #             closed down but buyers pushed). The visible winner is being
+    #             faded by smart money → reversal. (The single most powerful read.)
+    #   WICK    = a long wick = that side was rejected at the extreme.
+    #   EXHAUST = the final ~15% of ticks ran out of steam → reversal.
+    _cur_bpct     = None   # buying tick % of just-closed candle (used by TRAP too)
+    _cur_fin_bpct = None   # final-phase buying %, only set when ftot >= 3
+    if ticks and len(ticks) >= 15:
+        up_t = sum(1 for i in range(1, len(ticks)) if ticks[i] > ticks[i - 1])
+        dn_t = sum(1 for i in range(1, len(ticks)) if ticks[i] < ticks[i - 1])
+        tot  = up_t + dn_t
+        bpct = (up_t / tot) if tot else 0.5          # EFFORT: buying tick pressure
+        _cur_bpct   = bpct
+        close_pos = (c - l) / total_range            # RESULT: 0=low … 1=high
+        bull_closed = ticks[-1] >= ticks[0]
+
+        # DB analysis (906 predictions):
+        #   "Buyers WON"  → 61.1% CALL  — valid continuation, keep.
+        #   "Sellers WON" → 45.5% PUT   — anti-signal: sellers exhaust themselves in
+        #   OTC synthetic markets. After extreme selling the next candle bounces UP.
+        #   Fix: Sellers WON is now a CALL signal (exhaustion reversal).
+        #   ABSORPTION remains the most reliable (83-92%) — keep at ×4.
+        eff_buyer  = bpct >= 0.60       # clear tick majority (60%+ up-ticks)
+        eff_seller = bpct <= 0.40       # clear tick majority (60%+ dn-ticks)
+        res_buyer  = close_pos >= 0.72  # close in top 28% of range
+        res_seller = close_pos <= 0.20  # close in bottom 20% of range
+
+        # (1) AGREEMENT — result and effort both agree.
+        if res_buyer and eff_buyer:
+            score += 2
+            reasons.append(
+                f"RUN  Buyers WON (close {close_pos:.0%} hi, {bpct:.0%} up-ticks)"
+                f" -> CALL (x2)")
+        elif res_seller and eff_seller:
+            # OTC exhaustion: sellers used up all capital → next candle reverses UP.
+            # DB: 45.5% for PUT = anti-signal → flipped to CALL (exhaustion reversal).
+            score += 1
+            reasons.append(
+                f"RUN  Sellers WON but exhausted (close {close_pos:.0%} lo,"
+                f" {(1-bpct):.0%} dn-ticks) -> OTC reversal -> CALL (x1)")
+
+        # (2) ABSORPTION — effort vs result DIVERGE — the single most reliable
+        #     signal: 92% accuracy (closed up + sellers pushed), 83% (closed down +
+        #     buyers pushed). Score tripled to reflect actual predictive power.
+        elif res_buyer and eff_seller:
+            score -= 4
+            reasons.append(
+                f"RUN  ABSORPTION: closed up but sellers pushed ({(1-bpct):.0%})"
+                f" -> reversal -> PUT (x4)")
+        elif res_seller and eff_buyer:
+            score += 4
+            reasons.append(
+                f"RUN  ABSORPTION: closed down but buyers pushed ({bpct:.0%})"
+                f" -> reversal -> CALL (x4)")
+
+        # (3) Slight directional lean — fires when only one of (result, effort) is
+        #     clear. 54.7% accuracy: worth ±1 but not a strong signal on its own.
+        elif res_buyer or eff_buyer:
+            score += 1
+            reasons.append("RUN  Buyers slightly ahead -> CALL")
+        elif res_seller or eff_seller:
+            score -= 1
+            reasons.append("RUN  Sellers slightly ahead -> PUT")
+
+        # (4) Wick rejection — 60% accuracy, decent confirming signal.
+        if upper_wick > total_range * 0.45:
+            score -= 1
+            reasons.append("RUN  Long upper wick: sellers rejected the top -> PUT")
+        if lower_wick > total_range * 0.45:
+            score += 1
+            reasons.append("RUN  Long lower wick: buyers defended the low -> CALL")
+
+        # (5) Final ~15% of ticks invaded by the opposite side — 72.6% accuracy.
+        #     Strong invasion (>=80%) is even more reliable: score +2 instead of +1.
+        fn   = max(len(ticks) // 6, 6)
+        fin  = ticks[-fn:]
+        fu   = sum(1 for i in range(1, len(fin)) if fin[i] > fin[i - 1])
+        fd   = sum(1 for i in range(1, len(fin)) if fin[i] < fin[i - 1])
+        ftot = fu + fd
+        if ftot >= 3:
+            fbp = fu / ftot
+            _cur_fin_bpct = fbp
+            _inv_seller = (1 - fbp)
+            _inv_buyer  = fbp
+            if bull_closed and fbp <= 0.30:
+                _mag = 2 if _inv_seller >= 0.80 else 1
+                score -= _mag
+                reasons.append(
+                    f"RUN  Sellers invaded the close ({_inv_seller:.0%})"
+                    f" -> PUT (x{_mag})")
+            elif (not bull_closed) and fbp >= 0.70:
+                _mag = 2 if _inv_buyer >= 0.80 else 1
+                score += _mag
+                reasons.append(
+                    f"RUN  Buyers invaded the close ({_inv_buyer:.0%})"
+                    f" -> CALL (x{_mag})")
+
+    # Recent 4-7 candle window + its mini support/resistance edges
+    _win  = candles[-7:] if len(candles) >= 7 else candles[:]
+    w_hi  = max(x["high"] for x in _win)
+    w_lo  = min(x["low"]  for x in _win)
+    w_rng = w_hi - w_lo
+
+    # KEY LEVELS — prices tested 2+ times in recent history (stronger = more
+    # touches). A candle reaction AT a key level is far more reliable.
+    _klevels = _key_levels(candles)
+
+    def _key_touches(price: float) -> int:
+        """Touch-count of the strongest key level this price sits on (0=none)."""
+        best = 0
+        for lvl, touches in _klevels:
+            if abs(price - lvl) <= lvl * 0.0006:
+                best = max(best, touches)
+        return best
+
+    def _sr_bonus(price: float, is_support: bool) -> tuple[int, str]:
+        """
+        Graded support/resistance bonus for a reaction at `price`. Price-action
+        principle: the more factors that line up at one price (CONFLUENCE), the
+        stronger the level — and the more powerful the reaction there.
+          +3  CONFLUENCE — a tested key level AND a round number at the same price
+          +2  heavily-tested KEY level (3+ touches)  OR  a BIG round number
+          +1  key level (2 touches) OR MID round number OR 4-7 window edge
+          +0  nowhere significant
+        Returns (bonus, label).
+        """
+        k = _key_touches(price)
+        _, _, rnd = _round_level(price)        # BIG / MID / SMALL / NONE
+        big_round = rnd == "BIG"
+        any_round = rnd in ("BIG", "MID")
+
+        # Confluence — strongest: a multiply-tested level sitting on a round number
+        if k >= 2 and any_round:
+            return 3, f"CONFLUENCE key x{k}+{rnd.lower()} round"
+        if k >= 3 or big_round:
+            return 2, (f"KEY x{k}" if k >= 3 else "BIG round")
+        if k == 2 or rnd == "MID":
+            return 1, ("key x2" if k == 2 else "round")
+        if w_rng > 0:
+            edge = w_lo if is_support else w_hi
+            if abs(price - edge) <= w_rng * 0.12:
+                return 1, "window"
+        return 0, ""
+
+    # R47 (the 4-7 candle window theory) was REMOVED after live data showed it
+    # consistently below coin-flip (37.5% then 42% over 31 trades) — it was the
+    # main drag on accuracy. The window high/low is still used as fallback S/R
+    # context in _sr_bonus above; it just no longer votes on its own.
+
+    # ── T7   Engulfing / Piercing — reaction at the key S/R ──────────────────
+    # 50% Rule: reacting candle must cover ≥50% of the previous body, else the
+    # pattern lacks energy and is discarded.
+    prev_body = abs(prev["close"] - prev["open"])
+    prev_bull = prev["close"] >= prev["open"]
+    if prev_body > 0 and is_bull != prev_bull:
+        coverage = body / prev_body
+        if coverage >= 1.0:
+            # Full Engulfing — graded S/R bonus.
+            # DB analysis (856 predictions): Bull Engulfing = 55.8% accurate (keep).
+            # Bear Engulfing = 43.2% accurate — anti-signal in OTC (trap candle):
+            # big bear move AT a key level absorbs sellers → next candle bounces UP.
+            # Fix: Bull Engulfing keeps base ×3 + bonus; Bear Engulfing is capped
+            # at ×1 regardless of S/R level to reduce its negative influence.
+            # Bear Engulfing's "OTC trap -> CALL" flip was REMOVED (2026-07-03):
+            # aggregate T7 accuracy degraded to 47.8% (n=494, below coin-flip)
+            # after this flip was added — it doesn't cast a vote either way now.
+            # Bull Engulfing (validated 55.8%, n=856) is unaffected and kept.
+            if is_bull:
+                bonus, lbl = _sr_bonus(l, True)
+                mag  = 3 + bonus
+                score += mag
+                reasons.append(
+                    f"T7   Bull Engulfing ({coverage:.0%} body"
+                    f"{', @' + lbl if lbl else ''}) -> CALL (x{mag})")
+        elif coverage >= 0.50:
+            # Piercing Line (bull) is kept — partial bull recovery is valid.
+            # Dark Cloud Cover (bear) removed — OTC seller partial cover = exhaustion,
+            # not continuation; consistent with Bear Engulfing flip above.
+            if is_bull:
+                score += 2
+                reasons.append(
+                    f"T7   Piercing Line ({coverage:.0%} of prev body)"
+                    f" -> CALL (x2)")
+
+    # ── T2   Pin Bar (Hammer / Shooting Star) — #3 (reaction at key S/R) ─────
+    if upper_wick / total_range > 0.55 and body / total_range < 0.25:
+        # Shooting Star — bearish; strongest rejecting a resistance key level.
+        bonus, lbl = _sr_bonus(h, False)
+        mag = 2 + bonus
+        score -= mag
+        reasons.append(
+            f"T2   Shooting Star (upper wick >55%{', @' + lbl if lbl else ''})"
+            f" -> PUT (x{mag})")
+    elif lower_wick / total_range > 0.55 and body / total_range < 0.25:
+        # Hammer — bullish; strongest bouncing off a support key level.
+        bonus, lbl = _sr_bonus(l, True)
+        mag = 2 + bonus
+        score += mag
+        reasons.append(
+            f"T2   Hammer (lower wick >55%{', @' + lbl if lbl else ''})"
+            f" -> CALL (x{mag})")
+
+    # ── SWEEP  Liquidity sweep / stop-hunt — pierce a key level then reclaim ─
+    # Smart money pushes price BEYOND a key level (or round number) to trigger
+    # the stop-losses resting there, then reverses. The wick pierces the level
+    # but the candle CLOSES back inside, trapping the breakout traders → fuel
+    # for the reversal. This is NOT a breakout (which closes beyond the level);
+    # the pierce must be REJECTED (a wick), and the close must reclaim the level.
+    _sweep_cands = list(_klevels)                       # (price, touches)
+    for _ref in (l, h):
+        _rl, _, _rs = _round_level(_ref)
+        if _rs in ("BIG", "MID"):
+            _sweep_cands.append((_rl, 3 if _rs == "BIG" else 2))
+    _best_sweep = None                                  # (touches, dir, level)
+    for _lvl, _tch in _sweep_cands:
+        # Bullish sweep: low pierced below a support, closed back above, with a
+        # rejection (lower wick) — stops below were grabbed → CALL.
+        if l < _lvl <= c and (min(o, c) - l) > total_range * 0.30:
+            if _best_sweep is None or _tch > _best_sweep[0]:
+                _best_sweep = (_tch, +1, _lvl)
+        # Bearish sweep: high pierced above a resistance, closed back below.
+        elif c <= _lvl < h and (h - max(o, c)) > total_range * 0.30:
+            if _best_sweep is None or _tch > _best_sweep[0]:
+                _best_sweep = (_tch, -1, _lvl)
+    if _best_sweep:
+        _tch, _sdir, _lvl = _best_sweep
+        # DB analysis: SWEEP = 46.1% accurate (anti-signal at ±3).
+        # Root cause: OTC fake sweeps are common; many pierce-and-reclaim patterns
+        # are random price noise, not genuine stop-hunts.
+        # Fix: score reduced to ±1 regardless of touches. The pattern still provides
+        # directional information but no longer drives the signal on its own.
+        _mag = 1
+        if _sdir > 0:
+            score += _mag
+            reasons.append(
+                f"SWEEP Liquidity grab below {_lvl:.5g} then reclaim -> CALL (x{_mag})")
+        else:
+            score -= _mag
+            reasons.append(
+                f"SWEEP Liquidity grab above {_lvl:.5g} then reject -> PUT (x{_mag})")
+
+    # ── MARB  Marubozu — strong body ─────────────────────────────────────────────
+    # A marubozu has a dominant body (≥75% of range) with tiny wicks.
+    # OTC asymmetry: Bull marubozu → buyers dominated → continuation (CALL valid).
+    # Bear marubozu → sellers dominated → OTC exhaustion: sellers used all capital
+    # → next candle reverses UP. Do NOT vote PUT for bear marubozus in OTC.
+    if body / total_range >= 0.75 and total_range > 0:
+        prev_range = prev["high"] - prev["low"]
+        if prev_range > 0 and body >= prev_range * 0.80:
+            if is_bull:
+                # Weight cut 2 -> 1 (2026-07-03): live data showed 47.9%
+                # (n=190, below coin-flip) — the continuation thesis is
+                # weaker in practice than assumed, kept only as a light lean.
+                score += 1
+                reasons.append(
+                    f"MARB Bull marubozu (body {body/total_range:.0%} of range)"
+                    f" -> CALL (x1)")
+            # Bear marubozu: no PUT vote — treat as exhaustion neutral in OTC.
+            # The TRAP signal will handle it if tick data confirms extreme seller dominance.
+
+    # ── TRAP  Liquidity Trap — exhausted one-sided candle → reversal ────────────
+    # In OTC markets, when a candle is BOTH large-bodied AND overwhelmingly one-
+    # sided in tick pressure (≥78% same-direction ticks), it means ALL available
+    # buyers/sellers participated in that single candle.  When they run out,
+    # there is nobody left to push price further → the next candle REVERSES.
+    #
+    # This is the "trap" pattern: traders see a big red candle and pile in SHORT,
+    # but sellers are already exhausted — so the next candle closes green.
+    #
+    # Required (tick-based only — no tick data = no TRAP signal):
+    #   body/range >= 0.68           big directional body
+    #   bpct <= 0.22 (bear) or       78%+ of ticks one-sided
+    #   bpct >= 0.78 (bull)
+    #
+    # Bonus:
+    #   final_ticks show OPPOSITE side (exhaustion confirmed)  → +1
+    #   body > 1.6× avg of last 10 candles (abnormally large)  → +1
+    if _cur_bpct is not None and body / total_range >= 0.68:
+        _bratio   = body / total_range
+        _avg_body = (sum(abs(cc["close"] - cc["open"])
+                        for cc in candles[-10:]) / min(10, len(candles))) or 1e-9
+        _size_big  = body >= _avg_body * 1.6
+
+        _trap_bear = (not is_bull) and _cur_bpct <= 0.22   # big red, seller-dominated
+        _trap_bull = is_bull       and _cur_bpct >= 0.78   # big green, buyer-dominated
+
+        if _trap_bear or _trap_bull:
+            _ts = 2
+            _fin_exhaust = (
+                (_trap_bear and _cur_fin_bpct is not None and _cur_fin_bpct >= 0.65)
+                or
+                (_trap_bull and _cur_fin_bpct is not None and _cur_fin_bpct <= 0.35)
+            )
+            if _fin_exhaust:
+                _ts += 1   # final ticks already reversed → strongest confirmation
+            if _size_big:
+                _ts += 1   # abnormally large candle = deeper exhaustion
+
+            _size_note = f", {body / _avg_body:.1f}x avg body" if _size_big else ""
+            if _trap_bear:
+                _fin_note  = f", final buyers {_cur_fin_bpct:.0%}" if _fin_exhaust else ""
+                score  += _ts
+                reasons.append(
+                    f"TRAP Bear candle (body={_bratio:.0%}"
+                    f", sellers={100-round(_cur_bpct*100)}%"
+                    f"{_fin_note}{_size_note}"
+                    f") sellers exhausted -> CALL (x{_ts})")
+            else:
+                _fin_note  = f", final sellers {1-_cur_fin_bpct:.0%}" if _fin_exhaust else ""
+                score  -= _ts
+                reasons.append(
+                    f"TRAP Bull candle (body={_bratio:.0%}"
+                    f", buyers={round(_cur_bpct*100)}%"
+                    f"{_fin_note}{_size_note}"
+                    f") buyers exhausted -> PUT (x{_ts})")
+
+    # ── STAR  Morning Star / Evening Star — 3-candle reversal ────────────────
+    # Pattern (oldest→newest): [big directional] → [small/doji = indecision]
+    #                          → [current candle closes back into candle-1]
+    # This is one of the statistically most reliable candlestick reversal signals.
+    # The middle small candle = the market "pausing and questioning the move".
+    if len(candles) >= 3:
+        c1 = candles[-3]
+        c2 = candles[-2]
+        c1_body  = abs(c1["close"] - c1["open"])
+        c2_body  = abs(c2["close"] - c2["open"])
+        c1_range = c1["high"] - c1["low"]
+        c2_range = c2["high"] - c2["low"]
+        if c1_range > 0 and c2_range > 0:
+            c1_bull   = c1["close"] >= c1["open"]
+            c1_strong = c1_body / c1_range >= 0.50    # decisive first candle
+            c2_small  = c2_body / c2_range <= 0.35    # indecision / doji middle
+            c1_mid    = (c1["open"] + c1["close"]) / 2
+
+            # Morning Star: big bear → small body → current closes above c1 midpoint
+            if (not c1_bull) and c1_strong and c2_small and is_bull and c >= c1_mid:
+                bonus, lbl = _sr_bonus(l, True)
+                mag = 2 + (1 if bonus >= 1 else 0)
+                score += mag
+                reasons.append(
+                    f"STAR Morning Star (3-candle rev"
+                    f"{', @' + lbl if lbl else ''}) -> CALL (x{mag})")
+
+            # Evening Star: big bull → small body → current closes below c1 midpoint
+            elif c1_bull and c1_strong and c2_small and (not is_bull) and c <= c1_mid:
+                bonus, lbl = _sr_bonus(h, False)
+                mag = 2 + (1 if bonus >= 1 else 0)
+                score -= mag
+                reasons.append(
+                    f"STAR Evening Star (3-candle rev"
+                    f"{', @' + lbl if lbl else ''}) -> PUT (x{mag})")
+
+    # ── STREAK  Consecutive streak exhaustion ─────────────────────────────────
+    # Count consecutive same-color candles up to and including the just-closed
+    # candle. After 4+ candles of the same colour, momentum is usually exhausted
+    # and mean-reversion pressure builds. Strongest when the streak end price
+    # sits at a key level or round number (rejected after the run = stop-hunt fuel).
+    _streak = 1
+    for _cn in reversed(candles[:-1]):      # walk back from second-to-last
+        if (_cn["close"] >= _cn["open"]) == is_bull:
+            _streak += 1
+        else:
+            break
+        if _streak >= 7:
+            break
+
+    if _streak >= 4:
+        _smag = min(_streak - 2, 3)         # 4→2, 5→3, 6+→3
+        _sbns, _slbl = _sr_bonus(h if is_bull else l, not is_bull)
+        if _sbns >= 1:
+            _smag = min(_smag + 1, 3)       # extra +1 if streak ended at S/R
+        if is_bull:
+            score -= _smag
+            reasons.append(
+                f"STREAK {_streak} bull candles exhausted"
+                f"{', @' + _slbl if _slbl else ''} -> PUT (x{_smag})")
+        else:
+            score += _smag
+            reasons.append(
+                f"STREAK {_streak} bear candles exhausted"
+                f"{', @' + _slbl if _slbl else ''} -> CALL (x{_smag})")
+
+    # HARAMI (small opposite candle inside prior body) was REMOVED (2026-07-03)
+    # after live data showed it below coin-flip (44.4%, n=45) — the "textbook"
+    # 2-candle reversal doesn't hold up in OTC. Same fate as R47 above.
+
+    # THREE (Three White Soldiers) was REMOVED (2026-07-03) after live data
+    # showed it far below coin-flip (20%, n=5) — too rare and unreliable to
+    # keep even at its already-reduced x1 weight.
+
+    # ── OUTSIDE  Three Outside Up (bull only) ────────────────────────────────────
+    # OTC revision: Three Outside Down (bear confirmation of a bear engulf) is
+    # REMOVED — 3 bear candles in OTC = deep seller exhaustion, not continuation.
+    # Three Outside Up (bull confirmation) is kept because buyer momentum is valid.
+    if len(candles) >= 3:
+        _e1 = candles[-3]
+        _e2 = candles[-2]   # = prev
+        _e1b = abs(_e1["close"] - _e1["open"])
+        _e2b = abs(_e2["close"] - _e2["open"])
+        _e1_bull = _e1["close"] >= _e1["open"]
+        _e2_bull = _e2["close"] >= _e2["open"]
+        _e2_engulfed = (
+            _e1b > 0
+            and _e2_bull != _e1_bull
+            and _e2b / _e1b >= 1.0
+        )
+        # Only fire for bull confirmation (Three Outside Up)
+        if _e2_engulfed and is_bull and _e2_bull:
+            bonus, lbl = _sr_bonus(l, True)
+            mag = 2 + (1 if bonus >= 1 else 0)
+            score += mag
+            reasons.append(
+                f"OUTSIDE Three Outside Up (engulf + bull confirm"
+                f"{', @' + lbl if lbl else ''}) -> CALL (x{mag})")
+
+    # ── SPIN  Spinning Top / Doji — indecision at key level → reversal ──────────
+    # A spinning top has a small body (≤30% of range) with significant wicks on
+    # BOTH sides, signalling neither buyers nor sellers could dominate. A doji
+    # is the extreme case (body ≤8%). By itself it's weak noise — but AT a key
+    # level or after a directional streak, it marks the exact moment the trend
+    # ran into a wall, and next candle often reverses.
+    _is_doji   = body / total_range <= 0.08
+    _is_spin   = (
+        body / total_range <= 0.30
+        and upper_wick / total_range >= 0.28
+        and lower_wick / total_range >= 0.28
+    )
+    if _is_doji or _is_spin:
+        _tag = "Doji" if _is_doji else "Spinning Top"
+        _h_bon, _h_lbl = _sr_bonus(h, False)
+        _l_bon, _l_lbl = _sr_bonus(l, True)
+        _prior_bull = prev["close"] >= prev["open"]
+
+        if _h_bon >= 1:
+            _smag = 1 + (1 if _h_bon >= 2 else 0)
+            score -= _smag
+            reasons.append(
+                f"SPIN {_tag} at resistance @{_h_lbl}"
+                f" -> PUT (x{_smag})")
+        elif _l_bon >= 1:
+            _smag = 1 + (1 if _l_bon >= 2 else 0)
+            score += _smag
+            reasons.append(
+                f"SPIN {_tag} at support @{_l_lbl}"
+                f" -> CALL (x{_smag})")
+        elif _streak >= 3 and _is_doji:
+            # Doji after 3+ same-colour candles without S/R — exhaustion context
+            if _prior_bull:
+                score -= 1
+                reasons.append(
+                    f"SPIN Doji after {_streak}-candle bull streak"
+                    f" -> PUT")
+            else:
+                score += 1
+                reasons.append(
+                    f"SPIN Doji after {_streak}-candle bear streak"
+                    f" -> CALL")
+
+    # GAP (candle-to-candle gap reaction) was REMOVED (2026-07-03) after live
+    # data showed it the worst theory in the ensemble (31.2%, n=32) — the
+    # wick-fill/continuation logic did not hold up despite the user-confirmed
+    # OTC behaviour it was modeled on.
+
+    # ── WICKWALL  Repeated wick rejection zone ────────────────────────────────
+    # Problem: _key_levels() needs a SWING PIVOT (a low lower than BOTH
+    # neighbours). Consecutive ranging candles that all put lower wicks at the
+    # same price zone (215.80, 215.80, 215.79, 215.80 ...) are NOT pivots — none
+    # is lower than its neighbors. So that "invisible wall" is missed entirely.
+    #
+    # WICKWALL fixes this: it clusters ALL lower/upper wick tips from the last 12
+    # candles.  3+ tips within ±0.08% = a defended zone. The more touches, the
+    # stronger the wall. When the current candle tests that zone and holds/rejects,
+    # the next candle is very likely to bounce/continue from it.
+    #
+    # Key difference from existing signals:
+    #   _key_levels / T2 / T7  — need formal swing pivots
+    #   MICRO (e/f)             — use tick-level data from DB (not OHLC wicks)
+    #   WICKWALL                — pure OHLC wick clustering, last 12 candles only
+    _sup_walls, _res_walls, _ww_atr = _wick_wall(candles)
+    # ATR-based touch tolerance: current candle's l/h must be within half an
+    # average candle range of the wall to count as "testing" it.
+    _ww_tol   = _ww_atr * 0.50 if _ww_atr > 0 else total_range * 0.50
+    _ww_fired = False
+
+    # Weight scale: 3 wicks = ×1 (tentative), 4 wicks = ×2, 5+ wicks = ×3.
+    # Backtest showed 3-wick cluster was too easy to trigger at ×2 — reduced.
+    def _ww_mag(n: int) -> int:
+        return 3 if n >= 5 else 2 if n >= 4 else 1
+
+    for _wp, _wn in sorted(_sup_walls, key=lambda x: -x[1])[:2]:
+        # Current candle tested the support wall AND closed above it (bounce held)
+        if abs(l - _wp) <= _ww_tol and is_bull:
+            _mag = _ww_mag(_wn)
+            score  += _mag
+            reasons.append(
+                f"WICKWALL {_wn}x lower wicks @{_wp:.5g}"
+                f" low touched + bull close -> CALL (x{_mag})")
+            _ww_fired = True
+            break
+        # Close above wall + low within 2x ATR (zone nearby, bounce extended)
+        if c > _wp + _ww_tol and l < _wp + _ww_tol * 2 and is_bull and _wn >= 4:
+            score  += 1
+            reasons.append(
+                f"WICKWALL {_wn}x lower wicks @{_wp:.5g}"
+                f" zone held + close above -> CALL (x1)")
+            _ww_fired = True
+            break
+
+    if not _ww_fired:
+        for _wp, _wn in sorted(_res_walls, key=lambda x: -x[1])[:2]:
+            # Current candle tested the resistance wall AND closed below it.
+            # PUT-side weight CAPPED at x1 (2026-07-03): live data split the
+            # two sides — CALL (support) side measured 56.7% (n=67, real edge)
+            # but PUT (resistance) side measured only 41.3% (n=63, a drag) —
+            # the wick-cluster read only holds up on the support/bounce side.
+            if abs(h - _wp) <= _ww_tol and not is_bull:
+                score  -= 1
+                reasons.append(
+                    f"WICKWALL {_wn}x upper wicks @{_wp:.5g}"
+                    f" high touched + bear close -> PUT (x1)")
+                break
+            # Close below wall + high within 2x ATR (zone nearby, rejection extended)
+            if c < _wp - _ww_tol and h > _wp - _ww_tol * 2 and not is_bull and _wn >= 4:
+                score  -= 1
+                reasons.append(
+                    f"WICKWALL {_wn}x upper wicks @{_wp:.5g}"
+                    f" zone held + close below -> PUT (x1)")
+                break
+
+    # ── REGIME  Market regime (trend + zone) context ──────────────────────────
+    # Classifies the last 20 candles as UPTREND/DOWNTREND/SIDEWAYS and detects
+    # whether the current price is in a SUPPORT, RESISTANCE or NEUTRAL zone.
+    #
+    # FLIPPED (2026-07-03): a 1564-row audit showed WITH_REGIME (final signal
+    # matches this theory's own original direction) at 44.3% (n=212) vs
+    # COUNTER_REGIME at 54.9% (n=184) — a statistically significant gap
+    # (z≈2.1) in the OPPOSITE direction from the original assumption below.
+    # Same anti-signal pattern already handled for RUN's "Sellers WON" and
+    # T7's "Bear Engulfing" — the raw trend/zone read is real, but OTC
+    # continuation logic on top of it was backwards, so the vote is now
+    # inverted rather than removed outright.
+    _regime, _zone = _market_regime(candles)
+    if _regime == "UPTREND":
+        if _zone == "SUPPORT":
+            score -= 2
+            reasons.append("REGIME UPTREND + SUPPORT zone -> PUT (x2)")
+        elif _zone == "RESISTANCE":
+            score += 1
+            reasons.append("REGIME UPTREND + RESISTANCE zone -> CALL (x1)")
+        elif is_bull:
+            score -= 1
+            reasons.append("REGIME UPTREND + bull candle -> PUT (x1)")
+    elif _regime == "DOWNTREND":
+        if _zone == "RESISTANCE":
+            score += 2
+            reasons.append("REGIME DOWNTREND + RESISTANCE zone -> CALL (x2)")
+        elif _zone == "SUPPORT":
+            score -= 1
+            reasons.append("REGIME DOWNTREND + SUPPORT zone -> PUT (x1)")
+        elif not is_bull:
+            score += 1
+            reasons.append("REGIME DOWNTREND + bear candle -> CALL (x1)")
+    else:  # SIDEWAYS
+        if _zone == "SUPPORT":
+            score -= 2
+            reasons.append("REGIME SIDEWAYS + SUPPORT zone -> PUT (x2)")
+        elif _zone == "RESISTANCE":
+            score += 2
+            reasons.append("REGIME SIDEWAYS + RESISTANCE zone -> CALL (x2)")
+
+    # ── ZIGZAG  Alternating candle pattern detection ───────────────────────────
+    # OTC RNG frequently produces alternating green/red candles because the
+    # random walk oscillates. When 4+ consecutive candles alternate direction,
+    # predicting OPPOSITE of the last candle has meaningful edge.
+    # 6+ alternating: stronger signal (the oscillation is deeply established).
+    # CONTEXT GATE: alternation is a RANGING-market phenomenon — betting on a
+    # reversal every candle inside a trend fights the trend, so ZIGZAG only
+    # votes when the regime is SIDEWAYS. (Live data: ZIGZAG 25% overall.)
+    _zz_predict, _zz_len = _zigzag_signal(candles)
+    if _zz_predict != 0 and _regime == "SIDEWAYS":
+        _zz_mag = 2 if _zz_len >= 6 else 1
+        if _zz_predict > 0:
+            score += _zz_mag
+            reasons.append(
+                f"ZIGZAG {_zz_len}-candle alternating pattern"
+                f" -> CALL (x{_zz_mag})")
+        else:
+            score -= _zz_mag
+            reasons.append(
+                f"ZIGZAG {_zz_len}-candle alternating pattern"
+                f" -> PUT (x{_zz_mag})")
+
+    # ── MICRO  Multi-candle microstructure (DB tick history of prior candles) ─
+    #
+    # These fields come from the tick-level data that was alive INSIDE each
+    # previous candle — information that OHLC alone cannot show:
+    #
+    #   (a) PRESSURE CHAIN   — sustained buyer/seller tick pressure across
+    #                          multiple candles is a genuine trend signal
+    #                          invisible in closes alone.
+    #   (b) EXHAUSTION CHAIN — if 2+ consecutive candles ended their final
+    #                          ticks in exhaustion (opposite side invaded),
+    #                          the trend is genuinely running out of fuel.
+    #   (c) FIGHT BREAKOUT   — two ranging (midpoint-crossing) candles
+    #                          followed by a decisive close = coiled spring.
+    #   (d) LATE-PHASE INVERSION — the final third of ticks in the previous
+    #                          candle moved AGAINST its close direction: smart
+    #                          money defending the reversal, absorbed by the
+    #                          visible candle colour. Next candle likely flips.
+    #   (e) HOLD LEVEL S/R   — the "hold_price" (most-visited price zone
+    #                          inside a candle's ticks) acts as micro S/R. A
+    #                          bounce or rejection there adds confluence.
+    #   (f) PERSISTENT S/R   — a key level appearing in 3+ of the last 5
+    #                          candle snapshots is an extra-strong zone; a
+    #                          reaction there gets a +1 bonus signal.
+    #
+    # micro_history is ordered oldest→newest; [-1] = candle just before current.
+    if micro_history and len(micro_history) >= 2:
+        prev_m = micro_history[-1]
+        hist3  = micro_history[-3:]  # up to 3 most recent prior candles
+
+        # Freshness gate: signals that read prev_m as "the candle immediately
+        # before this one" (recovery, late-phase inversion) are only valid when
+        # it actually IS that candle. After a restart or asset switch the DB
+        # row can be much older — those signals must stay silent then.
+        _per = period or (cur.get("time", 0) - prev.get("time", 0))
+        _prev_fresh = bool(_per) and (
+            prev_m.get("time") == cur.get("time", 0) - _per)
+
+        # ── (a) Pressure Chain ─────────────────────────────────────────────
+        pcts = [m["buy_pct"] for m in hist3 if m.get("buy_pct") is not None]
+        if len(pcts) >= 2:
+            trend  = pcts[-1] - pcts[0]
+            avg    = sum(pcts) / len(pcts)
+
+            # Buyer chain: 3 candles all buyer-dominated + bull candle = continuation.
+            # Seller chain: mirrors RUN "Sellers WON" issue — in OTC, sustained seller
+            # pressure often exhausts sellers. Seller chain score halved to ±1.
+            if len(pcts) >= 3 and all(p >= 62 for p in pcts) and is_bull:
+                score += 2
+                reasons.append(
+                    f"MICRO 3-candle buyer chain"
+                    f" ({'/'.join(str(p) for p in pcts)}% up-ticks)"
+                    f" -> CALL (x2)")
+            elif len(pcts) >= 3 and all(p <= 38 for p in pcts) and not is_bull:
+                score -= 1
+                reasons.append(
+                    f"MICRO 3-candle seller chain"
+                    f" ({'/'.join(str(p) for p in pcts)}% up-ticks)"
+                    f" -> PUT (x1, OTC-reduced)")
+            elif trend >= 20 and pcts[-1] >= 58 and is_bull:
+                score += 1
+                reasons.append(
+                    f"MICRO Buyer pressure rising"
+                    f" ({pcts[0]}%->{pcts[-1]}%) -> CALL")
+            elif trend <= -20 and pcts[-1] <= 42 and not is_bull:
+                score -= 1
+                reasons.append(
+                    f"MICRO Seller pressure rising"
+                    f" ({pcts[0]}%->{pcts[-1]}%) -> PUT")
+            # Cross-candle absorption: sustained pressure but candle closed opposite
+            elif avg >= 62 and not is_bull:
+                score += 1
+                reasons.append(
+                    f"MICRO Buyer pressure ({avg:.0f}% avg) + bear close"
+                    f" = cross-candle absorption -> CALL")
+            elif avg <= 38 and is_bull:
+                score -= 1
+                reasons.append(
+                    f"MICRO Seller pressure ({avg:.0f}% avg) + bull close"
+                    f" = cross-candle absorption -> PUT")
+
+        # ── (b) Exhaustion Chain ───────────────────────────────────────────
+        # DB: 2x exhaustion in last 3 candles = 6R/0W = 100% accuracy.
+        # Score raised from ±2 to ±3 to reflect its actual predictive power.
+        ex_n = sum(1 for m in hist3 if m.get("last_react") == "EXHAUST")
+        if ex_n >= 2:
+            if is_bull:
+                score -= 3
+                reasons.append(
+                    f"MICRO {ex_n}x exhaustion in last"
+                    f" {len(hist3)} candles -> reversal -> PUT (x3)")
+            else:
+                score += 3
+                reasons.append(
+                    f"MICRO {ex_n}x exhaustion in last"
+                    f" {len(hist3)} candles -> reversal -> CALL (x3)")
+
+        # ── (b2) Recovery Continuation ────────────────────────────────────
+        # A recovery in the previous candle means the losing side re-engaged
+        # at the close — they often carry momentum into the next candle.
+        if _prev_fresh and prev_m.get("last_react") == "RECOVERY":
+            p_o    = prev_m.get("open")  or 0
+            p_c    = prev_m.get("close") or 0
+            p_bull = p_c >= p_o
+            if p_bull and is_bull:
+                score += 1
+                reasons.append(
+                    "MICRO Prev candle recovery (bull) confirms continuation"
+                    " -> CALL")
+            elif not p_bull and not is_bull:
+                score -= 1
+                reasons.append(
+                    "MICRO Prev candle recovery (bear) confirms continuation"
+                    " -> PUT")
+
+        # ── (c) Fight-zone Breakout ────────────────────────────────────────
+        # DB: bull breakout = 80% (4R/1W); bear breakout = 50% (6R/6W).
+        # Bull breakout is reliable; bear breakout is coin-flip. Differentiate.
+        fight_n = sum(1 for m in micro_history[-2:] if m.get("is_fight"))
+        if fight_n >= 2 and body / total_range >= 0.50:
+            if is_bull:
+                score += 2
+                reasons.append(
+                    "MICRO 2 fight candles + bull breakout -> CALL (x2)")
+            else:
+                # Bear breakout = 50% in DB: only +1 to avoid dominating signal
+                score -= 1
+                reasons.append(
+                    "MICRO 2 fight candles + bear breakout -> PUT (x1)")
+
+        # ── (d) Phase Inversion (Early/Mid/Late) ────────────────────────────
+        # A candle's own close direction can hide an internal fight: if one
+        # third of its ticks pushed the OPPOSITE way to how it closed, that
+        # invading side often carries into the NEXT candle. Originally only
+        # the LATE third was checked (weighted x3, based on a small early
+        # sample claiming 90%+ accuracy). A fresh 1372-row audit
+        # (2026-07-03) measured all three thirds independently: Early 51.1%
+        # (n=174), Mid 51.9% (n=183), Late 54.3% (n=186) — real (all three
+        # point the same direction) but far more modest than the original
+        # claim, so all three now vote at the same x1 weight instead of
+        # Late's old x3.
+        phases = prev_m.get("phases") or []
+        if _prev_fresh and len(phases) >= 3:
+            p_o    = prev_m.get("open")  or 0
+            p_c    = prev_m.get("close") or 0
+            p_bull = p_c >= p_o
+            for _pidx, _pname in ((0, "early"), (1, "mid"), (2, "late")):
+                _ph = phases[_pidx]
+                # Bear candle but buyers already invaded this third → reversal
+                if _ph == "UP" and not p_bull:
+                    score += 1
+                    reasons.append(
+                        f"MICRO Prev candle: bear close but buyers invaded"
+                        f" {_pname}-phase -> CALL (x1)")
+                # Bull candle but sellers already invaded this third → reversal
+                elif _ph == "DOWN" and p_bull:
+                    score -= 1
+                    reasons.append(
+                        f"MICRO Prev candle: bull close but sellers invaded"
+                        f" {_pname}-phase -> PUT (x1)")
+
+        # ── (e) Congestion Hold Level as S/R ──────────────────────────────
+        # hold_price = most-visited price zone inside a prior candle's ticks.
+        # A bounce or rejection at that zone is meaningful micro S/R.
+        for _m in reversed(micro_history[-4:]):
+            hp = _m.get("hold_price")
+            if not hp or hp <= 0:
+                continue
+            tol = hp * 0.0010          # ±0.10% tolerance
+            if abs(l - hp) <= tol and is_bull:
+                _hbonus = 1 if _key_touches(hp) >= 2 else 0
+                _hmag   = 1 + _hbonus
+                score  += _hmag
+                reasons.append(
+                    f"MICRO Low bounced off congestion hold @{hp:.5g}"
+                    f"{' (key lvl)' if _hbonus else ''}"
+                    f" -> CALL (x{_hmag})")
+                break
+            if abs(h - hp) <= tol and not is_bull:
+                _hbonus = 1 if _key_touches(hp) >= 2 else 0
+                _hmag   = 1 + _hbonus
+                score  -= _hmag
+                reasons.append(
+                    f"MICRO High rejected at congestion hold @{hp:.5g}"
+                    f"{' (key lvl)' if _hbonus else ''}"
+                    f" -> PUT (x{_hmag})")
+                break
+
+        # ── (f) Persistent Key Level — price zone appearing in 3+ of last 5 snapshots ──
+        # A level that keeps reappearing as the "most congested zone" across multiple
+        # candle snapshots is an extra-strong S/R (the market keeps returning there).
+        # If the current candle's low or high reacts at one of these persistent zones,
+        # boost the signal by ±1 (on top of whatever (e) already added).
+        if len(micro_history) >= 3:
+            # Bucket into 0.05%-of-price zones so near-identical levels merge.
+            # (The old code computed a bucket but keyed the dict on the raw
+            # float — exact-equality only — so persistence almost never fired.)
+            _step = (c * 0.0005) or 1e-9
+            _pzones: dict[int, list[float]] = {}
+            for _mh in micro_history[-5:]:
+                for _kl_pair in (_mh.get("key_levels") or []):
+                    try:
+                        _pl, _pt = float(_kl_pair[0]), int(_kl_pair[1])
+                    except (TypeError, IndexError, ValueError):
+                        continue
+                    if _pt < 2:
+                        continue
+                    _pzones.setdefault(round(_pl / _step), []).append(_pl)
+            _persistent = [(sum(v) / len(v), len(v))
+                           for v in _pzones.values() if len(v) >= 3]
+            for _pp, _pn in _persistent:
+                _tol = _pp * 0.0012   # ±0.12% — slightly wider than hold-level check
+                if abs(l - _pp) <= _tol and is_bull:
+                    score += 1
+                    reasons.append(
+                        f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
+                        f" low bounced -> CALL")
+                    break
+                if abs(h - _pp) <= _tol and not is_bull:
+                    score -= 1
+                    reasons.append(
+                        f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
+                        f" high rejected -> PUT")
+                    break
+
+    # ── ATTENUATION  Regime context dampening TREND-FOLLOWING signals ─────────
+    # FLIPPED (2026-07-03) alongside REGIME's own flip above: the 1564-row
+    # audit showed the final signal doing WORSE when it follows the raw trend
+    # (WITH_REGIME 44.3%, n=212) than when it fights it (COUNTER_REGIME
+    # 54.9%, n=184) — and replaying history with REGIME's vote already
+    # flipped showed the SAME gap persisted (44.6% vs 53.8%), proving the
+    # bias wasn't specific to REGIME's own vote but structural (this block
+    # was actively protecting trend-following and suppressing counter-trend,
+    # exactly backwards). Now it dampens/caps the TREND-FOLLOWING side
+    # instead, so counter-trend reads aren't drowned out by it.
+    #
+    # Two cases:
+    #   (a) NEUTRAL zone -> a trend-following vote with no S/R support -> -2
+    #   (b) SUPPORT/RESISTANCE zone -> if a STRONG trend-following signal
+    #       forms right at a zone that would normally favor a bounce, cap it
+    #       to MEDIUM so it doesn't drown out the counter-trend read.
+    if _regime == "DOWNTREND":
+        if _zone == "NEUTRAL" and score < 0:
+            _att = min(2, abs(score))
+            score += _att
+            reasons.append(
+                f"REGIME DOWNTREND+NEUTRAL dampens PUT -> +{_att} (attenuation)")
+        elif _zone == "SUPPORT" and score < -8:
+            _att = abs(score) - 9      # reduce exactly to MEDIUM ceiling
+            if _att > 0:
+                score += _att
+                reasons.append(
+                    f"REGIME DOWNTREND+SUPPORT PUT capped to MEDIUM"
+                    f" -> +{_att} (attenuation)")
+    elif _regime == "UPTREND":
+        if _zone == "NEUTRAL" and score > 0:
+            _att = min(2, score)
+            score -= _att
+            reasons.append(
+                f"REGIME UPTREND+NEUTRAL dampens CALL -> -{_att} (attenuation)")
+        elif _zone == "RESISTANCE" and score > 8:
+            _att = score - 9           # cap CALL at 9 (top of MEDIUM range)
+            if _att > 0:
+                score -= _att
+                reasons.append(
+                    f"REGIME UPTREND+RESISTANCE CALL capped to MEDIUM"
+                    f" -> -{_att} (attenuation)")
+
+    # ── Final ─────────────────────────────────────────────────────────────────
+    signal     = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
+    confidence = round(min(abs(score) / MAX_SCORE, 1.0), 2)
+
+    # AGREEMENT — how many DISTINCT theories vote the winning side. Web research:
+    # a pattern only beats a coin-flip with confirmation, so the count of
+    # independent theories that agree is the best reliability gauge.
+    # Filtered to _ALL_THEORIES (2026-07-03 fix) — REGIME's reason lines still
+    # say "-> CALL/PUT" (it still adjusts score as a filter, see above) but it
+    # must NOT count as a confirming "theory" here, the same way it's already
+    # excluded from theory_votes grading; without this filter REGIME (which
+    # fires on almost every non-SIDEWAYS candle) was cheaply padding `agree`
+    # to 2+ and helping trigger STRONG on signals with no real confirmation.
+    side = "CALL" if score > 0 else "PUT"
+    agree = len({r.split()[0] for r in reasons
+                 if f"-> {side}" in r and r.split()[0] in _ALL_THEORIES})
+    # Thresholds tightened 2026-07-03: a 1594-row audit showed the OLD
+    # agree>=2 bar did NOT separate STRONG (49.4%) from WEAK (52.7%) — STRONG
+    # was actually worse. Raised the bar to agree>=3 (real independent
+    # confirmation, now that REGIME can no longer pad the count for free).
+    # NOTE: this must be re-audited once ~2-4 weeks of fresh data has
+    # accumulated under the new theory weights above (GAP/HARAMI/THREE
+    # removed, T7/MARB/WICKWALL-PUT reduced) — the old bucket rates were
+    # measured under the OLD weights and no longer describe this code.
+    if signal != "NEUTRAL" and agree >= 3 and abs(score) >= 10:
+        strength = "STRONG"
+    elif signal != "NEUTRAL" and (agree >= 2 and abs(score) >= 5):
+        strength = "MEDIUM"
+    else:
+        strength = "WEAK"
+
+    return {
+        "signal":     signal,
+        "score":      score,
+        "confidence": confidence,
+        "agree":      agree,
+        "strength":   strength,
+        "reasons":    reasons,
+        # Formal swing-pivot levels (40-candle lookback, 2+ touches).
+        "key_levels": [[round(p, 6), t] for p, t in
+                       sorted(_klevels, key=lambda x: -x[1])[:20]],
+        # Wick-clustering levels (12-candle lookback, 3+ touches) — a SEPARATE,
+        # looser detection that catches repeated-wick zones with no formal
+        # pivot (see WICKWALL's own docstring above). Purely visual/context —
+        # only WICKWALL's own vote (already in `reasons`/score) uses these for
+        # scoring; exposing the raw clusters lets the chart draw them too.
+        "wick_walls": {
+            "support":    [[round(p, 6), t] for p, t in
+                           sorted(_sup_walls, key=lambda x: -x[1])[:10]],
+            "resistance": [[round(p, 6), t] for p, t in
+                           sorted(_res_walls, key=lambda x: -x[1])[:10]],
+        },
+        "regime":     {"trend": _regime, "zone": _zone},
+        "zigzag":     {"length": _zz_len, "predict": _zz_predict},
+    }

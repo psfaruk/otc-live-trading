@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Plybit AI — Binary Trading</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ── Header ──────────────────────────────────────────────────── -->
+    <header id="header">
+      <div class="logo">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <polygon points="11,1 21,6 21,16 11,21 1,16 1,6" fill="#448aff" opacity="0.9"/>
+          <polygon points="11,5 17,8.5 17,15.5 11,19 5,15.5 5,8.5" fill="#0a0a0f"/>
+          <circle cx="11" cy="12" r="3" fill="#448aff"/>
+        </svg>
+        <span class="logo-text">PLYBIT <em>AI</em></span>
+      </div>
+      <div class="header-right">
+        <div id="winrate-wrap" title="Win rate (this pair / timeframe)">
+          <span class="cdl">Win</span>
+          <span id="winrate">--</span>
+        </div>
+        <div id="countdown-wrap">
+          <span class="cdl">Next</span>
+          <span id="countdown">--</span>
+        </div>
+        <div id="status" class="status disconnected">● Connecting</div>
+      </div>
+    </header>
+
+    <!-- ── Controls ────────────────────────────────────────────────── -->
+    <div id="controls">
+      <select id="pair-select" class="ctrl-select pair-sel" title="Select trading pair"></select>
+      <span id="mkt-badge" class="mkt-badge hidden"></span>
+      <span id="regime-badge" class="regime-badge hidden"></span>
+      <div class="tf-group">
+        <button class="tf-btn" data-period="30">30s</button>
+        <button class="tf-btn active" data-period="60">1m</button>
+        <button class="tf-btn" data-period="300">5m</button>
+        <button class="tf-btn" data-period="900">15m</button>
+      </div>
+    </div>
+
+    <!-- ── Signal Bar ──────────────────────────────────────────────── -->
+    <div id="signal-bar" class="hidden">
+      <div id="signal-badge" class="signal-badge neutral">–</div>
+      <div class="signal-meta">
+        <div id="signal-score">–</div>
+        <div class="conf-bar-wrap"><div id="signal-conf-bar" class="conf-bar"></div></div>
+        <div id="signal-conf">–</div>
+        <div id="signal-payout" class="hidden"></div>
+      </div>
+      <div id="entry-timing" class="entry-timing hidden"></div>
+      <div id="accuracy-wrap" class="hidden">
+        <span id="accuracy-label"></span>
+      </div>
+      <div id="running-conf" class="running-conf hidden"></div>
+    </div>
+
+    <!-- ── Accuracy history strip ──────────────────────────────────── -->
+    <div id="accuracy-strip" class="hidden"></div>
+
+    <!-- ── Main area: chart + side panel ──────────────────────────── -->
+    <div id="main">
+      <div id="chart-wrap">
+        <div id="chart"></div>
+        <div id="chart-loading" class="hidden">
+          <div class="loading-spinner"></div>
+          <div class="loading-text">Loading chart data…</div>
+        </div>
+        <div id="no-data" class="hidden">
+          <div class="no-data-icon">⚠</div>
+          <div class="no-data-text">No live data</div>
+          <div class="no-data-sub" id="no-data-sub-text">This pair isn't streaming — select an OTC pair</div>
+        </div>
+        <div id="fatal-error" class="hidden">
+          <div class="no-data-icon">⛔</div>
+          <div class="no-data-text" id="fatal-error-text">Chart failed to load</div>
+          <div class="no-data-sub" id="fatal-error-sub">Retrying…</div>
+        </div>
+      </div>
+      <aside id="side-panel">
+
+        <!-- TRUE per-theory accuracy (from DB WHY report) -->
+        <div class="panel-title">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
+        <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
+
+        <!-- Key levels active on chart -->
+        <div class="panel-title panel-title-gap">Key Levels</div>
+        <ul id="key-levels-list"><li class="empty">–</li></ul>
+
+        <!-- Live microstructure -->
+        <div class="panel-title panel-title-gap">Live Flow</div>
+        <div id="micro-wrap" class="micro-wrap hidden">
+          <div class="micro-pressure-row">
+            <span id="micro-buy-pct" class="micro-buy">B 50%</span>
+            <div class="micro-bar-track">
+              <div id="micro-bar-fill" class="micro-bar-fill micro-bar-init"></div>
+            </div>
+            <span id="micro-sell-pct" class="micro-sell">S 50%</span>
+          </div>
+          <div id="micro-pressure" class="micro-tag">–</div>
+          <div id="micro-fight"    class="micro-tag hidden">⚡ Fight Zone</div>
+          <div id="micro-trap"     class="micro-tag hidden"></div>
+          <div id="micro-zigzag"   class="micro-tag hidden"></div>
+          <div id="micro-last-react" class="micro-tag hidden">–</div>
+          <div id="micro-round"     class="micro-tag hidden">–</div>
+          <div id="micro-reaction"  class="micro-tag hidden">–</div>
+          <div class="micro-phases-row">
+            <span class="micro-phase-lbl">Early</span>
+            <span id="micro-phase-0" class="micro-phase">–</span>
+            <span class="micro-phase-lbl">Mid</span>
+            <span id="micro-phase-1" class="micro-phase">–</span>
+            <span class="micro-phase-lbl">Late</span>
+            <span id="micro-phase-2" class="micro-phase">–</span>
+          </div>
+          <div class="micro-hold-row">
+            <span class="micro-hold-lbl">Hold zone</span>
+            <span id="micro-hold-price">–</span>
+          </div>
+        </div>
+        <div id="micro-forming" class="micro-forming">Collecting ticks…</div>
+
+        <div class="panel-title panel-title-gap">EOC Analysis</div>
+        <div id="eoc-summary" class="eoc-summary">–</div>
+        <ul id="reasons-list"></ul>
+
+        <div class="panel-title panel-title-gap">Theories</div>
+        <ul id="theory-legend">
+          <li><span class="t-num">RUN</span> Tick pressure (effort vs result)</li>
+          <li><span class="t-num">T7</span> Engulfing @key level</li>
+          <li><span class="t-num">T2</span> Pin bar @key level</li>
+          <li><span class="t-num">TRAP</span> Liquidity trap / exhaustion</li>
+          <li><span class="t-num">MARB</span> Marubozu momentum</li>
+          <li><span class="t-num">STAR</span> Morning/Evening Star</li>
+          <li><span class="t-num">STREAK</span> 4+ candle streak exhaustion</li>
+          <li><span class="t-num">SWEEP</span> Liquidity sweep / stop-hunt</li>
+          <li><span class="t-num">MICRO</span> Tick microstructure signals</li>
+          <li><span class="t-num">HARAMI</span> Indecision inside bar</li>
+          <li><span class="t-num">THREE</span> Three-candle reversal</li>
+          <li><span class="t-num">OUTSIDE</span> Outside bar engulf</li>
+          <li><span class="t-num">SPIN</span> Spinning top uncertainty</li>
+          <li><span class="t-num">GAP</span> Gap-open signal</li>
+          <li><span class="t-num">REGIME</span> Market trend + zone context</li>
+          <li><span class="t-num">ZIGZAG</span> Alternating candle pattern</li>
+          <li><span class="t-num">WICKWALL</span> Repeated wick rejection zone</li>
+        </ul>
+      </aside>
+    </div>
+
+  </div><!-- #app -->
+
+  <!-- TradingView Lightweight Charts v4 — self-hosted (not loaded from a CDN)
+       so browser tracking-prevention (e.g. Edge blocking unpkg.com) can't
+       break chart initialization. -->
+  <script src="lightweight-charts.standalone.production.js"></script>
+  <script src="chart.js"></script>
+</body>
+</html>
