@@ -17,7 +17,9 @@ let reconnTimer = null;
 
 let currentAsset   = 'EURUSD_otc';
 let currentPeriod  = 60;
-let pairsList      = [];          // [{asset, display, status}] — unified list
+let pairsList      = [];          // [{asset, display, status, payout, locked}] — unified list
+let payoutFloor    = 81;          // min payout % a pair needs to be streamable — server-authoritative
+let pairSearchTerm = '';          // live filter typed into #pair-search
 let lastPrediction = null;
 let lastDataAt     = 0;           // Date.now() of the last real candle/tick update
 
@@ -411,6 +413,8 @@ async function sendSubscribe() {
     if (data.ok === false) {
       const msg = data.status === 'at_capacity'
         ? `Server is at capacity (${data.max} pairs live) — try again shortly`
+        : data.status === 'locked'
+        ? (data.reason || `This pair needs ${payoutFloor}% payout to open`)
         : `Cooling down after connection errors — retry in ~${Math.ceil(data.retry_after || 5)}s`;
       showNoData(true, msg);
       return;
@@ -438,6 +442,7 @@ function handleMsg(msg, perfNow) {
 
     case 'pairs':
       pairsList = msg.pairs || [];
+      if (typeof msg.payout_floor === 'number') payoutFloor = msg.payout_floor;
       renderPairSelect();
       break;
 
@@ -741,21 +746,6 @@ function updateSignalUI(pred) {
   conf.textContent = `Confidence ${confPct}%`;
   conf.title = 'Signal intensity (how strongly theories agree) — not a measured win probability.';
 
-  // Payout / breakeven — NOT a predictive signal, just the economic bar a
-  // real win-rate has to clear at this asset's current payout to be worth
-  // trading (payout varies per asset and drifts over time).
-  const payoutEl = document.getElementById('signal-payout');
-  if (payoutEl) {
-    if (typeof pred.payout === 'number') {
-      const breakeven = (100 / (100 + pred.payout) * 100).toFixed(1);
-      payoutEl.textContent = `Payout ${pred.payout}%  ·  breakeven ${breakeven}%`;
-      payoutEl.title = 'Win rate needed at this payout just to break even (before any edge).';
-      payoutEl.classList.remove('hidden');
-    } else {
-      payoutEl.classList.add('hidden');
-    }
-  }
-
   // Confidence bar
   const bar2 = document.getElementById('signal-conf-bar');
   if (bar2) {
@@ -827,60 +817,56 @@ async function loadPairs() {
   try {
     const data = await fetch('/api/pairs').then((r) => r.json());
     pairsList = data.pairs || [];
+    if (typeof data.payout_floor === 'number') payoutFloor = data.payout_floor;
   } catch (_) {
     pairsList = [
-      { asset: 'EURUSD_otc', display: 'EUR/USD OTC', status: 'otc' },
-      { asset: 'GBPUSD_otc', display: 'GBP/USD OTC', status: 'otc' },
-      { asset: 'USDJPY_otc', display: 'USD/JPY OTC', status: 'otc' },
+      { asset: 'EURUSD_otc', display: 'EUR/USD', status: 'otc', payout: null, locked: false },
+      { asset: 'GBPUSD_otc', display: 'GBP/USD', status: 'otc', payout: null, locked: false },
+      { asset: 'USDJPY_otc', display: 'USD/JPY', status: 'otc', payout: null, locked: false },
     ];
   }
   renderPairSelect();
 }
 
-function _category(assetName) {
-  const base = assetName.replace('_otc', '').toUpperCase();
-  if (/^(BTC|ETH|LTC|XRP|BNB|ADA|AVAX|DOT|DOGE|SOL|BONK|PEPE|HMSTR)/.test(base)) return 'Crypto';
-  if (/^(XAU|XAG|USOIL|UKBRENT)/.test(base)) return 'Commodities';
-  if (base.length <= 5 && !/^(NZDUS|AUDNZ|CADCH|CHFJP|AUDCA)/.test(base)) return 'Stocks';
-  return 'Forex';
-}
-
+// Server now only ever sends forex pairs, already sorted active-before-
+// closed, unlocked-before-locked, highest payout first — a flat list, no
+// category grouping needed.
 function renderPairSelect() {
-  const sel = document.getElementById('pair-select');
+  const sel  = document.getElementById('pair-select');
+  const term = pairSearchTerm.trim().toLowerCase();
+  // Filtering only narrows what's SHOWN — never drop the currently
+  // selected pair out of the list just because it doesn't match, or its
+  // own option (and therefore sel.value) would vanish mid-search.
+  const shown = term
+    ? pairsList.filter((p) => p.asset === currentAsset ||
+        p.display.toLowerCase().includes(term) || p.asset.toLowerCase().includes(term))
+    : pairsList;
   sel.innerHTML = '';
 
-  const groups = { Forex: [], Crypto: [], Commodities: [], Stocks: [] };
-  pairsList.forEach((p) => {
-    const cat = _category(p.asset);
-    (groups[cat] = groups[cat] || []).push(p);
-  });
+  shown.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = p.asset;
+    const payoutStr = typeof p.payout === 'number' ? ` (${p.payout}%)` : '';
 
-  const ORDER = ['Forex', 'Crypto', 'Commodities', 'Stocks'];
-  ORDER.forEach((cat) => {
-    const items = groups[cat];
-    if (!items || !items.length) return;
-    const grp = document.createElement('optgroup');
-    grp.label = cat;
-    items.forEach((p) => {
-      const opt = document.createElement('option');
-      opt.value = p.asset;
-      if (p.status === 'live') {
-        opt.textContent = '● ' + p.display + ' [LIVE]';
-      } else if (p.status === 'closed') {
-        opt.textContent = p.display + ' [closed]';
+    if (p.status === 'closed') {
+      opt.textContent = p.display + ' [closed]';
+      opt.disabled    = true;
+      opt.style.color = '#444455';
+    } else {
+      const suffix = p.status === 'live' ? 'Real' : 'Otc';
+      opt.textContent = (p.status === 'live' ? '● ' : '') + p.display + ' ' + suffix + payoutStr;
+      if (p.locked) {
+        opt.textContent += ` — needs ${payoutFloor}%`;
         opt.disabled    = true;
         opt.style.color = '#444455';
-      } else {
-        opt.textContent = p.display;
       }
-      grp.appendChild(opt);
-    });
-    sel.appendChild(grp);
+    }
+    sel.appendChild(opt);
   });
 
-  const has = pairsList.some((p) => p.asset === currentAsset && p.status !== 'closed');
+  const has = pairsList.some((p) => p.asset === currentAsset && p.status !== 'closed' && !p.locked);
   if (!has) {
-    const first = pairsList.find((p) => p.status !== 'closed');
+    const first = pairsList.find((p) => p.status !== 'closed' && !p.locked);
     currentAsset = first?.asset || pairsList[0]?.asset || currentAsset;
   }
   sel.value = currentAsset;
@@ -893,7 +879,7 @@ function _updateMktBadge() {
   const p  = pairsList.find((x) => x.asset === currentAsset);
   const st = p?.status || '';
   badge.className   = `mkt-badge ${st}`;
-  badge.textContent = st === 'live' ? 'LIVE' : st === 'otc' ? 'OTC' : st === 'closed' ? 'CLOSED' : '';
+  badge.textContent = st === 'live' ? 'Real' : st === 'otc' ? 'Otc' : st === 'closed' ? 'CLOSED' : '';
   badge.classList.toggle('hidden', !st || st === 'unknown');
 }
 
@@ -903,14 +889,15 @@ document.getElementById('pair-select').addEventListener('change', (e) => {
   resetAndSubscribe();
 });
 
-document.querySelectorAll('.tf-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tf-btn').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentPeriod = parseInt(btn.dataset.period, 10);
-    if (chart) chart.applyOptions({ timeScale: { secondsVisible: currentPeriod <= 60 } });
-    resetAndSubscribe();
-  });
+document.getElementById('pair-search').addEventListener('input', (e) => {
+  pairSearchTerm = e.target.value;
+  renderPairSelect();
+});
+
+document.getElementById('tf-select').addEventListener('change', (e) => {
+  currentPeriod = parseInt(e.target.value, 10);
+  if (chart) chart.applyOptions({ timeScale: { secondsVisible: currentPeriod <= 60 } });
+  resetAndSubscribe();
 });
 
 function resetAndSubscribe() {
@@ -1120,6 +1107,12 @@ function openHistory() {
 function closeHistory() {
   document.getElementById('history-modal').classList.add('hidden');
 }
+
+// Full page reload — simplest reliable fix for a chart that's stuck showing
+// stale/missing data (bad WS state, a pair that never got its snapshot,
+// etc.): re-establishes the WS connection, refetches pairs, and rebuilds
+// the chart from scratch rather than trying to patch whatever's wrong.
+document.getElementById('refresh-btn').addEventListener('click', () => location.reload());
 
 document.getElementById('history-btn').addEventListener('click', openHistory);
 document.getElementById('history-close').addEventListener('click', closeHistory);

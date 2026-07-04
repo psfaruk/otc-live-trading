@@ -12,15 +12,18 @@
 
     <!-- ── Header ──────────────────────────────────────────────────── -->
     <header id="header">
-      <div class="logo">
-        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-          <polygon points="11,1 21,6 21,16 11,21 1,16 1,6" fill="#448aff" opacity="0.9"/>
-          <polygon points="11,5 17,8.5 17,15.5 11,19 5,15.5 5,8.5" fill="#0a0a0f"/>
-          <circle cx="11" cy="12" r="3" fill="#448aff"/>
-        </svg>
-        <span class="logo-text">PLYBIT <em>AI</em></span>
+      <div class="header-top">
+        <div class="logo">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <polygon points="11,1 21,6 21,16 11,21 1,16 1,6" fill="#448aff" opacity="0.9"/>
+            <polygon points="11,5 17,8.5 17,15.5 11,19 5,15.5 5,8.5" fill="#0a0a0f"/>
+            <circle cx="11" cy="12" r="3" fill="#448aff"/>
+          </svg>
+          <span class="logo-text">PLYBIT <em>AI</em></span>
+        </div>
+        <div id="status" class="status disconnected">● Connecting</div>
       </div>
-      <div class="header-right">
+      <div class="header-stats">
         <div id="winrate-wrap" title="Win rate (this pair / timeframe)">
           <span class="cdl">Win</span>
           <span id="winrate">--</span>
@@ -29,8 +32,8 @@
           <span class="cdl">Next</span>
           <span id="countdown">--</span>
         </div>
+        <button type="button" id="refresh-btn" class="history-btn" title="Refresh the app (chart, pairs, connection)">↻</button>
         <button type="button" id="history-btn" class="history-btn" title="View past signal history">History</button>
-        <div id="status" class="status disconnected">● Connecting</div>
       </div>
     </header>
 
@@ -68,15 +71,16 @@
 
     <!-- ── Controls ────────────────────────────────────────────────── -->
     <div id="controls">
+      <input type="text" id="pair-search" class="ctrl-select pair-search" placeholder="Search…" title="Filter the pair list" />
       <select id="pair-select" class="ctrl-select pair-sel" title="Select trading pair"></select>
       <span id="mkt-badge" class="mkt-badge hidden"></span>
+      <select id="tf-select" class="ctrl-select tf-select" title="Candle timeframe">
+        <option value="30">30s</option>
+        <option value="60" selected>1m</option>
+        <option value="300">5m</option>
+        <option value="900">15m</option>
+      </select>
       <span id="regime-badge" class="regime-badge hidden"></span>
-      <div class="tf-group">
-        <button class="tf-btn" data-period="30">30s</button>
-        <button class="tf-btn active" data-period="60">1m</button>
-        <button class="tf-btn" data-period="300">5m</button>
-        <button class="tf-btn" data-period="900">15m</button>
-      </div>
     </div>
 
     <!-- ── Signal Bar ──────────────────────────────────────────────── -->
@@ -86,7 +90,6 @@
         <div id="signal-score">–</div>
         <div class="conf-bar-wrap"><div id="signal-conf-bar" class="conf-bar"></div></div>
         <div id="signal-conf">–</div>
-        <div id="signal-payout" class="hidden"></div>
       </div>
       <div id="entry-timing" class="entry-timing hidden"></div>
       <div id="accuracy-wrap" class="hidden">

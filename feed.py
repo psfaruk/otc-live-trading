@@ -8,42 +8,66 @@ Flow (per asset, all sharing ONE Quotex connection/login):
   4. Aggregate ticks → running OHLC candle
   5. On new candle period → EOC analysis → prediction
 
-Streams are created ON DEMAND (only when a viewer requests that asset via
-/api/subscribe) and torn down when idle, so load scales with actual
-simultaneous distinct-pair viewers rather than the size of the pair catalog —
-see the manager-level capacity/cooldown/staggering logic below, which exists
-specifically so many viewers sharing one personal Quotex account can't
-accidentally hammer Quotex into looking like a bot/signal-service and risking
-the account.
+Only forex pairs are ever streamed (see _FOREX_BASES). Each forex pair whose
+live 1-minute payout is >= PAYOUT_FLOOR runs as an ALWAYS-ON 1m stream,
+started at boot / on each pairs refresh and never idle-evicted (see
+_reconcile_always_on) — this exists so switching between tradeable pairs is
+instant instead of hitting a cold-start gap. Pairs below the payout floor are
+blocked from streaming entirely (ensure_stream rejects them outright).
+Everything else (other timeframes on an always-on pair, or any pair a viewer
+opens directly) is still created ON DEMAND (only when a viewer requests it
+via /api/subscribe) and torn down when idle — see the manager-level
+capacity/cooldown/staggering logic below, which exists specifically so many
+viewers sharing one personal Quotex account can't accidentally hammer Quotex
+into looking like a bot/signal-service and risking the account.
 """
 import asyncio
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from analyze_eoc import analyze_eoc, _round_level, _key_levels, _parse_votes
 import db as _db
 
+# Minimum live 1-minute payout % for a forex pair to be tradeable in this
+# app — pairs below this are blocked from streaming outright (not just from
+# always-on pre-warming), matching the win-rate-needs-to-clear-payout math
+# already shown in the signal bar (see stream.payout / signal-payout in
+# chart.js). Overridable per-deployment since Quotex's payout schedule can
+# vary by broker account/region.
+PAYOUT_FLOOR = int(os.environ.get("QX_PAYOUT_FLOOR", "81"))
+
 # ── Fallback display-name helper ─────────────────────────────────────────────
-_COMMODITY_NAMES = {
-    "XAUUSD": "Gold", "XAGUSD": "Silver",
-    "USOIL": "US Oil", "UKBRENT": "UK Brent",
-}
-
 def _api_to_display(api_name: str) -> str:
-    """Convert Quotex API asset name to a readable display string."""
-    is_otc = api_name.endswith("_otc")
-    base   = api_name[:-4] if is_otc else api_name
-    suffix = " OTC" if is_otc else ""
-    if base in _COMMODITY_NAMES:
-        return _COMMODITY_NAMES[base] + suffix
+    """Convert a Quotex forex asset code to a readable display string, e.g.
+    "EURUSD_otc" -> "EUR/USD". Only used before a live connection exists (no
+    Quotex-supplied display string to draw on yet) — see _clean_display for
+    why the live path doesn't reconstruct names from the code this way."""
+    base = api_name[:-4] if api_name.endswith("_otc") else api_name
     if len(base) == 6 and base.isalpha():
-        return base[:3] + "/" + base[3:] + suffix
-    return base + suffix
+        return base[:3] + "/" + base[3:]
+    return base
 
 
-# ── Fallback pair list (shown while Quotex instruments load) ─────────────────
-_FALLBACK_ASSETS = [
+_OTC_SUFFIX_RE = re.compile(r"\s*\(otc\)\s*$", re.IGNORECASE)
+
+def _clean_display(raw_display: str) -> str:
+    """Strip Quotex's own "(OTC)" suffix from its raw instrument display
+    string — the frontend adds its own "Otc"/"Real" suffix uniformly (see
+    renderPairSelect in chart.js), so keeping Quotex's would double it up.
+    Deliberately uses Quotex's own display string rather than reconstructing
+    one from the asset code (_api_to_display): a pair's code doesn't always
+    match the base/quote ORDER Quotex itself displays it in — confirmed live,
+    BRLUSD_otc's actual Quotex display is "USD/BRL", not "BRL/USD"."""
+    return _OTC_SUFFIX_RE.sub("", raw_display.replace("\n", "")).strip()
+
+
+# ── Pair catalog, split by category ──────────────────────────────────────────
+# The app now only ever streams/lists forex pairs (see _load_pairs) — the
+# other categories are kept here only as documentation of what's excluded,
+# and so re-adding a category later is a one-line change.
+_FOREX_OTC = [
     # Forex majors OTC
     "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "USDCHF_otc",
     "AUDUSD_otc", "NZDUSD_otc", "USDCAD_otc",
@@ -57,18 +81,29 @@ _FALLBACK_ASSETS = [
     # Forex exotics OTC
     "USDMXN_otc", "USDTRY_otc", "USDPKR_otc", "USDCOP_otc",
     "USDBDT_otc", "INRUSD_otc", "EURSGD_otc",
-    "BRLUSD_otc", "ARSUSD_otc", "DZDUSD_otc",
-    # Stocks OTC
+    "BRLUSD_otc", "USDARS_otc", "USDDZD_otc",
+]
+_STOCKS_OTC = [
     "MSFT_otc", "INTC_otc", "JNJ_otc", "AXP_otc",
     "BA_otc",   "META_otc", "MCD_otc", "PFE_otc",
-    # Crypto OTC
-    "BTCUSD_otc", "ETHUSD_otc",
-    # Commodities OTC
-    "XAUUSD_otc", "XAGUSD_otc", "USOIL_otc", "UKBRENT_otc",
 ]
+_CRYPTO_OTC = ["BTCUSD_otc", "ETHUSD_otc"]
+_COMMODITIES_OTC = ["XAUUSD_otc", "XAGUSD_otc", "USOIL_otc", "UKBRENT_otc"]
+
+# Logical base symbols (no _otc suffix) that count as forex — used to filter
+# the REAL Quotex instrument list in _load_pairs, not just this fallback. A
+# curated whitelist rather than a "3-letter currency code" regex deliberately:
+# XAU/XAG are real ISO-4217 codes too, so a currency-code heuristic would
+# misclassify gold/silver (XAUUSD/XAGUSD) as forex.
+_FOREX_BASES = {a[:-4] if a.endswith("_otc") else a for a in _FOREX_OTC}
+
+# Fallback pair list (shown while Quotex instruments load) — forex only, to
+# match what _load_pairs serves once connected.
+_FALLBACK_ASSETS = _FOREX_OTC
 
 _DEFAULT_PAIRS: list[dict] = [
-    {"asset": a, "display": _api_to_display(a), "status": "otc"}
+    {"asset": a, "display": _api_to_display(a), "status": "otc",
+     "payout": None, "locked": False}
     for a in _FALLBACK_ASSETS
 ]
 
@@ -183,6 +218,9 @@ class _AssetStream:
     payout: int | None = None
     sub_started: bool = False           # start_candles_stream() issued at least once
     task: object = None                 # the asyncio.Task running this stream
+    # Server pre-warmed this pair (payout >= PAYOUT_FLOOR) — immune to idle
+    # eviction while true. See QuotexFeed._reconcile_always_on.
+    always_on: bool = False
     interested_cids: set = field(default_factory=set)   # viewer client-ids watching
     idle_since: float | None = None
     created_at: float = field(default_factory=time.time)
@@ -210,7 +248,10 @@ class QuotexFeed:
         # ── Multi-asset stream management (replaces the old singleton
         # asset/candles/ticks/... fields) ───────────────────────────────────
         self._streams: dict[tuple[str, int], _AssetStream] = {}
-        self._max_streams     = int(os.environ.get("QX_MAX_STREAMS", "20"))
+        # Default covers ~38 always-on forex pairs (see _reconcile_always_on)
+        # plus headroom for on-demand non-1m streams and the brief overlap
+        # window when a pair's real/otc asset code swaps.
+        self._max_streams     = int(os.environ.get("QX_MAX_STREAMS", "45"))
         # Held across a stream's whole start sequence (start_candles_stream +
         # history fetch) — staggers concurrent starts AND serializes history
         # fetches, closing a real race in pyquotex's Strategy-2 history
@@ -232,30 +273,44 @@ class QuotexFeed:
     # ── Public ────────────────────────────────────────────────────────────────
 
     def available_pairs(self) -> dict:
-        return {"pairs": self._pairs_list}
+        return {"pairs": self._pairs_list, "payout_floor": PAYOUT_FLOOR}
 
     async def _load_pairs(self, broadcast=None) -> None:
         """
-        Fetch all Quotex instruments and build a UNIFIED pair list.
+        Fetch all Quotex instruments and build a UNIFIED, FOREX-ONLY pair list.
 
-        Each logical pair (e.g. EUR/USD) appears exactly ONCE:
+        Each logical forex pair (e.g. EUR/USD) appears exactly ONCE:
           - status="live"   → real market open  → asset = "EURUSD"
           - status="otc"    → real closed, OTC open → asset = "EURUSD_otc"
           - status="closed" → both closed → asset = real (or OTC) name, disabled
+
+        Non-forex instruments (crypto/commodities/stocks) are dropped
+        entirely — this app only ever streams forex (see _FOREX_BASES).
+
+        Each live/otc pair also carries its 1-minute payout % and a
+        "locked" flag (payout < PAYOUT_FLOOR) — locked pairs are shown
+        disabled and ensure_stream() refuses to start a stream for them.
         """
         try:
             instruments = await self._client.get_instruments()
             if not instruments:
                 return
 
-            # Group by logical base name
+            # Group by logical base name (forex only)
             by_base: dict[str, dict] = {}
             for i in instruments:
-                name     = i[1]
-                display  = i[2].replace("\n", "").strip()
-                is_open  = bool(i[14])
-                is_otc   = name.endswith("_otc")
-                base     = name[:-4] if is_otc else name
+                name   = i[1]
+                is_otc = name.endswith("_otc")
+                base   = name[:-4] if is_otc else name
+                if base not in _FOREX_BASES:
+                    continue
+
+                is_open = bool(i[14])
+                payout  = i[-9]   # 1-minute payout %, same field pyquotex's
+                try:              # own get_payout_by_asset()/get_payment() read
+                    payout = int(payout) if payout is not None else None
+                except (TypeError, ValueError):
+                    payout = None
 
                 if base not in by_base:
                     by_base[base] = {}
@@ -263,8 +318,9 @@ class QuotexFeed:
                 key = "otc" if is_otc else "real"
                 by_base[base][key] = {
                     "asset":   name,
-                    "display": display or _api_to_display(name),
+                    "display": _clean_display(i[2]) or _api_to_display(name),
                     "open":    is_open,
+                    "payout":  payout,
                 }
 
             # Build unified list: one entry per logical pair
@@ -274,39 +330,44 @@ class QuotexFeed:
                 otc  = v.get("otc")
 
                 if real and real["open"]:
-                    pairs.append({
-                        "asset":   real["asset"],
-                        "display": real["display"],
-                        "status":  "live",
-                    })
+                    chosen, status = real, "live"
                 elif otc and otc["open"]:
-                    pairs.append({
-                        "asset":   otc["asset"],
-                        "display": otc["display"],
-                        "status":  "otc",
-                    })
+                    chosen, status = otc, "otc"
                 else:
-                    # Both closed — show real (or OTC) as disabled
-                    fb = real or otc
-                    pairs.append({
-                        "asset":   fb["asset"],
-                        "display": fb["display"],
-                        "status":  "closed",
-                    })
+                    chosen, status = (real or otc), "closed"
 
-            # Sort: live → otc → closed, then alphabetically within each group
-            _ord = {"live": 0, "otc": 1, "closed": 2}
-            pairs.sort(key=lambda x: (_ord[x["status"]], x["display"].upper()))
+                # Missing payout data defaults to locked (safe default, not
+                # an accidental bypass of the payout gate).
+                payout = chosen["payout"]
+                locked = status in ("live", "otc") and (
+                    payout is None or payout < PAYOUT_FLOOR)
+
+                pairs.append({
+                    "asset":   chosen["asset"],
+                    "display": chosen["display"],
+                    "status":  status,
+                    "payout":  payout,
+                    "locked":  locked,
+                })
+
+            # Sort: active (live/otc) before closed, unlocked before locked,
+            # then highest payout first — the pairs actually worth picking
+            # float to the top instead of being buried alphabetically.
+            pairs.sort(key=lambda x: (
+                x["status"] == "closed", x["locked"],
+                -(x["payout"] or 0), x["display"].upper()))
 
             self._pairs_list        = pairs
             self._last_pairs_refresh = time.time()
-            print(f"[feed] pairs loaded: {len(pairs)} logical pairs "
+            print(f"[feed] pairs loaded: {len(pairs)} forex pairs "
                   f"({sum(1 for p in pairs if p['status']=='live')} live, "
                   f"{sum(1 for p in pairs if p['status']=='otc')} OTC, "
-                  f"{sum(1 for p in pairs if p['status']=='closed')} closed)")
+                  f"{sum(1 for p in pairs if p['status']=='closed')} closed, "
+                  f"{sum(1 for p in pairs if p['locked'])} locked <{PAYOUT_FLOOR}%)")
 
             if broadcast:
-                await broadcast({"type": "pairs", "pairs": pairs})
+                await broadcast({"type": "pairs", "pairs": pairs,
+                                  "payout_floor": PAYOUT_FLOOR})
 
         except Exception as exc:
             print(f"[feed] pairs load error: {exc}")
@@ -349,6 +410,17 @@ class QuotexFeed:
             # first broadcast.
             return {"ok": True, "status": "streaming", "asset": asset, "period": period,
                     "candles": stream.candles[-300:], "prediction": stream.prediction}
+
+        # Payout gate — only blocks starting a BRAND NEW stream, same as the
+        # cooldown/capacity checks below. If a pair's payout later drifts
+        # below the floor, anyone already watching keeps their stream (see
+        # _reconcile_always_on, which only ever demotes always_on, never
+        # tears the stream down).
+        pair = next((p for p in self._pairs_list if p["asset"] == asset), None)
+        if pair and pair.get("locked"):
+            return {"ok": False, "status": "locked", "payout": pair.get("payout"),
+                    "reason": f"Needs {PAYOUT_FLOOR}% payout "
+                              f"(currently {pair.get('payout', '?')}%)"}
 
         if time.time() < self._cooldown_until:
             return {"ok": False, "status": "cooldown",
@@ -1509,10 +1581,47 @@ class QuotexFeed:
         self._client, self._connected = None, False
         self._record_stream_error()
 
+    def _reconcile_always_on(self) -> None:
+        """
+        Keep the always-on set in sync with the latest payout/market data
+        (called right after _load_pairs). Pre-warms every eligible forex
+        pair's 1m stream and never idle-evicts it, so switching between
+        tradeable pairs is instant instead of a cold start.
+
+        A stream stops being always_on the moment its (asset, 60) key is no
+        longer in the eligible set — that covers BOTH a payout dropping
+        below PAYOUT_FLOOR AND a pair's asset code swapping real<->otc (the
+        unified pairs list always represents a logical pair with a single
+        CURRENT asset code, so a real/otc flip makes the OLD code vanish
+        from `eligible` on its own). Demoted streams simply become normal
+        on-demand streams, subject to the usual idle sweep — never killed
+        outright, matching ensure_stream's "never tear down a running
+        stream" philosophy.
+        """
+        eligible = {(p["asset"], 60) for p in self._pairs_list
+                    if p["status"] in ("live", "otc") and not p.get("locked")}
+
+        for key, s in self._streams.items():
+            if s.always_on and key not in eligible:
+                s.always_on = False
+
+        for key in eligible:
+            s = self._streams.get(key)
+            if s is None:
+                asset, period = key
+                s = _AssetStream(asset=asset, period=period, always_on=True)
+                self._streams[key] = s
+                s.task = asyncio.create_task(self._run_stream(s))
+            else:
+                s.always_on = True
+                s.idle_since = None
+
     def _sweep_idle_streams(self) -> None:
         IDLE_TIMEOUT = 300   # 5 minutes with no interested viewers
         now = time.time()
         for key, s in list(self._streams.items()):
+            if s.always_on:
+                continue
             if s.interested_cids:
                 s.idle_since = None
                 continue
@@ -1577,6 +1686,12 @@ class QuotexFeed:
                         stream.sub_started = False
                         asyncio.create_task(self._rearm_stream(stream))
 
+                    # Pre-warm every payout-eligible forex pair's 1m stream —
+                    # runs AFTER the rearm loop above so freshly-created
+                    # streams here don't also get caught by that loop (which
+                    # only means to re-issue already-existing subscriptions).
+                    self._reconcile_always_on()
+
                 # ── Global stale watchdog (backstop) ──────────────────────
                 # pyquotex's native ReconnectPolicy handles most drops itself.
                 # This is the LAST resort: if EVERY active stream has been
@@ -1597,6 +1712,7 @@ class QuotexFeed:
                 # ── Refresh pair list every 5 minutes (market open/close) ──
                 if time.time() - self._last_pairs_refresh > 300:
                     await self._load_pairs(broadcast)
+                    self._reconcile_always_on()
 
             except Exception as exc:
                 import traceback
