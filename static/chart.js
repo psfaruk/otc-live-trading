@@ -545,9 +545,20 @@ function applyPrediction(pred) {
     return;
   }
   if (!pred.candle || pred.signal === 'NEUTRAL') {
+    // NEUTRAL is a real verdict now (dead band / parrot guard produce it on
+    // ~half of candles since the 2026-07 bias rework) — show it explicitly
+    // instead of leaving the PREVIOUS candle's stale signal on the bar,
+    // which read as "the app stopped giving signals". No ghost candle and
+    // lastPrediction stays null (NEUTRAL is never graded / entry-timed),
+    // but the badge, score, reasons and key levels all update.
     if (predSeries) predSeries.setData([]);
     lastPrediction = null;
-    _clearKLLines();
+    if (pred.key_levels || pred.wick_walls) {
+      _setKLLines(pred.key_levels, pred.wick_walls);
+    } else {
+      _clearKLLines();
+    }
+    updateSignalUI(pred);
     return;
   }
   lastPrediction = pred;
@@ -734,23 +745,32 @@ function updateSignalUI(pred) {
   const list  = document.getElementById('reasons-list');
 
   bar.classList.remove('hidden');
-  const strength = pred.strength || 'WEAK';
-  badge.className   = `signal-badge ${pred.signal.toLowerCase()} str-${strength.toLowerCase()}`;
-  const tag = strength === 'STRONG' ? '★ ' : strength === 'WEAK' ? '· ' : '';
-  badge.textContent = (pred.signal === 'CALL' ? '▲ CALL' : '▼ PUT') + `  ${tag}${strength}`;
+  const isNeutral = pred.signal === 'NEUTRAL';
+  const strength  = pred.strength || 'WEAK';
+  badge.className = `signal-badge ${pred.signal.toLowerCase()}` +
+                    (isNeutral ? '' : ` str-${strength.toLowerCase()}`);
+  if (isNeutral) {
+    badge.textContent = '– NO TRADE';
+  } else {
+    const tag = strength === 'STRONG' ? '★ ' : strength === 'WEAK' ? '· ' : '';
+    badge.textContent = (pred.signal === 'CALL' ? '▲ CALL' : '▼ PUT') + `  ${tag}${strength}`;
+  }
 
   const agreeCount = pred.agree || 0;
-  score.textContent = `Score ${pred.score > 0 ? '+' : ''}${pred.score}  ·  ${agreeCount} theor${agreeCount === 1 ? 'y' : 'ies'} agree`;
+  score.textContent = isNeutral
+    ? `Score ${pred.score > 0 ? '+' : ''}${pred.score || 0}  ·  no clear edge — skip this candle`
+    : `Score ${pred.score > 0 ? '+' : ''}${pred.score}  ·  ${agreeCount} theor${agreeCount === 1 ? 'y' : 'ies'} agree`;
 
-  const confPct = Math.round((pred.confidence || 0) * 100);
-  conf.textContent = `Confidence ${confPct}%`;
+  const confPct = isNeutral ? 0 : Math.round((pred.confidence || 0) * 100);
+  conf.textContent = isNeutral ? 'Waiting for real evidence' : `Confidence ${confPct}%`;
   conf.title = 'Signal intensity (how strongly theories agree) — not a measured win probability.';
 
   // Confidence bar
   const bar2 = document.getElementById('signal-conf-bar');
   if (bar2) {
     bar2.style.width = `${confPct}%`;
-    bar2.className   = `conf-bar ${pred.signal === 'CALL' ? 'call' : 'put'}`;
+    bar2.className   = 'conf-bar' +
+      (isNeutral ? '' : ` ${pred.signal === 'CALL' ? 'call' : 'put'}`);
   }
 
   // Entry timing update
