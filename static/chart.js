@@ -848,49 +848,83 @@ async function loadPairs() {
   renderPairSelect();
 }
 
-// Server now only ever sends forex pairs, already sorted active-before-
-// closed, unlocked-before-locked, highest payout first — a flat list, no
-// category grouping needed.
+// ── Pair picker (custom dropdown: button + fixed panel w/ search) ──────────
+// Replaces the old native <select> + separate search input. The panel is
+// position:fixed at body level because #controls scrolls horizontally
+// (overflow-x:auto) and would clip an absolute child.
+// Server only sends forex pairs, already sorted active-before-closed,
+// unlocked-before-locked, highest payout first.
 function renderPairSelect() {
-  const sel  = document.getElementById('pair-select');
-  const term = pairSearchTerm.trim().toLowerCase();
-  // Filtering only narrows what's SHOWN — never drop the currently
-  // selected pair out of the list just because it doesn't match, or its
-  // own option (and therefore sel.value) would vanish mid-search.
-  const shown = term
-    ? pairsList.filter((p) => p.asset === currentAsset ||
-        p.display.toLowerCase().includes(term) || p.asset.toLowerCase().includes(term))
-    : pairsList;
-  sel.innerHTML = '';
-
-  shown.forEach((p) => {
-    const opt = document.createElement('option');
-    opt.value = p.asset;
-    const payoutStr = typeof p.payout === 'number' ? ` (${p.payout}%)` : '';
-
-    if (p.status === 'closed') {
-      opt.textContent = p.display + ' [closed]';
-      opt.disabled    = true;
-      opt.style.color = '#444455';
-    } else {
-      const suffix = p.status === 'live' ? 'Real' : 'Otc';
-      opt.textContent = (p.status === 'live' ? '● ' : '') + p.display + ' ' + suffix + payoutStr;
-      if (p.locked) {
-        opt.textContent += ` — needs ${payoutFloor}%`;
-        opt.disabled    = true;
-        opt.style.color = '#444455';
-      }
-    }
-    sel.appendChild(opt);
-  });
-
+  // Keep the selection valid (list refreshes every 5 min: payouts drift,
+  // real/otc codes swap at market open/close).
   const has = pairsList.some((p) => p.asset === currentAsset && p.status !== 'closed' && !p.locked);
   if (!has) {
     const first = pairsList.find((p) => p.status !== 'closed' && !p.locked);
     currentAsset = first?.asset || pairsList[0]?.asset || currentAsset;
   }
-  sel.value = currentAsset;
+  _updatePairBtn();
   _updateMktBadge();
+  _renderPairRows();
+}
+
+function _updatePairBtn() {
+  const label = document.getElementById('pair-btn-label');
+  if (!label) return;
+  const p = pairsList.find((x) => x.asset === currentAsset);
+  if (!p) { label.textContent = currentAsset; return; }
+  const pay = typeof p.payout === 'number' ? ` · ${p.payout}%` : '';
+  label.innerHTML =
+    (p.status === 'live' ? '<span class="pair-live-dot">●</span> ' : '') +
+    `${p.display} <span class="pair-btn-sub">${p.status === 'live' ? 'Real' : 'Otc'}${pay}</span>`;
+}
+
+function _payClass(p) {
+  if (typeof p.payout !== 'number') return 'pr-pay-low';
+  if (p.payout >= 90) return 'pr-pay-hi';
+  if (!p.locked)      return 'pr-pay-ok';
+  return 'pr-pay-low';
+}
+
+function _renderPairRows() {
+  const ul = document.getElementById('pair-list');
+  if (!ul) return;
+  const term = pairSearchTerm.trim().toLowerCase();
+  const shown = term
+    ? pairsList.filter((p) =>
+        p.display.toLowerCase().includes(term) || p.asset.toLowerCase().includes(term))
+    : pairsList;
+  ul.innerHTML = '';
+  if (!shown.length) {
+    ul.innerHTML = '<li class="pair-row pr-empty">No pair matches</li>';
+    return;
+  }
+  for (const p of shown) {
+    const li = document.createElement('li');
+    const disabled = p.status === 'closed' || p.locked;
+    li.className = 'pair-row'
+      + (p.asset === currentAsset ? ' active' : '')
+      + (disabled ? ' disabled' : '');
+    const mkt = p.status === 'closed' ? 'closed' : p.status;
+    li.innerHTML =
+      `<span class="pr-name">${p.display}</span>` +
+      `<span class="pr-badges">` +
+        (p.locked ? `<span class="pr-lock">🔒 needs ${payoutFloor}%</span>` : '') +
+        `<span class="pr-mkt ${mkt}">${p.status === 'live' ? 'Real' : p.status === 'otc' ? 'Otc' : 'Closed'}</span>` +
+        (typeof p.payout === 'number' ? `<span class="pr-pay ${_payClass(p)}">${p.payout}%</span>` : '') +
+      `</span>`;
+    if (!disabled) {
+      li.addEventListener('click', () => {
+        if (p.asset !== currentAsset) {
+          currentAsset = p.asset;
+          _updatePairBtn();
+          _updateMktBadge();
+          resetAndSubscribe();
+        }
+        _closePairPanel();
+      });
+    }
+    ul.appendChild(li);
+  }
 }
 
 function _updateMktBadge() {
@@ -903,15 +937,44 @@ function _updateMktBadge() {
   badge.classList.toggle('hidden', !st || st === 'unknown');
 }
 
-document.getElementById('pair-select').addEventListener('change', (e) => {
-  currentAsset = e.target.value;
-  _updateMktBadge();
-  resetAndSubscribe();
+function _openPairPanel() {
+  const btn   = document.getElementById('pair-btn');
+  const panel = document.getElementById('pair-panel');
+  const rect  = btn.getBoundingClientRect();
+  panel.style.left     = `${Math.max(8, Math.min(rect.left, window.innerWidth - 328))}px`;
+  panel.style.top      = `${rect.bottom + 6}px`;
+  panel.style.maxHeight = `${Math.max(180, window.innerHeight - rect.bottom - 20)}px`;
+  panel.classList.remove('hidden');
+  btn.classList.add('open');
+  _renderPairRows();
+  const search = document.getElementById('pair-search');
+  search.value = pairSearchTerm = '';
+  _renderPairRows();
+  search.focus();
+}
+
+function _closePairPanel() {
+  document.getElementById('pair-panel').classList.add('hidden');
+  document.getElementById('pair-btn').classList.remove('open');
+}
+
+document.getElementById('pair-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = document.getElementById('pair-panel');
+  if (panel.classList.contains('hidden')) _openPairPanel();
+  else _closePairPanel();
 });
+
+document.getElementById('pair-panel').addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', () => _closePairPanel());
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') _closePairPanel();
+});
+window.addEventListener('resize', () => _closePairPanel());
 
 document.getElementById('pair-search').addEventListener('input', (e) => {
   pairSearchTerm = e.target.value;
-  renderPairSelect();
+  _renderPairRows();
 });
 
 document.getElementById('tf-select').addEventListener('change', (e) => {

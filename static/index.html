@@ -71,8 +71,10 @@
 
     <!-- ── Controls ────────────────────────────────────────────────── -->
     <div id="controls">
-      <input type="text" id="pair-search" class="ctrl-select pair-search" placeholder="Search…" title="Filter the pair list" />
-      <select id="pair-select" class="ctrl-select pair-sel" title="Select trading pair"></select>
+      <button type="button" id="pair-btn" class="ctrl-select pair-btn" title="Select trading pair">
+        <span id="pair-btn-label">Loading…</span>
+        <span class="pair-caret">▾</span>
+      </button>
       <span id="mkt-badge" class="mkt-badge hidden"></span>
       <select id="tf-select" class="ctrl-select tf-select" title="Candle timeframe">
         <option value="30">30s</option>
@@ -81,6 +83,17 @@
         <option value="900">15m</option>
       </select>
       <span id="regime-badge" class="regime-badge hidden"></span>
+    </div>
+
+    <!-- Pair picker dropdown panel — position:fixed and OUTSIDE #controls,
+         because #controls scrolls horizontally (overflow-x:auto) and would
+         clip an absolutely-positioned child panel. -->
+    <div id="pair-panel" class="pair-panel hidden">
+      <div class="pair-panel-search">
+        <span class="pair-panel-search-icon">⌕</span>
+        <input type="text" id="pair-search" placeholder="Search pair…" autocomplete="off" spellcheck="false" />
+      </div>
+      <ul id="pair-list" class="pair-list"></ul>
     </div>
 
     <!-- ── Signal Bar ──────────────────────────────────────────────── -->
