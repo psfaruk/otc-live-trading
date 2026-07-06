@@ -1341,13 +1341,17 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # candle's color was accumulated into forced_score alongside the normal
     # score. Cap that stack at ±FORCED_CAP: however many color-gated theories
     # pile onto one candle (live data measured them outweighing everything
-    # else 3.8:1), "the candle was green/red" is worth at most 1 point —
-    # color-INDEPENDENT evidence decides the rest of the signal. (Replay-
-    # tuned: at cap 2 the color allowance still tipped balanced evidence,
-    # continuation share stayed 75%; at 1 it reached the target band.)
+    # else 3.8:1), "the candle was green/red" is worth at most 2 points —
+    # color-INDEPENDENT evidence decides the rest of the signal.
+    # History: first shipped at 1 (strictest de-biasing, when the parrot
+    # guard still withheld signals as NEUTRAL); relaxed back to 2 on
+    # 2026-07-06 after the every-candle switch left continuation signals
+    # almost never able to rank above WEAK — the parrot guard now handles
+    # the pure color-echo case by strength-capping it, so the cap only
+    # needs to stop pile-on domination, not starve continuation entirely.
     # The "(coordination" marker is skipped by _parse_votes, so per-theory
     # grading and `agree` still see the individual votes unchanged.
-    FORCED_CAP = 1
+    FORCED_CAP = 2
     if abs(forced_score) > FORCED_CAP:
         _fcap    = FORCED_CAP if forced_score > 0 else -FORCED_CAP
         _fexcess = forced_score - _fcap
@@ -1489,7 +1493,12 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             f" scores measured as anti-signal => strength capped to WEAK")
     elif agree >= 3 and abs(score) >= 3:
         strength = "STRONG"
-    elif agree >= 2 and abs(score) >= 3:
+    elif agree >= 2 and abs(score) >= 2:
+        # MEDIUM floor lowered 3 -> 2 (2026-07-06): the bias rework
+        # compressed the score scale (p50 = 2), so requiring |score| >= 3
+        # left almost nothing between STRONG and WEAK — two distinct
+        # theories net-agreeing at score 2 is real (if modest) evidence,
+        # not noise.
         strength = "MEDIUM"
     else:
         strength = "WEAK"

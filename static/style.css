@@ -373,7 +373,9 @@ html, body {
 /* Strength: STRONG glows (trade these), WEAK is dimmed (skip). */
 .signal-badge.str-strong { box-shadow: 0 0 10px rgba(255,255,255,0.18); filter: saturate(1.3); }
 .signal-badge.str-medium { opacity: 0.92; }
-.signal-badge.str-weak   { opacity: 0.45; font-weight: 700; }
+/* 0.45 read as "broken/disabled" once every-candle mode made WEAK common —
+   keep it clearly dimmer than MEDIUM but still legible. */
+.signal-badge.str-weak   { opacity: 0.65; font-weight: 700; }
 
 .signal-meta {
   display: flex;
