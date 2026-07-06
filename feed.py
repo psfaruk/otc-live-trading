@@ -713,19 +713,20 @@ class QuotexFeed:
             return None
 
         # Chop guard: this exact (regime, zone) has been wrong ZONE_LOSS_GUARD+
-        # times in a row — stay NEUTRAL rather than keep flipping a coin in a
-        # spot that's already proven itself unreadable. Clears itself the
-        # moment the regime/zone classification changes (see the streak
-        # update in _close_running_and_start_new), not on a timer.
+        # times in a row — a spot that's proven itself unreadable. Under
+        # every-candle mode (2026-07-06) the signal direction stands but is
+        # demoted to WEAK instead of being withheld as NEUTRAL. Clears
+        # itself the moment the regime/zone classification changes (see the
+        # streak update in _close_running_and_start_new), not on a timer.
         _reg = result.get("regime") or {}
         _key = (_reg.get("trend"), _reg.get("zone"))
         if (result["signal"] != "NEUTRAL"
                 and _key == (stream.zone_streak["regime"], stream.zone_streak["zone"])
                 and stream.zone_streak["losses"] >= ZONE_LOSS_GUARD):
-            result["signal"] = "NEUTRAL"
+            result["strength"] = "WEAK"
             result.setdefault("reasons", []).append(
                 f"CHOP GUARD: {_key[0]}/{_key[1]} wrong "
-                f"{stream.zone_streak['losses']}x running -> NEUTRAL until zone changes")
+                f"{stream.zone_streak['losses']}x running -> WEAK until zone changes")
 
         # Neutral signals should remain neutral; do not force a fake CALL/PUT
         # just to keep a ghost candle on screen.

@@ -58,6 +58,7 @@ def replay(db_path: str, asset_filter: str | None, period_filter: int | None,
         "cont": 0, "rev": 0,          # directional signals vs just-closed color
         "correct": 0, "wrong": 0, "draw": 0,
         "strength": Counter(), "scores": [],
+        "strength_acc": defaultdict(lambda: [0, 0]),   # label -> [right, wrong]
         "theory": defaultdict(lambda: [0, 0]),   # code -> [right, wrong]
         "skipped_gap_resets": 0, "rows_total": 0, "rows_analyzed": 0,
     }
@@ -123,6 +124,7 @@ def replay(db_path: str, asset_filter: str | None, period_filter: int | None,
             actual_up = n_c > n_o
             correct = (sig == "CALL") == actual_up
             stats["correct" if correct else "wrong"] += 1
+            stats["strength_acc"][result.get("strength", "?")][0 if correct else 1] += 1
 
             # Per-theory attribution — same net-vote logic as _grade_and_log.
             for code, direction, _w in _parse_votes(result.get("reasons", [])):
@@ -161,6 +163,9 @@ def report(s: dict) -> None:
         print(f"accuracy: {pct(s['correct'], graded)} "
               f"({s['correct']}/{graded}, {s['draw']} draws excluded)")
         print(f"strength: {dict(s['strength'])}")
+        for lbl, (r, w) in sorted(s["strength_acc"].items()):
+            if r + w:
+                print(f"  {lbl:7s} acc {pct(r, r + w)} ({r}/{r + w})")
     print(f"|score|: p50={pctile(0.50)} p90={pctile(0.90)} "
           f"p99={pctile(0.99)} max={scores[-1] if scores else 0}")
     print(f"\n{'theory':10s} {'n':>6s} {'right':>6s} {'wrong':>6s} {'acc%':>6s}")

@@ -21,15 +21,21 @@ the last candle's color at coin-flip accuracy):
   - COLOR-GATED CAP  : votes whose direction is mechanically forced by the
                        closed candle's color contribute at most ±1 total
   - PARROT GUARD     : a signal pointing with the candle needs color-
-                       independent theories to net-agree, else NEUTRAL
-  - DEAD BAND        : |score| < 2 is noise -> NEUTRAL
+                       independent theories to net-agree, else it is capped
+                       to WEAK
+  - NOISE/TIEBREAK   : |score| < 2, and zero-score forced picks, are capped
+                       to WEAK
   - THEORY MUTE GATE : live 7-day per-theory accuracy (db.theory_perf via
                        feed.py) mutes theories proven below coin-flip
 
+Every-candle mode (2026-07-06, user decision): a direction is emitted on
+EVERY analyzed candle; the guards above demote quality to WEAK instead of
+withholding the signal, so STRONG/MEDIUM remain the honest subset.
+
 Note: Academic research (and this account's own logged history) confirms
-      1-minute binary options are near-random. This system aims to say
-      NEUTRAL honestly rather than manufacture false confidence — accuracy
-      claims beyond ~50% would be self-deception.
+      1-minute binary options are near-random. Accuracy claims beyond ~50%
+      would be self-deception — the strength label, not signal frequency,
+      is what separates evidence from forced picks.
 """
 import math
 import re
@@ -1344,37 +1350,56 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     f" -> -{_att} (attenuation)")
 
     # ── Final ─────────────────────────────────────────────────────────────────
-    # Dead band (2026-07-04 bias audit): NEUTRAL used to require score == 0
-    # exactly, so a single leftover x1 sub-vote forced a directional call.
-    # |score| of 1 is one noise-level vote — not evidence. Say NEUTRAL.
-    DEAD_BAND = 2
-    signal = ("CALL" if score >= DEAD_BAND
-              else "PUT" if score <= -DEAD_BAND else "NEUTRAL")
-    if signal == "NEUTRAL" and score != 0:
-        reasons.append(
-            f"NO EDGE: |score|={abs(score)} below dead band {DEAD_BAND}"
-            f" -> NEUTRAL")
+    # EVERY-CANDLE MODE (2026-07-06, user decision): a direction is emitted
+    # on every candle — quality lives in the STRENGTH label instead of in
+    # NEUTRAL abstention. The 2026-07-04 bias findings still apply exactly
+    # as measured; they now demote strength to WEAK rather than withholding
+    # the signal, so "trade only STRONG/MEDIUM" preserves the honest subset
+    # while WEAK carries the forced picks.
+    _weak_cap_reasons: list[str] = []
+    _indep_net = sum(_d for _t, _d in indep_dirs)
+    signal = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
+
+    if signal == "NEUTRAL":
+        # score == 0 — no net evidence. Tiebreak chain, weakest-first
+        # honesty: independent net -> regime trend -> last candle color.
+        if _indep_net != 0:
+            signal = "CALL" if _indep_net > 0 else "PUT"
+            _weak_cap_reasons.append(
+                f"TIEBREAK: score 0 — color-independent evidence leans"
+                f" {signal} -> {signal} (forced pick, WEAK)")
+        elif _regime in ("UPTREND", "DOWNTREND"):
+            signal = "CALL" if _regime == "UPTREND" else "PUT"
+            _weak_cap_reasons.append(
+                f"TIEBREAK: score 0, no independent lean — following"
+                f" {_regime} -> {signal} (forced pick, WEAK)")
+        else:
+            signal = "CALL" if is_bull else "PUT"
+            _weak_cap_reasons.append(
+                f"TIEBREAK: zero evidence — repeating last candle color"
+                f" -> {signal} (coin flip, WEAK)")
+    elif abs(score) < 2:
+        # Old dead band — |score| of 1 is one noise-level vote. Direction
+        # stands (every-candle mode) but it can never rank above WEAK.
+        _weak_cap_reasons.append(
+            f"NO EDGE: |score|={abs(score)} is noise-level -> WEAK")
 
     # PARROT GUARD (2026-07-04 bias audit): 87% of live signals simply
     # repeated the just-closed candle's color, because most theories are
     # mechanically color-gated (they CAN'T vote the other way). A signal
-    # that points with the candle is only allowed to stand if at least one
-    # color-INDEPENDENT vote (see indep_dirs) agrees — otherwise it carries
-    # zero information beyond "the last candle was green/red" and is
-    # demoted to NEUTRAL. Signals AGAINST the candle's color are untouched
-    # (they already required beating the stacked continuation weight).
-    if signal != "NEUTRAL":
-        _sig_dir = 1 if signal == "CALL" else -1
-        _closed_dir = 1 if is_bull else -1
-        # NET independent direction, not "any one agreeing vote" — mixed
-        # independent evidence (one CALL, one PUT) is not real support.
-        _indep_net = sum(_d for _t, _d in indep_dirs)
-        if _sig_dir == _closed_dir and _indep_net * _sig_dir <= 0:
-            signal = "NEUTRAL"
-            reasons.append(
-                "PARROT GUARD: signal only repeats the closed candle's color"
-                " (color-independent theories don't net-agree) -> NEUTRAL")
+    # that points with the candle carries no information beyond "the last
+    # candle was green/red" unless color-INDEPENDENT votes net-agree —
+    # such parrot signals are capped to WEAK (was: demoted to NEUTRAL,
+    # before every-candle mode). Signals AGAINST the candle's color are
+    # untouched (they already beat the stacked continuation weight).
+    _sig_dir = 1 if signal == "CALL" else -1
+    _closed_dir = 1 if is_bull else -1
+    if _sig_dir == _closed_dir and _indep_net * _sig_dir <= 0:
+        _weak_cap_reasons.append(
+            "PARROT GUARD: signal only repeats the closed candle's color"
+            " (color-independent theories don't net-agree) -> WEAK")
 
+    reasons.extend(_weak_cap_reasons)
     confidence = round(min(abs(score) / MAX_SCORE, 1.0), 2)
 
     # AGREEMENT — how many DISTINCT theories NET-vote the winning side.
@@ -1389,7 +1414,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     _net_votes: dict[str, int] = {}
     for _code, _vdir, _vmag in _parse_votes(reasons, include_muted=False):
         _net_votes[_code] = _net_votes.get(_code, 0) + _vdir * _vmag
-    _want = 1 if score > 0 else -1
+    _want = 1 if signal == "CALL" else -1   # score can be 0 (tiebroken picks)
     agree = sum(1 for _nv in _net_votes.values() if _nv * _want > 0)
 
     # Strength calibration. The OVERHEATED demotion (ensemble piling on =
@@ -1399,14 +1424,18 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # it is re-anchored to the new p99 so it stays a tail guard rather than
     # becoming unreachable. The trend-echo pile-on itself is also largely
     # prevented now by the COLOR-GATED CAP upstream.
-    if signal != "NEUTRAL" and abs(score) >= 9:
+    # _weak_cap_reasons (tiebreak / noise dead band / parrot guard) hard-cap
+    # strength at WEAK — these are the every-candle-mode forced picks.
+    if _weak_cap_reasons:
+        strength = "WEAK"
+    elif abs(score) >= 9:
         strength = "WEAK"
         reasons.append(
             f"OVERHEATED: |score|={abs(score)} >= 9 (p99 tail) — pile-on"
             f" scores measured as anti-signal => strength capped to WEAK")
-    elif signal != "NEUTRAL" and agree >= 3 and abs(score) >= 3:
+    elif agree >= 3 and abs(score) >= 3:
         strength = "STRONG"
-    elif signal != "NEUTRAL" and agree >= 2 and abs(score) >= 3:
+    elif agree >= 2 and abs(score) >= 3:
         strength = "MEDIUM"
     else:
         strength = "WEAK"
