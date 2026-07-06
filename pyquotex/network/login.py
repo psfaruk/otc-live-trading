@@ -26,6 +26,17 @@ class Login(Browser):
         self.api = api
         self.html: Any = None
         self.headers: dict[str, str] = self.get_headers()
+        # Local fix (2026-07-06): honor the host the caller configured
+        # instead of the hardcoded qxbroker.com class default. Every other
+        # URL in the client (https_url, wss_url, cookie domain) already
+        # derives from `host` — Login was the one piece still pinned to
+        # qxbroker.com, so on networks whose DNS blocks that domain (while
+        # the market-qx.trade mirror resolves fine) connect() died at the
+        # sign-in request with getaddrinfo errors even though the websocket
+        # itself would have worked. Observed live on 2026-07-06.
+        _host = getattr(api, "host", None) or self.base_url
+        self.base_url = _host
+        self.https_base_url = f"https://{_host}"
         self.full_url: str = f"{self.https_base_url}/{api.lang}"
 
     async def get_sign_page(self):
