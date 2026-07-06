@@ -277,7 +277,7 @@ def _parse_votes(reasons: list[str],
 
 _ALL_THEORIES = {"RUN", "T7", "T2", "SWEEP", "MARB", "TRAP", "STAR", "STREAK",
                  "MICRO", "OUTSIDE", "SPIN",
-                 "ZIGZAG", "WICKWALL"}
+                 "ZIGZAG", "WICKWALL", "MTF"}
 # HARAMI, THREE, GAP: theories removed 2026-07-03 (see inline comments where
 # their scoring blocks used to be). REGIME: converted from an independent
 # vote to a score-only filter (2026-07-03) — its reasons still adjust score
@@ -1255,6 +1255,60 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                         f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
                         f" high rejected -> PUT")
                     break
+
+    # ── MTF  Multi-timeframe confluence (user request 2026-07-06) ────────────
+    # Reads two extra timeframes derived from data already in hand — no new
+    # broker streams (which would multiply account load ~3x):
+    #   HIGHER: current period × 5 (on the 1m chart -> 5m), aggregated from
+    #           the candle history with a rolling 5-bar window; its 20-bar
+    #           regime trend votes ±1.
+    #   LOWER : the just-closed candle's second-half tick drift (on the 1m
+    #           chart -> the final ~30s); votes ±1 when it moved decisively
+    #           (>= 25% of the candle's range). Second half only — a
+    #           "both halves agree" read would mechanically imply the
+    #           candle's own color and just feed the parrot bias.
+    # Graded like any theory (code MTF), so the live mute gate silences it
+    # automatically if it proves below coin-flip.
+    if len(candles) >= 25:
+        _htf: list[dict] = []
+        _hi = len(candles)
+        while _hi - 5 >= 0 and len(_htf) < 24:
+            _grp = candles[_hi - 5:_hi]
+            _htf.append({
+                "time":  _grp[0]["time"], "open": _grp[0]["open"],
+                "high":  max(g["high"] for g in _grp),
+                "low":   min(g["low"] for g in _grp),
+                "close": _grp[-1]["close"],
+            })
+            _hi -= 5
+        _htf.reverse()
+        _htf_trend, _ = _market_regime(_htf)
+        if _htf_trend in ("UPTREND", "DOWNTREND"):
+            _p5 = (period or 60) * 5
+            _mtf_lbl = f"{_p5 // 60}m" if _p5 >= 60 else f"{_p5}s"
+            if _htf_trend == "UPTREND":
+                score += 1
+                indep_dirs.append(("MTF", +1))
+                reasons.append(f"MTF  {_mtf_lbl} trend UPTREND -> CALL (x1)")
+            else:
+                score -= 1
+                indep_dirs.append(("MTF", -1))
+                reasons.append(f"MTF  {_mtf_lbl} trend DOWNTREND -> PUT (x1)")
+
+    if ticks and len(ticks) >= 20 and total_range > 0:
+        _half2 = ticks[-1] - ticks[len(ticks) // 2]
+        if abs(_half2) >= total_range * 0.25:
+            _lo_lbl = f"{max((period or 60) // 2, 1)}s"
+            if _half2 > 0:
+                score += 1
+                indep_dirs.append(("MTF", +1))
+                reasons.append(
+                    f"MTF  last {_lo_lbl} momentum up -> CALL (x1)")
+            else:
+                score -= 1
+                indep_dirs.append(("MTF", -1))
+                reasons.append(
+                    f"MTF  last {_lo_lbl} momentum down -> PUT (x1)")
 
     # ── THEORY MUTE GATE  — live per-theory accuracy feedback loop ───────────
     # Theories whose recent live accuracy is proven bad (db.theory_perf via
