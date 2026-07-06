@@ -3,17 +3,33 @@ End-of-candle (EOC) analysis — price-action multi-signal predictor.
 
 Design: classic lagging indicators (EMA, RSI) are intentionally NOT used.
 On binary color-prediction they lag and add noise. Signals are built only
-from what price actually does:
+from what price actually does — see _ALL_THEORIES for the active vote set:
 
-  - Tick microstructure : buy/sell pressure, effort vs result, wick rejection (RUN)
-  - Single-candle pattern: engulfing/piercing at S/R (T7), pin bar at S/R (T2),
-                           marubozu momentum continuation (MARB)
-  - Multi-candle pattern : morning/evening star 3-candle reversal (STAR),
-                           consecutive streak exhaustion (STREAK)
-  - Market structure     : liquidity sweep / stop-hunt (SWEEP)
+  - Tick microstructure : buy/sell pressure, effort vs result, wick rejection
+                          (RUN), exhausted one-sided candles (TRAP), prior-
+                          candle tick patterns from the DB (MICRO)
+  - Candle patterns      : engulfing/piercing at S/R (T7), pin bar (T2),
+                           marubozu (MARB), morning/evening star (STAR),
+                           three outside up (OUTSIDE), spinning top (SPIN),
+                           streak exhaustion (STREAK), alternation (ZIGZAG)
+  - Market structure     : liquidity sweep (SWEEP), repeated wick-rejection
+                           zones (WICKWALL), regime/zone context (REGIME —
+                           score filter only, not a graded vote)
 
-Note: Academic research confirms 1-minute binary options are near-random.
-      This system aims to reduce false signals, not guarantee wins.
+Bias controls (2026-07-04 audit — 87% of live signals were just repeating
+the last candle's color at coin-flip accuracy):
+  - COLOR-GATED CAP  : votes whose direction is mechanically forced by the
+                       closed candle's color contribute at most ±1 total
+  - PARROT GUARD     : a signal pointing with the candle needs color-
+                       independent theories to net-agree, else NEUTRAL
+  - DEAD BAND        : |score| < 2 is noise -> NEUTRAL
+  - THEORY MUTE GATE : live 7-day per-theory accuracy (db.theory_perf via
+                       feed.py) mutes theories proven below coin-flip
+
+Note: Academic research (and this account's own logged history) confirms
+      1-minute binary options are near-random. This system aims to say
+      NEUTRAL honestly rather than manufacture false confidence — accuracy
+      claims beyond ~50% would be self-deception.
 """
 import math
 import re
@@ -218,18 +234,26 @@ def _zigzag_signal(candles: list[dict], min_len: int = 4) -> tuple[int, int]:
 
 # ── Main analysis ─────────────────────────────────────────────────────────────
 
-def _parse_votes(reasons: list[str]) -> list[tuple[str, int, int]]:
+def _parse_votes(reasons: list[str],
+                 include_muted: bool = True) -> list[tuple[str, int, int]]:
     """
     Extract individual theory votes from reason strings.
 
     Returns [(theory_code, direction, magnitude), ...] where direction is
     +1 (CALL) / -1 (PUT). Attenuation/coordination adjustment lines are
-    skipped — they are score corrections, not theory votes. Used both by the
-    live theory-performance gate below and by feed.py for theory_votes logging.
+    skipped — they are score corrections, not theory votes.
+
+    include_muted: "[MUTED ...]"-suffixed lines are votes that the live
+    theory-performance gate excluded from the score. Grading/shadow-logging
+    wants them INCLUDED (default — a muted theory keeps building its track
+    record so it can earn its way back); the `agree` count wants them
+    EXCLUDED (a muted vote must not lend strength to a signal).
     """
     out: list[tuple[str, int, int]] = []
     for r in reasons:
         if "(attenuation)" in r or "(coordination" in r:
+            continue
+        if not include_muted and "[MUTED" in r:
             continue
         code = r.split()[0]
         if code not in _ALL_THEORIES:
@@ -259,21 +283,16 @@ _ALL_THEORIES = {"RUN", "T7", "T2", "SWEEP", "MARB", "TRAP", "STAR", "STREAK",
 
 def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 micro_history: list[dict] | None = None,
-                period: int | None = None) -> dict:
+                period: int | None = None,
+                muted: dict[str, str] | None = None) -> dict:
     """
     Predict next candle direction from the just-closed candle.
 
-    Eight independent signal sources:
-      RUN    — running-candle tick reaction (who won / exhaust vs defend)
-      T7     — engulfing / piercing at a key support/resistance level
-      T2     — pin bar (hammer / shooting star) at a key level
-      MARB   — marubozu (large body, tiny wicks) → momentum continuation
-      STAR   — morning star / evening star 3-candle reversal
-      STREAK — 4+ consecutive same-color candles → exhaustion → reversal
-      SWEEP  — liquidity sweep / stop-hunt: pierce a key level then reclaim
-      MICRO  — multi-candle tick microstructure from DB: pressure chains,
-               exhaustion sequences, fight-zone breakouts, late-phase
-               inversions, congestion hold levels acting as live S/R
+    Signal sources — the graded vote set is _ALL_THEORIES (see the module
+    docstring for the one-line description of each); REGIME adjusts score
+    as a context filter without being graded as a vote. Ensemble-level
+    bias controls (color-gated cap, parrot guard, dead band, theory mute
+    gate) are documented at their blocks below.
 
     candles       : OHLC history, most-recent last. Need 2+ minimum.
     ticks         : price values from the just-closed candle (for RUN).
@@ -281,19 +300,23 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     just-closed one (from db.get_micro_history). Oldest first.
     period        : candle period in seconds — used to verify micro_history[-1]
                     really is the immediately-previous candle (freshness gate).
+    muted         : {theory_code: annotation} from the live theory-performance
+                    gate (feed.py builds it from db.theory_perf with
+                    hysteresis). A muted theory's votes are still computed and
+                    listed in reasons (suffixed "[MUTED <annotation>]") and
+                    still shadow-graded, but contribute nothing to score,
+                    `agree`, or the parrot guard.
     Returns : {signal, score, confidence, agree, strength, reasons}
     """
     # MAX_SCORE calibrates the confidence% shown to the user (confidence =
-    # |score|/MAX_SCORE). The naive theoretical ceiling (every theory's max
-    # magnitude summed) is ~55, but theories rarely all stack on one candle —
-    # audited against 1,392 real signal_log rows (2026-07-03): the highest
-    # |score| ever actually produced was 17, p99=14, median=4. At MAX_SCORE=55
-    # confidence never exceeded 31% even on that all-time-best signal, so the
-    # number was permanently squashed near zero and meaningless to the user.
-    # Recalibrated to the empirical ceiling (+small headroom) so confidence
-    # actually spans close to 0-100%. Re-check this constant if the theory
-    # set changes materially.
-    MAX_SCORE = 18
+    # |score|/MAX_SCORE), set to the empirical p99 of |score| plus small
+    # headroom so the number actually spans ~0-100% (a naive theoretical
+    # ceiling squashed it near zero — see git history). Recalibrated
+    # 2026-07-04 after the bias-audit rework (COLOR-GATED CAP, WICKWALL
+    # de-gate, T7 cap): full-history replay (tools/replay_eoc.py) measured
+    # p50=2, p90=5, p99=9, max=12 under the new weights. Re-check via the
+    # replay harness if the theory set changes materially.
+    MAX_SCORE = 10
 
     if len(candles) < 2:
         return {"signal": "NEUTRAL", "score": 0,
@@ -315,6 +338,24 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
 
     score   = 0
     reasons = []
+    # (theory, direction) of votes that are NOT mechanically forced by the
+    # just-closed candle's color (reversal-class or color-independent
+    # branches; direction +1 CALL / -1 PUT). Feeds the PARROT GUARD in the
+    # Final section: a signal that merely repeats the candle's color needs
+    # these to net-agree, otherwise it's just "last candle was green so
+    # CALL" — the exact bias this 2026-07-04 audit was about (87% of live
+    # signals did that). The theory code is carried so a MUTED theory's
+    # votes can't enable the guard either.
+    # Color-FORCED sites (never tagged): T7/MARB/OUTSIDE/STAR, RUN result/
+    # lean reads, MICRO chains/recovery/fight/hold/persistent, since their
+    # branch conditions require is_bull (or close-position, which implies it).
+    indep_dirs: list[tuple[str, int]] = []
+    # Running sum of those color-FORCED votes' score contribution. Capped to
+    # ±FORCED_CAP after the vote sections — this is the direct fix for the
+    # measured 3.8:1 continuation:reversal weight imbalance: however many
+    # color-gated theories pile onto one candle, "the candle was green" is
+    # worth at most 2 points, and color-independent evidence decides the rest.
+    forced_score = 0
 
     # Market regime / zigzag state (populated later; defaults allow safe return)
     _regime     = "SIDEWAYS"
@@ -368,6 +409,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         # (1) AGREEMENT — result and effort both agree.
         if res_buyer and eff_buyer:
             score += 2
+            forced_score += 2
             reasons.append(
                 f"RUN  Buyers WON (close {close_pos:.0%} hi, {bpct:.0%} up-ticks)"
                 f" -> CALL (x2)")
@@ -375,6 +417,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             # OTC exhaustion: sellers used up all capital → next candle reverses UP.
             # DB: 45.5% for PUT = anti-signal → flipped to CALL (exhaustion reversal).
             score += 1
+            indep_dirs.append(("RUN", +1))
             reasons.append(
                 f"RUN  Sellers WON but exhausted (close {close_pos:.0%} lo,"
                 f" {(1-bpct):.0%} dn-ticks) -> OTC reversal -> CALL (x1)")
@@ -384,11 +427,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         #     buyers pushed). Score tripled to reflect actual predictive power.
         elif res_buyer and eff_seller:
             score -= 4
+            indep_dirs.append(("RUN", -1))
             reasons.append(
                 f"RUN  ABSORPTION: closed up but sellers pushed ({(1-bpct):.0%})"
                 f" -> reversal -> PUT (x4)")
         elif res_seller and eff_buyer:
             score += 4
+            indep_dirs.append(("RUN", +1))
             reasons.append(
                 f"RUN  ABSORPTION: closed down but buyers pushed ({bpct:.0%})"
                 f" -> reversal -> CALL (x4)")
@@ -397,17 +442,21 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         #     clear. 54.7% accuracy: worth ±1 but not a strong signal on its own.
         elif res_buyer or eff_buyer:
             score += 1
+            forced_score += 1   # close-position-derived — treated as color-forced
             reasons.append("RUN  Buyers slightly ahead -> CALL")
         elif res_seller or eff_seller:
             score -= 1
+            forced_score -= 1
             reasons.append("RUN  Sellers slightly ahead -> PUT")
 
         # (4) Wick rejection — 60% accuracy, decent confirming signal.
         if upper_wick > total_range * 0.45:
             score -= 1
+            indep_dirs.append(("RUN", -1))
             reasons.append("RUN  Long upper wick: sellers rejected the top -> PUT")
         if lower_wick > total_range * 0.45:
             score += 1
+            indep_dirs.append(("RUN", +1))
             reasons.append("RUN  Long lower wick: buyers defended the low -> CALL")
 
         # (5) Final ~15% of ticks invaded by the opposite side — 72.6% accuracy.
@@ -425,12 +474,14 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             if bull_closed and fbp <= 0.30:
                 _mag = 2 if _inv_seller >= 0.80 else 1
                 score -= _mag
+                indep_dirs.append(("RUN", -1))
                 reasons.append(
                     f"RUN  Sellers invaded the close ({_inv_seller:.0%})"
                     f" -> PUT (x{_mag})")
             elif (not bull_closed) and fbp >= 0.70:
                 _mag = 2 if _inv_buyer >= 0.80 else 1
                 score += _mag
+                indep_dirs.append(("RUN", +1))
                 reasons.append(
                     f"RUN  Buyers invaded the close ({_inv_buyer:.0%})"
                     f" -> CALL (x{_mag})")
@@ -507,8 +558,14 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             # Bull Engulfing (validated 55.8%, n=856) is unaffected and kept.
             if is_bull:
                 bonus, lbl = _sr_bonus(l, True)
-                mag  = 3 + bonus
+                # S/R bonus capped at +1 (2026-07-04 bias audit): 3+bonus
+                # reached x6, the single biggest vote in the system, and T7
+                # only ever fires in the just-closed candle's direction —
+                # letting it outvote everything fed the continuation bias
+                # (live T7 accuracy 48.5%, n=526 — no edge to justify x6).
+                mag  = 3 + min(bonus, 1)
                 score += mag
+                forced_score += mag
                 reasons.append(
                     f"T7   Bull Engulfing ({coverage:.0%} body"
                     f"{', @' + lbl if lbl else ''}) -> CALL (x{mag})")
@@ -518,6 +575,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             # not continuation; consistent with Bear Engulfing flip above.
             if is_bull:
                 score += 2
+                forced_score += 2
                 reasons.append(
                     f"T7   Piercing Line ({coverage:.0%} of prev body)"
                     f" -> CALL (x2)")
@@ -528,6 +586,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         bonus, lbl = _sr_bonus(h, False)
         mag = 2 + bonus
         score -= mag
+        indep_dirs.append(("T2", -1))
         reasons.append(
             f"T2   Shooting Star (upper wick >55%{', @' + lbl if lbl else ''})"
             f" -> PUT (x{mag})")
@@ -536,6 +595,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         bonus, lbl = _sr_bonus(l, True)
         mag = 2 + bonus
         score += mag
+        indep_dirs.append(("T2", +1))
         reasons.append(
             f"T2   Hammer (lower wick >55%{', @' + lbl if lbl else ''})"
             f" -> CALL (x{mag})")
@@ -572,10 +632,12 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         _mag = 1
         if _sdir > 0:
             score += _mag
+            indep_dirs.append(("SWEEP", +1))
             reasons.append(
                 f"SWEEP Liquidity grab below {_lvl:.5g} then reclaim -> CALL (x{_mag})")
         else:
             score -= _mag
+            indep_dirs.append(("SWEEP", -1))
             reasons.append(
                 f"SWEEP Liquidity grab above {_lvl:.5g} then reject -> PUT (x{_mag})")
 
@@ -592,6 +654,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 # (n=190, below coin-flip) — the continuation thesis is
                 # weaker in practice than assumed, kept only as a light lean.
                 score += 1
+                forced_score += 1
                 reasons.append(
                     f"MARB Bull marubozu (body {body/total_range:.0%} of range)"
                     f" -> CALL (x1)")
@@ -640,6 +703,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             if _trap_bear:
                 _fin_note  = f", final buyers {_cur_fin_bpct:.0%}" if _fin_exhaust else ""
                 score  += _ts
+                indep_dirs.append(("TRAP", +1))
                 reasons.append(
                     f"TRAP Bear candle (body={_bratio:.0%}"
                     f", sellers={100-round(_cur_bpct*100)}%"
@@ -648,6 +712,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             else:
                 _fin_note  = f", final sellers {1-_cur_fin_bpct:.0%}" if _fin_exhaust else ""
                 score  -= _ts
+                indep_dirs.append(("TRAP", -1))
                 reasons.append(
                     f"TRAP Bull candle (body={_bratio:.0%}"
                     f", buyers={round(_cur_bpct*100)}%"
@@ -677,6 +742,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 bonus, lbl = _sr_bonus(l, True)
                 mag = 2 + (1 if bonus >= 1 else 0)
                 score += mag
+                forced_score += mag
                 reasons.append(
                     f"STAR Morning Star (3-candle rev"
                     f"{', @' + lbl if lbl else ''}) -> CALL (x{mag})")
@@ -686,6 +752,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 bonus, lbl = _sr_bonus(h, False)
                 mag = 2 + (1 if bonus >= 1 else 0)
                 score -= mag
+                forced_score -= mag
                 reasons.append(
                     f"STAR Evening Star (3-candle rev"
                     f"{', @' + lbl if lbl else ''}) -> PUT (x{mag})")
@@ -711,11 +778,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             _smag = min(_smag + 1, 3)       # extra +1 if streak ended at S/R
         if is_bull:
             score -= _smag
+            indep_dirs.append(("STREAK", -1))
             reasons.append(
                 f"STREAK {_streak} bull candles exhausted"
                 f"{', @' + _slbl if _slbl else ''} -> PUT (x{_smag})")
         else:
             score += _smag
+            indep_dirs.append(("STREAK", +1))
             reasons.append(
                 f"STREAK {_streak} bear candles exhausted"
                 f"{', @' + _slbl if _slbl else ''} -> CALL (x{_smag})")
@@ -749,6 +818,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             bonus, lbl = _sr_bonus(l, True)
             mag = 2 + (1 if bonus >= 1 else 0)
             score += mag
+            forced_score += mag
             reasons.append(
                 f"OUTSIDE Three Outside Up (engulf + bull confirm"
                 f"{', @' + lbl if lbl else ''}) -> CALL (x{mag})")
@@ -774,12 +844,14 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         if _h_bon >= 1:
             _smag = 1 + (1 if _h_bon >= 2 else 0)
             score -= _smag
+            indep_dirs.append(("SPIN", -1))
             reasons.append(
                 f"SPIN {_tag} at resistance @{_h_lbl}"
                 f" -> PUT (x{_smag})")
         elif _l_bon >= 1:
             _smag = 1 + (1 if _l_bon >= 2 else 0)
             score += _smag
+            indep_dirs.append(("SPIN", +1))
             reasons.append(
                 f"SPIN {_tag} at support @{_l_lbl}"
                 f" -> CALL (x{_smag})")
@@ -787,11 +859,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             # Doji after 3+ same-colour candles without S/R — exhaustion context
             if _prior_bull:
                 score -= 1
+                indep_dirs.append(("SPIN", -1))
                 reasons.append(
                     f"SPIN Doji after {_streak}-candle bull streak"
                     f" -> PUT")
             else:
                 score += 1
+                indep_dirs.append(("SPIN", +1))
                 reasons.append(
                     f"SPIN Doji after {_streak}-candle bear streak"
                     f" -> CALL")
@@ -816,56 +890,53 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     #   _key_levels / T2 / T7  — need formal swing pivots
     #   MICRO (e/f)             — use tick-level data from DB (not OHLC wicks)
     #   WICKWALL                — pure OHLC wick clustering, last 12 candles only
-    _sup_walls, _res_walls, _ww_atr = _wick_wall(candles)
+    #
+    # DE-GATED from candle color (2026-07-04 bias audit): every branch used
+    # to require is_bull for CALL / not is_bull for PUT, which made 99.9% of
+    # WICKWALL's live votes point the same way as the just-closed candle —
+    # a disguised "repeat last color" vote, part of the measured 87%
+    # continuation bias. The wall test itself is what matters: touched the
+    # wall and CLOSED on the defended side = the wall held, whatever color
+    # the candle body was (a bear candle dipping to support and closing back
+    # above it is the classic rejection read the old gate threw away).
+    # Clusters are built from the candles BEFORE the current one — its own
+    # wick must not count as a prior "touch" of the wall it is testing.
+    # The old CALL x1-x3 vs PUT x1 asymmetry (measured under the color gate,
+    # so unusable now) is replaced by symmetric x1-x2 both sides.
+    _sup_walls, _res_walls, _ww_atr = _wick_wall(candles[:-1])
     # ATR-based touch tolerance: current candle's l/h must be within half an
     # average candle range of the wall to count as "testing" it.
     _ww_tol   = _ww_atr * 0.50 if _ww_atr > 0 else total_range * 0.50
-    _ww_fired = False
 
-    # Weight scale: 3 wicks = ×1 (tentative), 4 wicks = ×2, 5+ wicks = ×3.
-    # Backtest showed 3-wick cluster was too easy to trigger at ×2 — reduced.
     def _ww_mag(n: int) -> int:
-        return 3 if n >= 5 else 2 if n >= 4 else 1
+        return 2 if n >= 5 else 1
 
+    # A wall vote needs BOTH a touch AND a real rejection: the low must reach
+    # the wall zone and the close must clear it by a full tolerance. A bare
+    # "closed on the right side of the wall" (first de-gate attempt) fired on
+    # nearly every ranging candle — replay showed it enabling 59% of the
+    # parrot signals the guard below was supposed to stop.
     for _wp, _wn in sorted(_sup_walls, key=lambda x: -x[1])[:2]:
-        # Current candle tested the support wall AND closed above it (bounce held)
-        if abs(l - _wp) <= _ww_tol and is_bull:
+        if l <= _wp + _ww_tol and c >= _wp + _ww_tol:
             _mag = _ww_mag(_wn)
             score  += _mag
+            indep_dirs.append(("WICKWALL", +1))
             reasons.append(
                 f"WICKWALL {_wn}x lower wicks @{_wp:.5g}"
-                f" low touched + bull close -> CALL (x{_mag})")
-            _ww_fired = True
-            break
-        # Close above wall + low within 2x ATR (zone nearby, bounce extended)
-        if c > _wp + _ww_tol and l < _wp + _ww_tol * 2 and is_bull and _wn >= 4:
-            score  += 1
-            reasons.append(
-                f"WICKWALL {_wn}x lower wicks @{_wp:.5g}"
-                f" zone held + close above -> CALL (x1)")
-            _ww_fired = True
+                f" low tested + close rejected away -> CALL (x{_mag})")
             break
 
-    if not _ww_fired:
-        for _wp, _wn in sorted(_res_walls, key=lambda x: -x[1])[:2]:
-            # Current candle tested the resistance wall AND closed below it.
-            # PUT-side weight CAPPED at x1 (2026-07-03): live data split the
-            # two sides — CALL (support) side measured 56.7% (n=67, real edge)
-            # but PUT (resistance) side measured only 41.3% (n=63, a drag) —
-            # the wick-cluster read only holds up on the support/bounce side.
-            if abs(h - _wp) <= _ww_tol and not is_bull:
-                score  -= 1
-                reasons.append(
-                    f"WICKWALL {_wn}x upper wicks @{_wp:.5g}"
-                    f" high touched + bear close -> PUT (x1)")
-                break
-            # Close below wall + high within 2x ATR (zone nearby, rejection extended)
-            if c < _wp - _ww_tol and h > _wp - _ww_tol * 2 and not is_bull and _wn >= 4:
-                score  -= 1
-                reasons.append(
-                    f"WICKWALL {_wn}x upper wicks @{_wp:.5g}"
-                    f" zone held + close below -> PUT (x1)")
-                break
+    # No support-first short-circuit: if the candle tested BOTH walls (wide
+    # range bar in a tight box), both votes fire and net out.
+    for _wp, _wn in sorted(_res_walls, key=lambda x: -x[1])[:2]:
+        if h >= _wp - _ww_tol and c <= _wp - _ww_tol:
+            _mag = _ww_mag(_wn)
+            score  -= _mag
+            indep_dirs.append(("WICKWALL", -1))
+            reasons.append(
+                f"WICKWALL {_wn}x upper wicks @{_wp:.5g}"
+                f" high tested + close rejected away -> PUT (x{_mag})")
+            break
 
     # ── REGIME  Market regime (trend + zone) context ──────────────────────────
     # Classifies the last 20 candles as UPTREND/DOWNTREND/SIDEWAYS and detects
@@ -921,11 +992,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         _zz_mag = 2 if _zz_len >= 6 else 1
         if _zz_predict > 0:
             score += _zz_mag
+            indep_dirs.append(("ZIGZAG", +1))
             reasons.append(
                 f"ZIGZAG {_zz_len}-candle alternating pattern"
                 f" -> CALL (x{_zz_mag})")
         else:
             score -= _zz_mag
+            indep_dirs.append(("ZIGZAG", -1))
             reasons.append(
                 f"ZIGZAG {_zz_len}-candle alternating pattern"
                 f" -> PUT (x{_zz_mag})")
@@ -955,6 +1028,11 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     #                          reaction there gets a +1 bonus signal.
     #
     # micro_history is ordered oldest→newest; [-1] = candle just before current.
+    # Sub-blocks (a)-(f) below are independent `if`s, so several can fire on
+    # one candle — live data showed MICRO stacking up to ~±10 raw score
+    # (aggregate weight ~4x the next-biggest theory) while counting as ONE
+    # theory in `agree`. Its color-gated sub-votes (chains/recovery/fight/
+    # hold/persistent) are bounded by the COLOR-GATED CAP after this block.
     if micro_history and len(micro_history) >= 2:
         prev_m = micro_history[-1]
         hist3  = micro_history[-3:]  # up to 3 most recent prior candles
@@ -978,34 +1056,40 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             # pressure often exhausts sellers. Seller chain score halved to ±1.
             if len(pcts) >= 3 and all(p >= 62 for p in pcts) and is_bull:
                 score += 2
+                forced_score += 2
                 reasons.append(
                     f"MICRO 3-candle buyer chain"
                     f" ({'/'.join(str(p) for p in pcts)}% up-ticks)"
                     f" -> CALL (x2)")
             elif len(pcts) >= 3 and all(p <= 38 for p in pcts) and not is_bull:
                 score -= 1
+                forced_score -= 1
                 reasons.append(
                     f"MICRO 3-candle seller chain"
                     f" ({'/'.join(str(p) for p in pcts)}% up-ticks)"
                     f" -> PUT (x1, OTC-reduced)")
             elif trend >= 20 and pcts[-1] >= 58 and is_bull:
                 score += 1
+                forced_score += 1
                 reasons.append(
                     f"MICRO Buyer pressure rising"
                     f" ({pcts[0]}%->{pcts[-1]}%) -> CALL")
             elif trend <= -20 and pcts[-1] <= 42 and not is_bull:
                 score -= 1
+                forced_score -= 1
                 reasons.append(
                     f"MICRO Seller pressure rising"
                     f" ({pcts[0]}%->{pcts[-1]}%) -> PUT")
             # Cross-candle absorption: sustained pressure but candle closed opposite
             elif avg >= 62 and not is_bull:
                 score += 1
+                indep_dirs.append(("MICRO", +1))
                 reasons.append(
                     f"MICRO Buyer pressure ({avg:.0f}% avg) + bear close"
                     f" = cross-candle absorption -> CALL")
             elif avg <= 38 and is_bull:
                 score -= 1
+                indep_dirs.append(("MICRO", -1))
                 reasons.append(
                     f"MICRO Seller pressure ({avg:.0f}% avg) + bull close"
                     f" = cross-candle absorption -> PUT")
@@ -1017,11 +1101,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         if ex_n >= 2:
             if is_bull:
                 score -= 3
+                indep_dirs.append(("MICRO", -1))
                 reasons.append(
                     f"MICRO {ex_n}x exhaustion in last"
                     f" {len(hist3)} candles -> reversal -> PUT (x3)")
             else:
                 score += 3
+                indep_dirs.append(("MICRO", +1))
                 reasons.append(
                     f"MICRO {ex_n}x exhaustion in last"
                     f" {len(hist3)} candles -> reversal -> CALL (x3)")
@@ -1035,11 +1121,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             p_bull = p_c >= p_o
             if p_bull and is_bull:
                 score += 1
+                forced_score += 1
                 reasons.append(
                     "MICRO Prev candle recovery (bull) confirms continuation"
                     " -> CALL")
             elif not p_bull and not is_bull:
                 score -= 1
+                forced_score -= 1
                 reasons.append(
                     "MICRO Prev candle recovery (bear) confirms continuation"
                     " -> PUT")
@@ -1051,11 +1139,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         if fight_n >= 2 and body / total_range >= 0.50:
             if is_bull:
                 score += 2
+                forced_score += 2
                 reasons.append(
                     "MICRO 2 fight candles + bull breakout -> CALL (x2)")
             else:
                 # Bear breakout = 50% in DB: only +1 to avoid dominating signal
                 score -= 1
+                forced_score -= 1
                 reasons.append(
                     "MICRO 2 fight candles + bear breakout -> PUT (x1)")
 
@@ -1080,12 +1170,14 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 # Bear candle but buyers already invaded this third → reversal
                 if _ph == "UP" and not p_bull:
                     score += 1
+                    indep_dirs.append(("MICRO", +1))
                     reasons.append(
                         f"MICRO Prev candle: bear close but buyers invaded"
                         f" {_pname}-phase -> CALL (x1)")
                 # Bull candle but sellers already invaded this third → reversal
                 elif _ph == "DOWN" and p_bull:
                     score -= 1
+                    indep_dirs.append(("MICRO", -1))
                     reasons.append(
                         f"MICRO Prev candle: bull close but sellers invaded"
                         f" {_pname}-phase -> PUT (x1)")
@@ -1102,6 +1194,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 _hbonus = 1 if _key_touches(hp) >= 2 else 0
                 _hmag   = 1 + _hbonus
                 score  += _hmag
+                forced_score += _hmag
                 reasons.append(
                     f"MICRO Low bounced off congestion hold @{hp:.5g}"
                     f"{' (key lvl)' if _hbonus else ''}"
@@ -1111,6 +1204,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 _hbonus = 1 if _key_touches(hp) >= 2 else 0
                 _hmag   = 1 + _hbonus
                 score  -= _hmag
+                forced_score -= _hmag
                 reasons.append(
                     f"MICRO High rejected at congestion hold @{hp:.5g}"
                     f"{' (key lvl)' if _hbonus else ''}"
@@ -1143,16 +1237,64 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 _tol = _pp * 0.0012   # ±0.12% — slightly wider than hold-level check
                 if abs(l - _pp) <= _tol and is_bull:
                     score += 1
+                    forced_score += 1
                     reasons.append(
                         f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
                         f" low bounced -> CALL")
                     break
                 if abs(h - _pp) <= _tol and not is_bull:
                     score -= 1
+                    forced_score -= 1
                     reasons.append(
                         f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
                         f" high rejected -> PUT")
                     break
+
+    # ── THEORY MUTE GATE  — live per-theory accuracy feedback loop ───────────
+    # Theories whose recent live accuracy is proven bad (db.theory_perf via
+    # feed.py's cached snapshot, hysteresis there) get their votes excluded
+    # from the score AFTER the fact: the vote lines stay in reasons (marked
+    # "[MUTED ...]") so they remain visible and shadow-gradeable, letting a
+    # muted theory earn its way back in.
+    if muted:
+        # T7/MARB/OUTSIDE/STAR votes are 100% color-forced, so un-counting
+        # them must also come out of forced_score. RUN/MICRO mix forced and
+        # independent sub-votes; their forced share is left in forced_score
+        # (slight over-capping toward NEUTRAL — the safe direction — and
+        # both hover ~50%, far from the mute threshold, so this path is
+        # unlikely to matter in practice).
+        _FORCED_ONLY = {"T7", "MARB", "OUTSIDE", "STAR"}
+        for _mi, _mr in enumerate(reasons):
+            _mv = _parse_votes([_mr])
+            if not _mv:
+                continue
+            _mc, _md, _mm = _mv[0]
+            if _mc in muted:
+                score -= _md * _mm
+                if _mc in _FORCED_ONLY:
+                    forced_score -= _md * _mm
+                reasons[_mi] = _mr + f" [MUTED {muted[_mc]}]"
+        indep_dirs = [(_t, _d) for _t, _d in indep_dirs if _t not in muted]
+
+    # ── COLOR-GATED CAP  — the direct fix for the continuation bias ──────────
+    # Every vote whose direction is mechanically forced by the just-closed
+    # candle's color was accumulated into forced_score alongside the normal
+    # score. Cap that stack at ±FORCED_CAP: however many color-gated theories
+    # pile onto one candle (live data measured them outweighing everything
+    # else 3.8:1), "the candle was green/red" is worth at most 1 point —
+    # color-INDEPENDENT evidence decides the rest of the signal. (Replay-
+    # tuned: at cap 2 the color allowance still tipped balanced evidence,
+    # continuation share stayed 75%; at 1 it reached the target band.)
+    # The "(coordination" marker is skipped by _parse_votes, so per-theory
+    # grading and `agree` still see the individual votes unchanged.
+    FORCED_CAP = 1
+    if abs(forced_score) > FORCED_CAP:
+        _fcap    = FORCED_CAP if forced_score > 0 else -FORCED_CAP
+        _fexcess = forced_score - _fcap
+        score   -= _fexcess
+        reasons.append(
+            f"COLOR-GATED votes net {forced_score:+d} -> capped {_fcap:+d}"
+            f" (coordination cap)")
 
     # ── ATTENUATION  Regime context dampening TREND-FOLLOWING signals ─────────
     # FLIPPED (2026-07-03) alongside REGIME's own flip above: the 1564-row
@@ -1177,7 +1319,9 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             reasons.append(
                 f"REGIME DOWNTREND+NEUTRAL dampens PUT -> +{_att} (attenuation)")
         elif _zone == "SUPPORT" and score < -8:
-            _att = abs(score) - 9      # reduce exactly to MEDIUM ceiling
+            # Cap |score| to 8 — just below the OVERHEATED threshold (9),
+            # recalibrated 2026-07-04 with the shrunken score distribution.
+            _att = abs(score) - 8
             if _att > 0:
                 score += _att
                 reasons.append(
@@ -1190,7 +1334,9 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             reasons.append(
                 f"REGIME UPTREND+NEUTRAL dampens CALL -> -{_att} (attenuation)")
         elif _zone == "RESISTANCE" and score > 8:
-            _att = score - 9           # cap CALL at 9 (top of MEDIUM range)
+            # Cap score to 8 — just below the OVERHEATED threshold (9),
+            # recalibrated 2026-07-04 with the shrunken score distribution.
+            _att = score - 8
             if _att > 0:
                 score -= _att
                 reasons.append(
@@ -1198,7 +1344,37 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     f" -> -{_att} (attenuation)")
 
     # ── Final ─────────────────────────────────────────────────────────────────
-    signal     = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
+    # Dead band (2026-07-04 bias audit): NEUTRAL used to require score == 0
+    # exactly, so a single leftover x1 sub-vote forced a directional call.
+    # |score| of 1 is one noise-level vote — not evidence. Say NEUTRAL.
+    DEAD_BAND = 2
+    signal = ("CALL" if score >= DEAD_BAND
+              else "PUT" if score <= -DEAD_BAND else "NEUTRAL")
+    if signal == "NEUTRAL" and score != 0:
+        reasons.append(
+            f"NO EDGE: |score|={abs(score)} below dead band {DEAD_BAND}"
+            f" -> NEUTRAL")
+
+    # PARROT GUARD (2026-07-04 bias audit): 87% of live signals simply
+    # repeated the just-closed candle's color, because most theories are
+    # mechanically color-gated (they CAN'T vote the other way). A signal
+    # that points with the candle is only allowed to stand if at least one
+    # color-INDEPENDENT vote (see indep_dirs) agrees — otherwise it carries
+    # zero information beyond "the last candle was green/red" and is
+    # demoted to NEUTRAL. Signals AGAINST the candle's color are untouched
+    # (they already required beating the stacked continuation weight).
+    if signal != "NEUTRAL":
+        _sig_dir = 1 if signal == "CALL" else -1
+        _closed_dir = 1 if is_bull else -1
+        # NET independent direction, not "any one agreeing vote" — mixed
+        # independent evidence (one CALL, one PUT) is not real support.
+        _indep_net = sum(_d for _t, _d in indep_dirs)
+        if _sig_dir == _closed_dir and _indep_net * _sig_dir <= 0:
+            signal = "NEUTRAL"
+            reasons.append(
+                "PARROT GUARD: signal only repeats the closed candle's color"
+                " (color-independent theories don't net-agree) -> NEUTRAL")
+
     confidence = round(min(abs(score) / MAX_SCORE, 1.0), 2)
 
     # AGREEMENT — how many DISTINCT theories NET-vote the winning side.
@@ -1211,27 +1387,23 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # theories that actually disagreed. REGIME is excluded the same way it
     # already is from theory_votes grading (filter, not a theory).
     _net_votes: dict[str, int] = {}
-    for _code, _vdir, _vmag in _parse_votes(reasons):
+    for _code, _vdir, _vmag in _parse_votes(reasons, include_muted=False):
         _net_votes[_code] = _net_votes.get(_code, 0) + _vdir * _vmag
     _want = 1 if score > 0 else -1
     agree = sum(1 for _nv in _net_votes.values() if _nv * _want > 0)
 
-    # Strength calibration (2026-07-04 re-audit, 389 fresh rows under the
-    # new theory weights + the full 1900-row history):
-    #   |score| >= 10  — measured ANTI-signal in BOTH samples independently
-    #                    (all-time 41.9% n=136, fresh 33.3% n=27): when the
-    #                    ensemble piles on this hard it's usually the trend-
-    #                    echo failure mode. Label demoted to WEAK with an
-    #                    explicit reason (score/votes untouched — flipping an
-    #                    ensemble-level effect was already shown not to work,
-    #                    see REGIME-flip postmortem).
-    #   agree>=3 & 3<=|score|<=9 — the only band above noise in both samples
-    #                    (fresh 57.4% n=155, all-time 52.5% n=486) -> STRONG.
-    if signal != "NEUTRAL" and abs(score) >= 10:
+    # Strength calibration. The OVERHEATED demotion (ensemble piling on =
+    # trend-echo failure mode, measured anti-signal ~40% under the old
+    # weights) originally sat at |score| >= 10 when p99 was ~14; after the
+    # 2026-07-04 bias rework shrank the distribution (replay: p99=9, max=12)
+    # it is re-anchored to the new p99 so it stays a tail guard rather than
+    # becoming unreachable. The trend-echo pile-on itself is also largely
+    # prevented now by the COLOR-GATED CAP upstream.
+    if signal != "NEUTRAL" and abs(score) >= 9:
         strength = "WEAK"
         reasons.append(
-            f"OVERHEATED: |score|={abs(score)} >= 10 measured anti-signal"
-            f" (~40% win rate, n~165) => strength capped to WEAK")
+            f"OVERHEATED: |score|={abs(score)} >= 9 (p99 tail) — pile-on"
+            f" scores measured as anti-signal => strength capped to WEAK")
     elif signal != "NEUTRAL" and agree >= 3 and abs(score) >= 3:
         strength = "STRONG"
     elif signal != "NEUTRAL" and agree >= 2 and abs(score) >= 3:

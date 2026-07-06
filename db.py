@@ -360,20 +360,50 @@ def log_signal(asset: str, period: int, ctime: int, signal: str,
             con.close()
 
 
+def log_theory_votes(asset: str, period: int, ctime: int,
+                     votes: list[tuple[str, str, int, str]]) -> None:
+    """
+    Shadow-grade a prediction's per-theory votes WITHOUT a signal_log row.
+
+    Used for NEUTRAL finals (dead band / parrot guard / chop guard): the
+    ensemble made no tradeable call, but each theory still voted and its
+    vote still resolved right or wrong — dropping those (the old behavior,
+    when NEUTRAL was never logged at all) would starve theory_perf's window
+    exactly when the mute gate needs it, and a muted theory would stop
+    accumulating the very track record that could un-mute it.
+    """
+    if not votes:
+        return
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            con.executemany("""
+                INSERT OR REPLACE INTO theory_votes
+                (asset, period, ctime, theory, vote, mag, outcome)
+                VALUES (?,?,?,?,?,?,?)
+            """, [(asset, period, ctime, t, v, m, o)
+                  for t, v, m, o in votes])
+            con.commit()
+        finally:
+            con.close()
+
+
 def theory_perf(asset: str | None = None, period: int | None = None,
                 days: int = 7, min_n: int = 40) -> dict:
     """
-    Recent per-theory accuracy — the feedback loop consumed by analyze_eoc.
+    Recent per-theory accuracy — the feedback loop consumed by analyze_eoc's
+    theory mute gate (via feed.py's cached snapshot) and /api/theory-perf.
 
-    Reads right_codes / wrong_codes over the last `days` days (works for all
-    historical rows; theory_votes refines this over time). Only theories with
-    at least `min_n` resolved votes are returned, so tiny samples can never
-    flip a theory's live weighting.
+    Reads the normalized theory_votes table (one NET vote per theory per
+    candle, including shadow-graded NEUTRAL predictions) over the last
+    `days` days; draws are excluded. Only theories with at least `min_n`
+    resolved votes are returned, so tiny samples can never flip a theory's
+    live weighting.
     Returns {theory: {"n": int, "rate": float}}.
     """
     import time as _time
     cutoff = int(_time.time()) - days * 86400
-    where, params = ["ctime >= ?"], [cutoff]
+    where, params = ["ctime >= ?", "outcome IN ('right','wrong')"], [cutoff]
     if asset:
         where.append("asset=?");  params.append(asset)
     if period:
@@ -383,23 +413,19 @@ def theory_perf(asset: str | None = None, period: int | None = None,
     with _lock:
         con = sqlite3.connect(DB_PATH)
         try:
-            rows = con.execute(
-                f"SELECT right_codes, wrong_codes FROM signal_log{wsql}",
-                params).fetchall()
+            rows = con.execute(f"""
+                SELECT theory,
+                       SUM(outcome = 'right') AS r,
+                       SUM(outcome = 'wrong') AS w
+                FROM theory_votes{wsql}
+                GROUP BY theory
+            """, params).fetchall()
         finally:
             con.close()
 
-    acc: dict[str, list[int]] = {}
-    for right, wrong in rows:
-        for code in (right or "").split(","):
-            if code:
-                acc.setdefault(code, [0, 0])[0] += 1
-        for code in (wrong or "").split(","):
-            if code:
-                acc.setdefault(code, [0, 0])[1] += 1
     return {
         code: {"n": r + w, "rate": round(r / (r + w) * 100, 1)}
-        for code, (r, w) in acc.items() if (r + w) >= min_n
+        for code, r, w in rows if (r + w) >= min_n
     }
 
 

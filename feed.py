@@ -270,6 +270,16 @@ class QuotexFeed:
         self._pairs_list: list[dict] = list(_DEFAULT_PAIRS)
         self._last_pairs_refresh: float = 0.0
 
+        # Theory mute gate — live per-theory accuracy feedback loop.
+        # {theory_code: "43% n=212/7d"} built from db.theory_perf with
+        # hysteresis (see _refresh_theory_mutes); passed into every
+        # analyze_eoc call. Deliberately a cached snapshot refreshed from
+        # the manager loop, NEVER queried inline at EOC time: ~42 always-on
+        # streams close simultaneously each minute and theory_perf holds
+        # db._lock. Empty until the first refresh => no muting at startup.
+        self._muted_theories: dict[str, str] = {}
+        self._last_perf_refresh: float = 0.0
+
     # ── Public ────────────────────────────────────────────────────────────────
 
     def available_pairs(self) -> dict:
@@ -690,7 +700,8 @@ class QuotexFeed:
             before_ctime=candles[-1]["time"])
         result = analyze_eoc(candles, ticks,
                              micro_history=micro_hist,
-                             period=period)
+                             period=period,
+                             muted=self._muted_theories)
         return result, micro_hist
 
     def _run_eoc(self, stream: _AssetStream,
@@ -748,9 +759,16 @@ class QuotexFeed:
         close path and background trackers. `candles` must already contain
         `closed` as its last element (ATR history reads candles[-11:-1]).
         Returns the accuracy string (correct/wrong/draw) or None.
+
+        NEUTRAL predictions get no signal_log row (NEUTRAL is not a
+        direction and must never be graded), but their per-theory votes ARE
+        shadow-graded into theory_votes — with the dead band + parrot guard
+        producing NEUTRAL on a large share of candles, dropping those votes
+        would starve theory_perf's 7-day window exactly when the mute gate
+        depends on it, and a muted theory could never earn its way back.
         """
         accuracy = self._accuracy(closed, prediction)
-        if not (prediction and accuracy):
+        if not prediction:
             return accuracy
 
         # Log the resolved prediction with a full WHY report. For each theory
@@ -759,17 +777,18 @@ class QuotexFeed:
         try:
             import json as _json
             reasons   = prediction.get("reasons", [])
-            is_draw   = accuracy == "draw"
+            is_draw   = closed["close"] == closed["open"]
             actual_up = closed["close"] > closed["open"]
 
-            # Per-theory votes, AGGREGATED per theory ([OFF]-marked lines
-            # are already excluded by _parse_votes). A theory like RUN can
-            # emit several sub-votes in one candle — summing them into one
-            # NET vote per theory prevents (a) the theory_votes PK
-            # overwriting earlier sub-votes and (b) the same theory landing
-            # in right_codes AND wrong_codes at once. A theory whose
-            # sub-votes cancel out (net 0) casts no vote. Draw candles are
-            # refunds: theories are neither right nor wrong on them.
+            # Per-theory votes, AGGREGATED per theory. Muted lines are
+            # INCLUDED deliberately (include_muted default) — shadow-grading
+            # them is what lets a muted theory keep its track record alive.
+            # A theory like RUN can emit several sub-votes in one candle —
+            # summing them into one NET vote per theory prevents (a) the
+            # theory_votes PK overwriting earlier sub-votes and (b) the same
+            # theory landing in right_codes AND wrong_codes at once. A theory
+            # whose sub-votes cancel out (net 0) casts no vote. Draw candles
+            # are refunds: theories are neither right nor wrong on them.
             _net: dict[str, int] = {}
             for code, vdir, mag in _parse_votes(reasons):
                 _net[code] = _net.get(code, 0) + vdir * mag
@@ -788,6 +807,11 @@ class QuotexFeed:
                     (right if outcome == "right" else wrong).add(code)
                 votes.append((code, "CALL" if voted_up else "PUT",
                               abs(net), outcome))
+
+            # NEUTRAL final — shadow-grade the votes, skip the postmortem.
+            if not accuracy:
+                _db.log_theory_votes(asset, period, closed["time"], votes)
+                return accuracy
 
             # ── Postmortem: WHY did this trade win or lose ─────────────
             move  = closed["close"] - closed["open"]
@@ -1581,6 +1605,37 @@ class QuotexFeed:
         self._client, self._connected = None, False
         self._record_stream_error()
 
+    async def _refresh_theory_mutes(self) -> None:
+        """
+        Refresh the theory mute set from live 7-day per-theory accuracy
+        (db.theory_perf over theory_votes — includes shadow-graded NEUTRAL
+        predictions, so muted theories keep building the record that can
+        un-mute them).
+
+        Hysteresis: mute below 45% (n>=100 so a true-coin-flip theory rarely
+        false-trips), un-mute at 48%+ — the gap stops borderline theories
+        from flapping in and out every refresh.
+        """
+        MUTE_BELOW, UNMUTE_AT, MIN_N = 45.0, 48.0, 100
+        try:
+            perf = await asyncio.to_thread(
+                _db.theory_perf, None, None, 7, MIN_N)
+        except Exception as exc:
+            print(f"[feed] theory_perf refresh error: {exc}")
+            return
+        for code, st in perf.items():
+            rate, n = st["rate"], st["n"]
+            note = f"{rate:.0f}% n={n}/7d"
+            if code in self._muted_theories:
+                if rate >= UNMUTE_AT:
+                    del self._muted_theories[code]
+                    print(f"[feed] theory {code} UN-MUTED ({note})")
+                else:
+                    self._muted_theories[code] = note   # keep annotation fresh
+            elif rate < MUTE_BELOW:
+                self._muted_theories[code] = note
+                print(f"[feed] theory {code} MUTED ({note})")
+
     def _reconcile_always_on(self) -> None:
         """
         Keep the always-on set in sync with the latest payout/market data
@@ -1713,6 +1768,11 @@ class QuotexFeed:
                 if time.time() - self._last_pairs_refresh > 300:
                     await self._load_pairs(broadcast)
                     self._reconcile_always_on()
+
+                # ── Refresh theory mute set every 5 minutes ────────────────
+                if time.time() - self._last_perf_refresh > 300:
+                    self._last_perf_refresh = time.time()
+                    await self._refresh_theory_mutes()
 
             except Exception as exc:
                 import traceback
