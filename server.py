@@ -186,7 +186,11 @@ async def stream_status():
 @app.get("/api/stats")
 def stats(asset: str | None = None, period: int | None = None):
     import db as _db
-    return _db.get_stats(asset, period)
+    s = _db.get_stats(asset, period)
+    # Live mute-gate state (feed-side, not in the DB) — lets the UI mark
+    # theories the feedback loop has currently benched.
+    s["muted_theories"] = dict(feed._muted_theories)
+    return s
 
 
 @app.get("/api/theory-report")

@@ -992,7 +992,11 @@ async function loadStats() {
     if (wr)  { wr.textContent  = txt; wr.className = _wrClass(s.rate, s.total); }
     if (wro) { wro.textContent = txt; wro.className = 'wr-overall ' + _wrClass(s.rate, s.total); }
 
-    // Per-theory TRUE accuracy list (right_codes/wrong_codes based)
+    // Per-theory TRUE accuracy list (right_codes/wrong_codes based).
+    // Theories currently benched by the live mute gate (7-day accuracy
+    // below the floor) get a MUTED tag — their votes are shown in reasons
+    // but excluded from the score until they recover.
+    const muted = s.muted_theories || {};
     const ul = document.getElementById('theory-stats');
     if (ul) {
       ul.innerHTML = '';
@@ -1003,10 +1007,16 @@ async function loadStats() {
         // Sort by sample count
         entries.sort((a, b) => b[1].n - a[1].n);
         for (const [code, t] of entries) {
+          const isMuted = Object.prototype.hasOwnProperty.call(muted, code);
           const li = document.createElement('li');
-          li.className = 'theory-stat ' + _wrClass(t.rate, t.n);
+          li.className = 'theory-stat ' + _wrClass(t.rate, t.n) +
+                         (isMuted ? ' ts-muted' : '');
+          li.title = isMuted
+            ? `Auto-muted by the live accuracy gate (${muted[code]}) — votes excluded until it recovers to 48%+`
+            : '';
           li.innerHTML =
             `<span class="ts-code">${code}</span>` +
+            (isMuted ? '<span class="ts-mute-tag">MUTED</span>' : '') +
             `<span class="ts-rate">${t.rate}%</span>` +
             `<span class="ts-n">${t.right}/${t.n}</span>`;
           ul.appendChild(li);

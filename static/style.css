@@ -172,6 +172,17 @@ html, body {
   color: #555566;
   font-variant-numeric: tabular-nums;
 }
+#theory-stats li.ts-muted { opacity: 0.55; }
+.ts-mute-tag {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--yellow);
+  border: 1px solid rgba(255,215,64,0.4);
+  border-radius: 3px;
+  padding: 0 3px;
+  flex-shrink: 0;
+}
 #theory-stats li.wr-good { border-color: var(--green); }
 #theory-stats li.wr-good .ts-rate { color: #80f0b0; }
 #theory-stats li.wr-bad  { border-color: var(--red); }
