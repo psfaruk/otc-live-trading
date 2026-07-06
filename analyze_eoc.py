@@ -1442,6 +1442,28 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         _weak_cap_reasons.append(
             f"NO EDGE: |score|={abs(score)} is noise-level -> WEAK")
 
+    # UNSTABLE BASE (2026-07-06, USER observation, then verified on 3,475
+    # graded live signals): predictions made off a doji / spinning-top /
+    # marubozu base candle measured 47.3-48.3% vs 51.6% off normal candles
+    # (combined z≈2.4 — the first candle-shape effect to show real
+    # statistical support in this project). Direction stands (every-candle
+    # mode) but strength is capped to WEAK after these shapes.
+    _base_body = body / total_range
+    _base_uw   = upper_wick / total_range
+    _base_lw   = lower_wick / total_range
+    if _base_body <= 0.08:
+        _weak_cap_reasons.append(
+            "UNSTABLE BASE: doji base candle — measured 48.3% live (n=232)"
+            " -> WEAK")
+    elif _base_body <= 0.30 and _base_uw >= 0.28 and _base_lw >= 0.28:
+        _weak_cap_reasons.append(
+            "UNSTABLE BASE: spinning-top base candle — measured 47.3% live"
+            " (n=237) -> WEAK")
+    elif _base_body >= 0.75:
+        _weak_cap_reasons.append(
+            "UNSTABLE BASE: marubozu base candle — measured 47.3% live"
+            " (n=859) -> WEAK")
+
     # PARROT GUARD (2026-07-04 bias audit): 87% of live signals simply
     # repeated the just-closed candle's color, because most theories are
     # mechanically color-gated (they CAN'T vote the other way). A signal

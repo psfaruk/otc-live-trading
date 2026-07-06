@@ -958,24 +958,33 @@ function _closePairPanel() {
   document.getElementById('pair-btn').classList.remove('open');
 }
 
-document.getElementById('pair-btn').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const panel = document.getElementById('pair-panel');
-  if (panel.classList.contains('hidden')) _openPairPanel();
-  else _closePairPanel();
-});
+// Guarded wiring: if any picker element is missing (e.g. a stale
+// index.html cached across a deploy paired with fresh chart.js), skip the
+// picker instead of throwing at top level — an uncaught error here would
+// kill the ENTIRE script (WS, chart, everything), which reads as "the app
+// crashed" even though only one widget was unavailable.
+(() => {
+  const btn    = document.getElementById('pair-btn');
+  const panel  = document.getElementById('pair-panel');
+  const search = document.getElementById('pair-search');
+  if (!btn || !panel || !search) return;
 
-document.getElementById('pair-panel').addEventListener('click', (e) => e.stopPropagation());
-document.addEventListener('click', () => _closePairPanel());
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') _closePairPanel();
-});
-window.addEventListener('resize', () => _closePairPanel());
-
-document.getElementById('pair-search').addEventListener('input', (e) => {
-  pairSearchTerm = e.target.value;
-  _renderPairRows();
-});
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (panel.classList.contains('hidden')) _openPairPanel();
+    else _closePairPanel();
+  });
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => _closePairPanel());
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') _closePairPanel();
+  });
+  window.addEventListener('resize', () => _closePairPanel());
+  search.addEventListener('input', (e) => {
+    pairSearchTerm = e.target.value;
+    _renderPairRows();
+  });
+})();
 
 document.getElementById('tf-select').addEventListener('change', (e) => {
   currentPeriod = parseInt(e.target.value, 10);
