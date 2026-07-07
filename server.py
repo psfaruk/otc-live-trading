@@ -4,6 +4,7 @@ import hmac
 import os
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
@@ -128,6 +129,7 @@ def _tier_payload(data: dict, category: str) -> dict:
         pred.pop("reasons", None)
         pred.pop("key_levels", None)
         pred.pop("wick_walls", None)
+        pred.pop("market_state", None)
         out["prediction"] = pred
     out.pop("micro", None)
     out.pop("running_conf", None)
@@ -180,9 +182,10 @@ async def auth_middleware(request: Request, call_next):
     if user:
         # Route handlers read these instead of re-querying the DB — e.g.
         # the /api/admin/* routes just check request.state.category.
-        request.state.user_id  = user["id"]
-        request.state.email    = user["email"]
-        request.state.category = user["category"]
+        request.state.user_id    = user["id"]
+        request.state.email      = user["email"]
+        request.state.category   = user["category"]
+        request.state.created_at = user["created_at"]
         return await call_next(request)
     # Page loads go to the styled login screen; API calls get a plain 401
     # (a redirect would just confuse fetch() callers).
@@ -267,7 +270,33 @@ async def logout():
 @app.get("/api/me")
 async def me(request: Request):
     # Populated by auth_middleware — no extra DB call needed here.
-    return {"email": request.state.email, "category": request.state.category}
+    return {"email": request.state.email,
+            "category": request.state.category,
+            "created_at": request.state.created_at}
+
+
+class PasswordChangeReq(BaseModel):
+    current: str = ""
+    new: str = ""
+
+
+@app.post("/api/account/password")
+def change_password(req: PasswordChangeReq, request: Request,
+                    response: Response):
+    # sync def: two PBKDF2 runs (verify old + hash new) — same threadpool
+    # reasoning as /api/signup.
+    if len(req.new) < 8:
+        response.status_code = 400
+        return {"ok": False,
+                "error": "New password must be at least 8 characters"}
+    user = _db.change_password(request.state.user_id, req.current, req.new)
+    if not user:
+        response.status_code = 401
+        return {"ok": False, "error": "Current password is wrong"}
+    # change_password just bumped token_version (revoking every issued
+    # cookie) — re-issue THIS session's so only other devices sign out.
+    _set_session_cookie(response, user)
+    return {"ok": True}
 
 
 @app.websocket("/ws")
@@ -402,6 +431,118 @@ def admin_analytics(request: Request):
         "streams": feed.stream_status(),
         "stats": _db.get_stats(),
     }
+
+
+# ── Promos + notifications (admin CMS, redesign Phase 4) ─────────────────────
+
+_CMS_TARGETS = {"all", "normal", "premium", "admin"}
+
+
+class PromoReq(BaseModel):
+    title: str = ""
+    body: str = ""
+    code: str = ""
+    target: str = "all"
+    days: int = 0        # promo lifetime in days; 0 = no expiry
+
+
+@app.get("/api/admin/promos")
+def admin_list_promos(request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    return {"promos": _db.list_promos_admin()}
+
+
+@app.post("/api/admin/promos")
+def admin_create_promo(req: PromoReq, request: Request, response: Response):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    title = req.title.strip()
+    if not title or req.target not in _CMS_TARGETS:
+        response.status_code = 400
+        return {"ok": False, "error": "Title and a valid target are required"}
+    ends_at = int(time.time()) + req.days * 86400 if req.days > 0 else None
+    pid = _db.create_promo(title, req.body.strip(),
+                           req.code.strip() or None, req.target, ends_at)
+    return {"ok": True, "id": pid}
+
+
+class PromoActiveReq(BaseModel):
+    active: bool = True
+
+
+@app.post("/api/admin/promos/{promo_id}/active")
+def admin_promo_active(promo_id: int, req: PromoActiveReq, request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    return {"ok": _db.set_promo_active(promo_id, req.active)}
+
+
+@app.delete("/api/admin/promos/{promo_id}")
+def admin_delete_promo(promo_id: int, request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    return {"ok": _db.delete_promo(promo_id)}
+
+
+class NoticeReq(BaseModel):
+    title: str = ""
+    body: str = ""
+    target: str = "all"
+
+
+@app.get("/api/admin/notices")
+def admin_list_notices(request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    return {"notices": _db.list_notices_admin()}
+
+
+@app.post("/api/admin/notices")
+async def admin_create_notice(req: NoticeReq, request: Request,
+                              response: Response):
+    # async (unlike its CRUD siblings): after the insert it pushes a WS nudge
+    # so every open client refreshes its bell immediately — _broadcast needs
+    # the event loop, so the quick DB write goes through to_thread instead
+    # of the usual sync-def threadpool convention.
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    title = req.title.strip()
+    if not title or req.target not in _CMS_TARGETS:
+        response.status_code = 400
+        return {"ok": False, "error": "Title and a valid target are required"}
+    nid = await asyncio.to_thread(
+        _db.create_notice, title, req.body.strip(), req.target)
+    # Content-free nudge: clients refetch /api/notices, where tier/read
+    # filtering happens per-user server-side (a broadcast payload can't
+    # carry per-tier content — it goes to everyone).
+    await _broadcast({"type": "notice"})
+    return {"ok": True, "id": nid}
+
+
+@app.delete("/api/admin/notices/{notice_id}")
+def admin_delete_notice(notice_id: int, request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    return {"ok": _db.delete_notice(notice_id)}
+
+
+@app.get("/api/promos")
+def my_promos(request: Request):
+    return {"promos": _db.list_promos_for(request.state.category)}
+
+
+@app.get("/api/notices")
+def my_notices(request: Request):
+    items, unread = _db.list_notices_for(request.state.user_id,
+                                         request.state.category)
+    return {"notices": items, "unread": unread}
+
+
+@app.post("/api/notices/read")
+def my_notices_read(request: Request):
+    _db.mark_notices_read(request.state.user_id, request.state.category)
+    return {"ok": True}
 
 
 class NoCacheStaticFiles(StaticFiles):

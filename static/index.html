@@ -21,7 +21,16 @@
           </svg>
           <span class="logo-text">PLYBIT <em>AI</em></span>
         </div>
-        <div id="status" class="status disconnected">● Connecting</div>
+        <div class="header-top-right">
+          <div id="status" class="status disconnected">● Connecting</div>
+          <!-- Notification bell — on ALL tabs (it sits in .header-top, not
+               the Advance-only .header-stats cluster). Badge + pulse only
+               while something is unread. -->
+          <button type="button" id="notif-btn" class="notif-btn" title="Notifications">
+            <span class="notif-bell">🔔</span>
+            <span id="notif-badge" class="notif-badge hidden">0</span>
+          </button>
+        </div>
       </div>
       <!-- Hidden on mobile (<640px) while a non-Advance tab is active — see
            #bottom-tabs JS. Always shown on desktop regardless (the
@@ -151,9 +160,11 @@
                underlying detail sections stay in the DOM but empty. -->
           <div id="upgrade-placeholder" class="info-card hidden">
             <h2>🔒 Premium analysis</h2>
-            <p>Theory accuracy, key levels, live tick flow, and the full
-              why-this-signal reasons list are available on Premium and
-              Admin accounts. Ask an admin to upgrade your account.</p>
+            <p>Deep market-state analysis (continuation / exhaustion /
+              reversal / trap), theory accuracy, key levels, live tick flow,
+              and the full why-this-signal reasons list are available on
+              Premium and Admin accounts. Ask an admin to upgrade your
+              account.</p>
           </div>
 
           <!-- Everything below is real per-account data (see server.py's
@@ -161,8 +172,23 @@
                as a unit for 'normal' accounts instead of rendering a pile
                of empty/placeholder sections under the upgrade card above. -->
           <div id="side-panel-detail">
+            <!-- Deep market-state read (continuation / exhaustion / reversal /
+                 trap / range) — analyze_eoc's MARKET STATE block. This is an
+                 informational layer independent of the CALL/PUT vote pipeline;
+                 its per-state accuracy is logged via signal_log tags. -->
+            <div class="panel-title">Deep Analysis</div>
+            <div id="mstate-card" class="mstate-card">
+              <div class="mstate-head">
+                <span id="mstate-chip" class="mstate-chip">–</span>
+                <span id="mstate-bias" class="mstate-bias"></span>
+              </div>
+              <div class="mstate-meter-track"><div id="mstate-meter" class="mstate-meter"></div></div>
+              <ul id="mstate-evidence"><li class="empty">Waiting for the next closed candle…</li></ul>
+              <div id="mstate-bars" class="mstate-bars"></div>
+            </div>
+
             <!-- TRUE per-theory accuracy (from DB WHY report) -->
-            <div class="panel-title">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
+            <div class="panel-title panel-title-gap">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
             <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
 
             <!-- Key levels active on chart -->
@@ -249,15 +275,67 @@
       <ul id="pair-list" class="pair-list"></ul>
     </div>
 
-    <!-- ═══ HOME TAB — mobile only, info + disclaimer ═══════════════════ -->
+    <!-- ═══ HOME TAB — mobile only. "AI Trading Command Center" home per the
+         2026-07-07 redesign spec: status band → hero signal → promo slot →
+         quick nav cards → info/disclaimer → legal footer. ═══════════════════ -->
     <div id="tab-home" class="tab-screen hidden">
+
+      <!-- Top status band: live state · pair · payout · next-candle timer -->
+      <div class="home-status">
+        <span id="home-live" class="home-live off">● OFFLINE</span>
+        <span id="home-pair" class="home-pair">–</span>
+        <span id="home-payout" class="home-payout"></span>
+        <span class="home-next">Next <b id="home-countdown">–</b></span>
+      </div>
+
+      <!-- Hero: the last signal, live-updated (same data as the Advance
+           signal bar — rendered by chart.js updateSignalUI). -->
+      <div id="home-hero" class="home-hero">
+        <div class="home-hero-top">
+          <span class="home-hero-label">Last signal</span>
+          <span id="home-hero-state" class="mstate-chip hidden">–</span>
+        </div>
+        <div id="home-hero-badge" class="signal-badge neutral">– Waiting</div>
+        <div id="home-hero-meta" class="home-hero-meta">Waiting for the next closed candle…</div>
+        <div class="conf-bar-wrap"><div id="home-hero-conf" class="conf-bar"></div></div>
+      </div>
+
+      <!-- Promo cards land here once the admin CMS (redesign Phase 4)
+           can publish them — until then this stays empty and hidden. -->
+      <div id="home-promos" class="home-promos hidden"></div>
+
+      <!-- Quick nav cards -->
+      <div class="home-grid">
+        <button type="button" class="home-card" data-goto="signals">
+          <span class="home-card-icon">⚡</span>
+          <span class="home-card-name">Live Signals</span>
+          <span class="home-card-sub">Popup on every candle close</span>
+        </button>
+        <button type="button" class="home-card" data-goto="advance">
+          <span class="home-card-icon">📈</span>
+          <span class="home-card-name">Advanced Chart</span>
+          <span class="home-card-sub">Candles, levels & theories</span>
+        </button>
+        <button type="button" class="home-card" id="home-card-history">
+          <span class="home-card-icon">🕘</span>
+          <span class="home-card-name">History</span>
+          <span class="home-card-sub">Past signals & results</span>
+        </button>
+        <button type="button" class="home-card home-card-premium" data-goto="settings">
+          <span class="home-card-icon">◆</span>
+          <span class="home-card-name">Premium Analysis</span>
+          <span class="home-card-sub">Deep market-state read</span>
+        </button>
+      </div>
+
       <div class="info-card">
         <h2>What Plybit AI does</h2>
         <p>Streams live OTC forex candles from Quotex and runs a set of
           price-action theories (tick pressure, wick rejection, candle
           patterns, multi-timeframe trend) against every closed candle to
           produce a CALL/PUT read with a STRONG/MEDIUM/WEAK strength
-          label.</p>
+          label — plus a deep market-state read (continuation, exhaustion,
+          reversal, trap).</p>
         <ul>
           <li>Only forex pairs at or above the live payout floor stream
             continuously — everything else is blocked from opening.</li>
@@ -279,6 +357,37 @@
           winning trades. Treat every signal as informational, never as
           a guarantee.</p>
       </div>
+
+      <!-- Legal footer — links toggle the matching text block below -->
+      <footer class="home-footer">
+        <nav class="home-footer-links">
+          <button type="button" class="home-legal-link" data-legal="terms">Terms</button>
+          <span>·</span>
+          <button type="button" class="home-legal-link" data-legal="privacy">Privacy</button>
+          <span>·</span>
+          <button type="button" class="home-legal-link" data-legal="risk">Risk Disclaimer</button>
+        </nav>
+        <div id="legal-terms" class="home-legal-body hidden">
+          Plybit AI provides educational market analysis only. Nothing in
+          this app is financial advice, an inducement to trade, or a
+          guarantee of any outcome. You are solely responsible for any
+          trading decision you make. Accounts may be suspended for abuse.
+        </div>
+        <div id="legal-privacy" class="home-legal-body hidden">
+          We store your email, password hash, account tier and signal
+          history needed to run the service. Data is never sold or shared
+          with third parties. Ask an admin to delete your account and its
+          data at any time.
+        </div>
+        <div id="legal-risk" class="home-legal-body hidden">
+          Binary options trading carries a high risk of losing your entire
+          stake. This app's own measurements show no strategy achieves a
+          reliable edge on OTC feeds. Regulators (e.g. the US CFTC) warn
+          that binary platforms can overstate returns. Never trade money
+          you cannot afford to lose.
+        </div>
+        <div class="home-copy">© 2026 Plybit AI. All rights reserved.</div>
+      </footer>
     </div>
 
     <!-- ═══ SIGNALS TAB — mobile only, pair picker + popup results ══════ -->
@@ -296,6 +405,19 @@
         <div id="signals-last-badge" class="signal-badge neutral">–</div>
         <div id="signals-last-meta" class="signals-last-meta">–</div>
       </div>
+    </div>
+
+    <!-- Notification panel — fixed overlay under the bell; a sibling of the
+         tab-screens for the same display:none-ancestor reason as
+         #pair-panel above. Opening it marks everything read. -->
+    <div id="notif-panel" class="notif-panel hidden">
+      <div class="notif-panel-head">
+        <span>Notifications</span>
+        <button type="button" id="notif-close" class="history-btn">✕</button>
+      </div>
+      <ul id="notif-list" class="notif-list">
+        <li class="notif-empty">No notifications yet</li>
+      </ul>
     </div>
 
     <!-- Signal popup — fixed overlay, a sibling of the tab-screens so it
@@ -319,10 +441,66 @@
       <!-- Only shown when opened as a desktop modal (see style.css) — on
            mobile you leave this tab by tapping a different bottom tab. -->
       <button type="button" id="settings-modal-close" class="history-btn">✕</button>
+
+      <!-- Profile -->
       <div class="info-card">
-        <h2>Account</h2>
-        <p id="account-summary">–</p>
+        <h2>Profile</h2>
+        <div class="settings-row"><span>Email</span><span id="profile-email">–</span></div>
+        <div class="settings-row"><span>Plan</span><span id="profile-tier" class="tier-badge">–</span></div>
+        <div class="settings-row"><span>Joined</span><span id="profile-joined">–</span></div>
         <button type="button" id="logout-btn" class="logout-btn">Log out</button>
+      </div>
+
+      <!-- Plan / tier comparison — the current tier's row is highlighted
+           by _loadMe. Upgrades stay admin-managed (no self-serve billing). -->
+      <div class="info-card" id="plan-card">
+        <h2>Plan</h2>
+        <ul class="plan-list">
+          <li data-tier="normal"><b>Normal</b> — live chart + CALL/PUT signals</li>
+          <li data-tier="premium"><b>Premium</b> — deep market-state analysis,
+            why-this-signal reasons, key levels, live tick flow</li>
+          <li data-tier="admin"><b>Admin</b> — everything + user management
+            dashboard</li>
+        </ul>
+        <p class="plan-note">Upgrades are handled by an admin.</p>
+      </div>
+
+      <!-- Security -->
+      <div class="info-card">
+        <h2>Security</h2>
+        <form id="pw-form" autocomplete="off">
+          <input type="password" id="pw-current" class="settings-input"
+                 placeholder="Current password" autocomplete="current-password" />
+          <input type="password" id="pw-new" class="settings-input"
+                 placeholder="New password (min 8 characters)" autocomplete="new-password" />
+          <input type="password" id="pw-confirm" class="settings-input"
+                 placeholder="Repeat new password" autocomplete="new-password" />
+          <button type="submit" class="history-btn pw-submit">Change password</button>
+          <div id="pw-msg" class="pw-msg"></div>
+        </form>
+        <p class="plan-note">Changing your password signs out every other
+          device (this one stays logged in).</p>
+      </div>
+
+      <!-- Preferences — client-side (localStorage), applied live by chart.js -->
+      <div class="info-card">
+        <h2>Preferences</h2>
+        <label class="pref-row">
+          <span>Signal popup on candle close</span>
+          <input type="checkbox" id="pref-popup" />
+        </label>
+        <label class="pref-row">
+          <span>Key level lines on chart</span>
+          <input type="checkbox" id="pref-klines" />
+        </label>
+        <label class="pref-row">
+          <span>Wick-wall lines on chart</span>
+          <input type="checkbox" id="pref-wwalls" />
+        </label>
+        <label class="pref-row">
+          <span>Prediction ghost candle</span>
+          <input type="checkbox" id="pref-ghost" />
+        </label>
       </div>
 
       <!-- Admin-only — shown by chart.js only when /api/me reports
@@ -346,11 +524,85 @@
             </tbody>
           </table>
         </div>
+
+        <!-- Promotions (CMS) — published cards land on every targeted
+             user's Home tab via /api/promos. -->
+        <div class="panel-title panel-title-gap">Promotions</div>
+        <form id="promo-form" class="cms-form" autocomplete="off">
+          <input type="text" id="promo-title" class="settings-input" placeholder="Title" maxlength="80" />
+          <input type="text" id="promo-body" class="settings-input" placeholder="Text (optional)" maxlength="240" />
+          <div class="cms-form-row">
+            <input type="text" id="promo-code" class="settings-input" placeholder="Code" maxlength="24" />
+            <select id="promo-target" class="ctrl-select">
+              <option value="all">Everyone</option>
+              <option value="normal">Normal</option>
+              <option value="premium">Premium</option>
+              <option value="admin">Admins</option>
+            </select>
+            <select id="promo-days" class="ctrl-select" title="How long the card stays live">
+              <option value="0">No expiry</option>
+              <option value="1">1 day</option>
+              <option value="7">7 days</option>
+              <option value="30">30 days</option>
+            </select>
+          </div>
+          <button type="submit" class="history-btn">Publish promo</button>
+          <div id="promo-msg" class="pw-msg"></div>
+        </form>
+        <ul id="admin-promo-list" class="cms-list"><li class="notif-empty">Loading…</li></ul>
+
+        <!-- Notifications (broadcast) — pushes a live refresh to every
+             connected client's bell. -->
+        <div class="panel-title panel-title-gap">Notifications</div>
+        <form id="notice-form" class="cms-form" autocomplete="off">
+          <input type="text" id="notice-title" class="settings-input" placeholder="Title" maxlength="80" />
+          <input type="text" id="notice-body" class="settings-input" placeholder="Message (optional)" maxlength="240" />
+          <div class="cms-form-row">
+            <select id="notice-target" class="ctrl-select">
+              <option value="all">Everyone</option>
+              <option value="normal">Normal</option>
+              <option value="premium">Premium</option>
+              <option value="admin">Admins</option>
+            </select>
+            <button type="submit" class="history-btn">Send</button>
+          </div>
+          <div id="notice-msg" class="pw-msg"></div>
+        </form>
+        <ul id="admin-notice-list" class="cms-list"><li class="notif-empty">Loading…</li></ul>
+      </div>
+
+      <!-- Legal — native details/summary, no JS (the Home footer's toggle
+           blocks use different element ids; these are self-contained). -->
+      <div class="info-card">
+        <h2>Legal</h2>
+        <details class="legal-details">
+          <summary>Terms of Use</summary>
+          <p>Plybit AI provides educational market analysis only. Nothing in
+            this app is financial advice, an inducement to trade, or a
+            guarantee of any outcome. You are solely responsible for any
+            trading decision you make. Accounts may be suspended for abuse.</p>
+        </details>
+        <details class="legal-details">
+          <summary>Privacy</summary>
+          <p>We store your email, password hash, account tier and signal
+            history needed to run the service. Data is never sold or shared
+            with third parties. Ask an admin to delete your account and its
+            data at any time.</p>
+        </details>
+        <details class="legal-details">
+          <summary>Risk Disclaimer</summary>
+          <p>Binary options trading carries a high risk of losing your entire
+            stake. This app's own measurements show no strategy achieves a
+            reliable edge on OTC feeds. Regulators (e.g. the US CFTC) warn
+            that binary platforms can overstate returns. Never trade money
+            you cannot afford to lose.</p>
+        </details>
       </div>
 
       <div class="info-card">
         <h2>About</h2>
         <p>Plybit AI — live OTC price-action signal dashboard.</p>
+        <p class="plan-note">© 2026 Plybit AI. All rights reserved.</p>
       </div>
     </div>
 
@@ -362,8 +614,10 @@
       <button type="button" class="tab-btn" data-tab="signals">
         <span class="tab-btn-icon">⚡</span><span class="tab-btn-label">Signals</span>
       </button>
+      <!-- data-tab stays 'advance' (screen id / persisted tab key) — only
+           the visible label follows the redesign spec's nav naming. -->
       <button type="button" class="tab-btn active" data-tab="advance">
-        <span class="tab-btn-icon">📈</span><span class="tab-btn-label">Advance</span>
+        <span class="tab-btn-icon">📈</span><span class="tab-btn-label">Chart</span>
       </button>
       <button type="button" class="tab-btn" data-tab="settings">
         <span class="tab-btn-icon">⚙</span><span class="tab-btn-label">Settings</span>

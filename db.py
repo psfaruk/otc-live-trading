@@ -142,6 +142,37 @@ CREATE TABLE IF NOT EXISTS users (
     token_version INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL
 );
+
+-- Admin-published promo cards (redesign Phase 4 CMS). target: which tier
+-- sees the card — 'all' or a specific category. App-side filtering, same
+-- convention as users.category (no CHECK constraint).
+CREATE TABLE IF NOT EXISTS promos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT    NOT NULL,
+    body       TEXT    NOT NULL DEFAULT '',
+    code       TEXT    DEFAULT NULL,        -- optional coupon/promo code
+    target     TEXT    NOT NULL DEFAULT 'all',
+    active     INTEGER NOT NULL DEFAULT 1,
+    ends_at    INTEGER DEFAULT NULL,        -- NULL = no expiry
+    created_at INTEGER NOT NULL
+);
+
+-- Admin broadcast notifications + per-user read marks. Reads are a
+-- separate table (not a column) so one notice fans out to any number of
+-- users without a write per user at publish time.
+CREATE TABLE IF NOT EXISTS notices (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT    NOT NULL,
+    body       TEXT    NOT NULL DEFAULT '',
+    target     TEXT    NOT NULL DEFAULT 'all',
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notice_reads (
+    user_id   INTEGER NOT NULL,
+    notice_id INTEGER NOT NULL,
+    read_at   INTEGER NOT NULL,
+    PRIMARY KEY (user_id, notice_id)
+);
 """
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -289,6 +320,33 @@ def get_user_for_session(user_id: int, token_version: int) -> dict | None:
             con.close()
 
 
+def change_password(user_id: int, old_password: str,
+                    new_password: str) -> dict | None:
+    """Verify the old password, store the new hash and bump token_version —
+    the bump is what get_user_for_session's revocation check anticipates:
+    every OTHER device's cookie dies instantly. The caller re-issues THIS
+    session's cookie from the returned (fresh token_version) user dict.
+    Returns None if the old password is wrong."""
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            row = con.execute("SELECT password_hash FROM users WHERE id=?",
+                              (user_id,)).fetchone()
+            if not row or not _check_password(old_password, row[0]):
+                return None
+            con.execute(
+                "UPDATE users SET password_hash=?,"
+                " token_version=token_version+1 WHERE id=?",
+                (hash_password(new_password), user_id))
+            con.commit()
+            urow = con.execute(
+                "SELECT id, email, category, token_version, created_at"
+                " FROM users WHERE id=?", (user_id,)).fetchone()
+            return _row_to_user(urow)
+        finally:
+            con.close()
+
+
 def set_user_category(user_id: int, category: str) -> bool:
     if category not in ("normal", "premium", "admin"):
         return False
@@ -311,6 +369,166 @@ def list_users() -> list[dict]:
                 "SELECT id, email, category, token_version, created_at"
                 " FROM users ORDER BY created_at DESC").fetchall()
             return [_row_to_user(r) for r in rows]
+        finally:
+            con.close()
+
+
+# ── Promos + notices (admin CMS, redesign Phase 4) ───────────────────────────
+
+def _tier_clause(category: str) -> tuple[str, tuple]:
+    """WHERE fragment matching rows targeted at 'all' or this user's tier."""
+    return "target IN ('all', ?)", (category,)
+
+
+def create_promo(title: str, body: str = "", code: str | None = None,
+                 target: str = "all", ends_at: int | None = None) -> int:
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            cur = con.execute(
+                """INSERT INTO promos (title, body, code, target, ends_at,
+                                       created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (title, body, code or None, target, ends_at,
+                 int(time.time())))
+            con.commit()
+            return cur.lastrowid
+        finally:
+            con.close()
+
+
+def list_promos_admin() -> list[dict]:
+    """Every promo, newest first — the admin management view."""
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            rows = con.execute(
+                "SELECT id, title, body, code, target, active, ends_at,"
+                " created_at FROM promos ORDER BY id DESC").fetchall()
+            return [{"id": r[0], "title": r[1], "body": r[2], "code": r[3],
+                     "target": r[4], "active": bool(r[5]), "ends_at": r[6],
+                     "created_at": r[7]} for r in rows]
+        finally:
+            con.close()
+
+
+def list_promos_for(category: str) -> list[dict]:
+    """Active, unexpired promos visible to this tier (the Home cards)."""
+    clause, params = _tier_clause(category)
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            rows = con.execute(
+                f"""SELECT id, title, body, code FROM promos
+                    WHERE active=1 AND {clause}
+                      AND (ends_at IS NULL OR ends_at > ?)
+                    ORDER BY id DESC LIMIT 10""",
+                (*params, int(time.time()))).fetchall()
+            return [{"id": r[0], "title": r[1], "body": r[2], "code": r[3]}
+                    for r in rows]
+        finally:
+            con.close()
+
+
+def set_promo_active(promo_id: int, active: bool) -> bool:
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            cur = con.execute("UPDATE promos SET active=? WHERE id=?",
+                              (1 if active else 0, promo_id))
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+def delete_promo(promo_id: int) -> bool:
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            cur = con.execute("DELETE FROM promos WHERE id=?", (promo_id,))
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+def create_notice(title: str, body: str = "", target: str = "all") -> int:
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            cur = con.execute(
+                "INSERT INTO notices (title, body, target, created_at)"
+                " VALUES (?,?,?,?)",
+                (title, body, target, int(time.time())))
+            con.commit()
+            return cur.lastrowid
+        finally:
+            con.close()
+
+
+def list_notices_admin() -> list[dict]:
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            rows = con.execute(
+                "SELECT id, title, body, target, created_at FROM notices"
+                " ORDER BY id DESC LIMIT 100").fetchall()
+            return [{"id": r[0], "title": r[1], "body": r[2],
+                     "target": r[3], "created_at": r[4]} for r in rows]
+        finally:
+            con.close()
+
+
+def list_notices_for(user_id: int, category: str,
+                     limit: int = 30) -> tuple[list[dict], int]:
+    """(notices newest-first with per-user read flag, unread count)."""
+    clause, params = _tier_clause(category)
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            rows = con.execute(
+                f"""SELECT n.id, n.title, n.body, n.created_at,
+                           r.notice_id IS NOT NULL AS is_read
+                    FROM notices n
+                    LEFT JOIN notice_reads r
+                      ON r.notice_id = n.id AND r.user_id = ?
+                    WHERE {clause}
+                    ORDER BY n.id DESC LIMIT ?""",
+                (user_id, *params, limit)).fetchall()
+            items = [{"id": r[0], "title": r[1], "body": r[2],
+                      "created_at": r[3], "read": bool(r[4])} for r in rows]
+            unread = sum(1 for i in items if not i["read"])
+            return items, unread
+        finally:
+            con.close()
+
+
+def mark_notices_read(user_id: int, category: str) -> None:
+    """Mark every notice this user can currently see as read."""
+    clause, params = _tier_clause(category)
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            con.execute(
+                f"""INSERT OR IGNORE INTO notice_reads (user_id, notice_id,
+                                                        read_at)
+                    SELECT ?, id, ? FROM notices WHERE {clause}""",
+                (user_id, int(time.time()), *params))
+            con.commit()
+        finally:
+            con.close()
+
+
+def delete_notice(notice_id: int) -> bool:
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            con.execute("DELETE FROM notice_reads WHERE notice_id=?",
+                        (notice_id,))
+            cur = con.execute("DELETE FROM notices WHERE id=?", (notice_id,))
+            con.commit()
+            return cur.rowcount > 0
         finally:
             con.close()
 

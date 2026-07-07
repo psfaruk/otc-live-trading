@@ -1525,6 +1525,200 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     else:
         strength = "WEAK"
 
+    # ── MARKET STATE  Deep-analysis read (2026-07-07, user request) ──────────
+    # Names WHAT the market is doing right now — CONTINUATION / EXHAUSTION /
+    # REVERSAL / TRAP / RANGE — from the same structural facts the theories
+    # above vote on, organized as one market-state read instead of a score
+    # pile. Purely informational: it never touches score/signal/strength
+    # (every hand-tuned coupling into the calibrated vote pipeline has
+    # regressed before). feed.py logs the state + its directional bias into
+    # signal_log.tags (ST_* / STBIAS_*) so each state's real accuracy is
+    # measurable from live data before anyone trusts it.
+    _st_pts: dict[str, float] = {"CONTINUATION": 0.0, "EXHAUSTION": 0.0,
+                                 "REVERSAL": 0.0, "TRAP": 0.0, "RANGE": 0.0}
+    _st_dir: dict[str, float] = {k: 0.0 for k in _st_pts}
+    _st_ev:  dict[str, list[str]] = {k: [] for k in _st_pts}
+    _trend_dir = (+1 if _regime == "UPTREND"
+                  else -1 if _regime == "DOWNTREND" else 0)
+    _cand_dir  = +1 if is_bull else -1
+    _close_pos_ms = (c - l) / total_range          # 0 = low … 1 = high
+    _avg_body10 = (sum(abs(x["close"] - x["open"]) for x in candles[-10:])
+                   / min(10, len(candles))) or 1e-9
+
+    def _st(state: str, pts: float, direction: int, why: str) -> None:
+        _st_pts[state] += pts
+        _st_dir[state] += direction * pts
+        _st_ev[state].append(why)
+
+    # CONTINUATION — trend structure still healthy, move has fuel.
+    if _trend_dir:
+        _st("CONTINUATION", 2, _trend_dir,
+            f"20-candle structure is a {_regime.lower()}"
+            f" (second half made {'higher highs+lows' if _trend_dir > 0 else 'lower highs+lows'})")
+        if _cand_dir == _trend_dir and body / total_range >= 0.55:
+            _st("CONTINUATION", 2, _trend_dir,
+                f"Impulse candle with the trend (body {body/total_range:.0%} of range)")
+        elif _cand_dir != _trend_dir and body <= _avg_body10 * 0.6 and (
+                (lower_wick >= body and lower_wick > upper_wick)
+                if _trend_dir > 0 else
+                (upper_wick >= body and upper_wick > lower_wick)):
+            # The with-trend wick must DOMINATE — a counter-candle whose
+            # opposite wick is the big one (e.g. a hammer at the bottom of a
+            # downtrend) is a reversal shape, not a pullback being absorbed.
+            _st("CONTINUATION", 2, _trend_dir,
+                "Healthy pullback: small counter-candle already wicked back"
+                " in the trend direction")
+        for _r in reasons:
+            if _r.startswith("MTF") and "trend" in _r:
+                if (+1 if "-> CALL" in _r else -1) == _trend_dir:
+                    _st("CONTINUATION", 1, _trend_dir,
+                        "Higher timeframe (5x) trend points the same way")
+                break
+
+    # EXHAUSTION — the move is running out of participants.
+    if _streak >= 4:
+        _st("EXHAUSTION", 2 + (1 if _streak >= 6 else 0), -_cand_dir,
+            f"{_streak} same-color candles in a row — the move is aging")
+    if len(candles) >= 3:
+        _b3   = candles[-3:]
+        _dir3 = [1 if x["close"] >= x["open"] else -1 for x in _b3]
+        _bod3 = [abs(x["close"] - x["open"]) for x in _b3]
+        if _dir3[0] == _dir3[1] == _dir3[2] and _bod3[0] > _bod3[1] > _bod3[2] > 0:
+            _st("EXHAUSTION", 2, -_dir3[2],
+                "Three pushes, each body smaller than the last — momentum fading")
+    if micro_history:
+        _exn = sum(1 for _m in micro_history[-3:]
+                   if _m.get("last_react") == "EXHAUST")
+        if _exn >= 2:
+            _st("EXHAUSTION", 3, -_cand_dir,
+                f"{_exn} of the last 3 candles ended their ticks in exhaustion")
+    if body / total_range >= 0.75:
+        _mb_bon, _mb_lbl = _sr_bonus(h if is_bull else l, not is_bull)
+        if _mb_bon >= 1:
+            _st("EXHAUSTION", 2, -_cand_dir,
+                f"Full-power candle ran straight into a tested level ({_mb_lbl})")
+    if _trend_dir > 0 and _zone == "RESISTANCE" and upper_wick > total_range * 0.45:
+        _st("EXHAUSTION", 2, -1,
+            "Long upper rejection wick right at the top of the up-move")
+    elif _trend_dir < 0 and _zone == "SUPPORT" and lower_wick > total_range * 0.45:
+        _st("EXHAUSTION", 2, +1,
+            "Long lower rejection wick right at the bottom of the down-move")
+    if _cur_bpct is not None and (_cur_bpct >= 0.78 or _cur_bpct <= 0.22):
+        _st("EXHAUSTION", 1, -_cand_dir,
+            f"{max(_cur_bpct, 1 - _cur_bpct):.0%} of ticks were one-sided —"
+            f" that side is out of ammo")
+
+    # REVERSAL — exhaustion PLUS a confirming counter-pattern.
+    _rev_conf = 0
+    if _cur_bpct is not None:
+        if _close_pos_ms >= 0.72 and _cur_bpct <= 0.40:
+            _st("REVERSAL", 3, -1,
+                "Absorption: closed near the high but most ticks pushed DOWN"
+                " — buyers are being sold into")
+            _rev_conf += 1
+        elif _close_pos_ms <= 0.20 and _cur_bpct >= 0.60:
+            _st("REVERSAL", 3, +1,
+                "Absorption: closed near the low but most ticks pushed UP"
+                " — sellers are being bought into")
+            _rev_conf += 1
+    if upper_wick / total_range > 0.55 and body / total_range < 0.25:
+        _pin_anch = _zone == "RESISTANCE"    # pin bar AT its zone = the
+        _st("REVERSAL", 3 if _pin_anch else 2, -1,   # textbook strong read
+            "Shooting star: the push above was rejected"
+            + (" — right at the resistance zone" if _pin_anch else ""))
+        _rev_conf += 1
+    elif lower_wick / total_range > 0.55 and body / total_range < 0.25:
+        _pin_anch = _zone == "SUPPORT"
+        _st("REVERSAL", 3 if _pin_anch else 2, +1,
+            "Hammer: the push below was rejected"
+            + (" — right at the support zone" if _pin_anch else ""))
+        _rev_conf += 1
+    if (prev_body > 0 and is_bull != prev_bull and body / prev_body >= 1.0
+            and _trend_dir and _cand_dir != _trend_dir):
+        _st("REVERSAL", 2, _cand_dir,
+            "Counter-trend engulfing: the reply candle swallowed the whole"
+            " prior body")
+        _rev_conf += 1
+    for _r in reasons:
+        if _r.startswith("STAR"):
+            _st("REVERSAL", 2, +1 if "-> CALL" in _r else -1,
+                "Morning/Evening Star three-candle turn completed")
+            _rev_conf += 1
+            break
+    # Context gate: a reversal pattern with no exhaustion behind it and no
+    # S/R under it is just a shape in the middle of nowhere — half weight.
+    if _rev_conf and _st_pts["EXHAUSTION"] < 2 and _zone == "NEUTRAL":
+        _st_pts["REVERSAL"] *= 0.5
+        _st_dir["REVERSAL"] *= 0.5
+        _st_ev["REVERSAL"].append(
+            "(unanchored: no exhaustion context, mid-range — weight halved)")
+
+    # TRAP — someone was just baited into a losing position.
+    if _best_sweep:
+        _tw_tch, _tw_dir, _tw_lvl = _best_sweep
+        _st("TRAP", 3, _tw_dir,
+            f"Stop-hunt through {_tw_lvl:.5g}: stops grabbed, close reclaimed"
+            f" the level — breakout traders trapped")
+    if _cur_bpct is not None and body / total_range >= 0.68 and (
+            (is_bull and _cur_bpct >= 0.78)
+            or (not is_bull and _cur_bpct <= 0.22)):
+        _st("TRAP", 2, -_cand_dir,
+            "Big one-sided candle invites chasers exactly when its fuel is spent")
+    if _cur_fin_bpct is not None:
+        if is_bull and _cur_fin_bpct <= 0.30:
+            _st("TRAP", 1, -1,
+                "Sellers invaded the final seconds of a green candle")
+        elif (not is_bull) and _cur_fin_bpct >= 0.70:
+            _st("TRAP", 1, +1,
+                "Buyers invaded the final seconds of a red candle")
+    for _fb_lvl, _fb_tch in _klevels:
+        if prev["close"] > _fb_lvl >= c:
+            _st("TRAP", 2, -1,
+                f"Failed breakout above {_fb_lvl:.5g} (tested x{_fb_tch})"
+                f" — closed back below it")
+            break
+        if prev["close"] < _fb_lvl <= c:
+            _st("TRAP", 2, +1,
+                f"Failed breakdown below {_fb_lvl:.5g} (tested x{_fb_tch})"
+                f" — closed back above it")
+            break
+
+    # RANGE — no direction to continue or reverse; oscillation.
+    if _trend_dir == 0:
+        _st("RANGE", 2, 0,
+            "No directional structure in the last 20 candles (sideways)")
+        if _zone == "RESISTANCE":
+            _st("RANGE", 1, -1, "Price at the top of the range — fade zone")
+        elif _zone == "SUPPORT":
+            _st("RANGE", 1, +1, "Price at the bottom of the range — fade zone")
+    if _zz_len >= 4:
+        _st("RANGE", 2, -_cand_dir,
+            f"{_zz_len} candles alternating color — oscillation, not a move")
+    if _is_doji or _is_spin:
+        _st("RANGE", 1, 0, "Indecision candle (doji / spinning top)")
+
+    # Winner: most evidence points; ties break toward the more specific
+    # state (a trap IS an exhaustion IS a failed continuation).
+    _st_prio = ["TRAP", "REVERSAL", "EXHAUSTION", "CONTINUATION", "RANGE"]
+    _st_win  = max(_st_prio, key=lambda k: (_st_pts[k], -_st_prio.index(k)))
+    _st_tot  = sum(_st_pts.values())
+    if _st_pts[_st_win] < 3:
+        market_state = {
+            "state": "UNCLEAR", "bias": "NEUTRAL", "conviction": 0,
+            "points": {k: round(v, 1) for k, v in _st_pts.items()},
+            "evidence": ["Not enough structural evidence for any single"
+                         " market state this candle"],
+        }
+    else:
+        _st_bd = _st_dir[_st_win]
+        market_state = {
+            "state": _st_win,
+            "bias": "CALL" if _st_bd > 0 else "PUT" if _st_bd < 0 else "NEUTRAL",
+            "conviction": round(100 * _st_pts[_st_win] / _st_tot) if _st_tot else 0,
+            "points": {k: round(v, 1) for k, v in _st_pts.items()},
+            "evidence": _st_ev[_st_win],
+        }
+
     return {
         "signal":     signal,
         "score":      score,
@@ -1548,4 +1742,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         },
         "regime":     {"trend": _regime, "zone": _zone},
         "zigzag":     {"length": _zz_len, "predict": _zz_predict},
+        # Deep-analysis market-state read (see MARKET STATE block above) —
+        # informational layer, independent of signal/score/strength.
+        "market_state": market_state,
     }

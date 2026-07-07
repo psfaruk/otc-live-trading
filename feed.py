@@ -841,6 +841,17 @@ class QuotexFeed:
                 tags.append("LATE_FLIP")         # candle flipped at the close
             if not is_draw and len(wrong) > len(right):
                 tags.append("MAJORITY_WRONG")
+            # Market-state deep-analysis layer: log which state was named and
+            # whether its own directional bias called this candle — the ONLY
+            # honest way to learn if any state reads better than coin-flip
+            # before it is ever allowed to influence the signal.
+            _ms = prediction.get("market_state") or {}
+            if _ms.get("state"):
+                tags.append(f"ST_{_ms['state']}")
+                if _ms.get("bias") in ("CALL", "PUT") and not is_draw:
+                    tags.append("STBIAS_" + (
+                        "RIGHT" if (_ms["bias"] == "CALL") == actual_up
+                        else "WRONG"))
 
             _atr_note = (f" ({abs(move) / atr * 100:.0f}% of ATR)"
                          if atr > 0 else "")

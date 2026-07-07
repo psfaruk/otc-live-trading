@@ -55,21 +55,49 @@ try {
 let myEmail    = null;
 let myCategory = 'normal';
 
+// ── User preferences — client-side only (localStorage), applied live.
+// Rendered as the Preferences card in Settings; consumed by
+// _showSignalPopup / _setKLLines / applyPrediction. ─────────────────────
+const _PREF_DEFAULTS = { popup: true, klines: true, wwalls: true, ghost: true };
+let userPrefs = { ..._PREF_DEFAULTS };
+try {
+  Object.assign(userPrefs,
+    JSON.parse(localStorage.getItem('plybit_prefs') || '{}'));
+} catch (_) {}
+function _savePrefs() {
+  try { localStorage.setItem('plybit_prefs', JSON.stringify(userPrefs)); }
+  catch (_) {}
+}
+
 async function _loadMe() {
+  let createdAt = null;
   try {
     const r = await fetch('/api/me');
     if (!r.ok) return;
     const data = await r.json();
     myEmail    = data.email;
     myCategory = data.category || 'normal';
+    createdAt  = data.created_at || null;
   } catch (_) {}
 
-  const summary = document.getElementById('account-summary');
-  if (summary && myEmail) {
-    const tierLabel = myCategory === 'admin' ? 'Admin'
-                     : myCategory === 'premium' ? 'Premium' : 'Normal';
-    summary.textContent = `${myEmail} · ${tierLabel}`;
+  const tierLabel = myCategory === 'admin' ? 'Admin'
+                   : myCategory === 'premium' ? 'Premium' : 'Normal';
+  const pe = document.getElementById('profile-email');
+  const pt = document.getElementById('profile-tier');
+  const pj = document.getElementById('profile-joined');
+  if (pe) pe.textContent = myEmail || '–';
+  if (pt) {
+    pt.textContent = tierLabel;
+    pt.className   = `tier-badge tier-${myCategory}`;
   }
+  if (pj && createdAt) {
+    pj.textContent = new Date(createdAt * 1000).toLocaleDateString(
+      [], { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  // Highlight the current tier's row in the Plan card
+  document.querySelectorAll('#plan-card [data-tier]').forEach((li) => {
+    li.classList.toggle('active', li.dataset.tier === myCategory);
+  });
   const placeholder = document.getElementById('upgrade-placeholder');
   if (placeholder) placeholder.classList.toggle('hidden', myCategory !== 'normal');
   const detail = document.getElementById('side-panel-detail');
@@ -150,6 +178,9 @@ function _addKLLine(price, touches, color, style, labelPrefix, ul) {
 function _setKLLines(keyLevels, wickWalls) {
   _clearKLLines();
   if (!mainSeries) return;
+  // User preferences can switch either overlay tier off (Settings card)
+  if (!userPrefs.klines) keyLevels = null;
+  if (!userPrefs.wwalls) wickWalls = null;
   const hasKL = keyLevels && keyLevels.length;
   const hasWW = wickWalls && ((wickWalls.support || []).length || (wickWalls.resistance || []).length);
   if (!hasKL && !hasWW) return;
@@ -368,8 +399,8 @@ function initChart() {
 
   chart = LightweightCharts.createChart(wrap, {
     layout: {
-      background: { color: '#090910' },
-      textColor:  '#666677',
+      background: { color: '#070a0f' },
+      textColor:  '#67728c',
     },
     grid: {
       vertLines: { color: '#15151d' },
@@ -380,9 +411,9 @@ function initChart() {
       vertLine: { color: '#334', labelBackgroundColor: '#1a1a24' },
       horzLine: { color: '#334', labelBackgroundColor: '#1a1a24' },
     },
-    rightPriceScale: { borderColor: '#25252f' },
+    rightPriceScale: { borderColor: '#2a3345' },
     timeScale: {
-      borderColor:    '#25252f',
+      borderColor:    '#2a3345',
       timeVisible:    true,
       secondsVisible: true,
       rightOffset:    8,
@@ -438,6 +469,11 @@ function tickCountdown() {
   const el   = document.getElementById('countdown');
   el.textContent = left + 's';
   el.className   = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
+  const hc = document.getElementById('home-countdown');
+  if (hc) {
+    hc.textContent = left + 's';
+    hc.className   = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
+  }
   updateEntryTiming();
 }
 setInterval(tickCountdown, 1000);
@@ -562,6 +598,12 @@ function handleMsg(msg, perfNow) {
         renderMicro(msg.micro);
       }
       break;
+
+    case 'notice':
+      // Admin published a notification — content-free nudge; the fetch
+      // applies this user's tier/read filtering server-side.
+      _loadNotices();
+      break;
   }
 }
 
@@ -642,6 +684,15 @@ function applyPrediction(pred) {
     return;
   }
   lastPrediction = pred;
+
+  if (!userPrefs.ghost) {
+    // Ghost candle switched off (Settings preference) — everything else
+    // (badge, reasons, levels) still renders below.
+    predSeries.setData([]);
+    if (pred.key_levels || pred.wick_walls) _setKLLines(pred.key_levels, pred.wick_walls);
+    updateSignalUI(pred);
+    return;
+  }
 
   const isCall = pred.signal === 'CALL';
   predSeries.applyOptions({
@@ -926,6 +977,120 @@ function updateSignalUI(pred) {
       list.appendChild(li);
     }
   }
+
+  // Deep-analysis market state card
+  renderMarketState(pred.market_state);
+
+  // Home hero mirrors the same signal (mobile Home tab)
+  const hb = document.getElementById('home-hero-badge');
+  if (hb) {
+    const hMeta = document.getElementById('home-hero-meta');
+    if (isNeutral) {
+      hb.className   = 'signal-badge neutral';
+      hb.textContent = '– NO TRADE';
+      if (hMeta) hMeta.textContent = 'No clear edge — skip this candle';
+    } else {
+      const f = _fmtSignalBadge(pred);
+      hb.className   = f.cls;
+      hb.textContent = f.text;
+      if (hMeta) hMeta.textContent = _fmtSignalMeta(pred);
+    }
+    const hcf = document.getElementById('home-hero-conf');
+    if (hcf) {
+      hcf.style.width = `${confPct}%`;
+      hcf.className   = 'conf-bar' +
+        (isNeutral ? '' : ` ${pred.signal === 'CALL' ? 'call' : 'put'}`);
+    }
+    const hst = document.getElementById('home-hero-state');
+    if (hst) {
+      const ms = pred.market_state;
+      if (ms && ms.state && ms.state !== 'UNCLEAR') {
+        const lbl = _MSTATE_LABELS[ms.state] || _MSTATE_LABELS.UNCLEAR;
+        hst.className   = `mstate-chip ms-${ms.state.toLowerCase()}`;
+        hst.textContent = `${lbl.icon} ${lbl.name}`;
+      } else {
+        hst.className = 'mstate-chip hidden';
+      }
+    }
+  }
+}
+
+// ── Deep Analysis card — market-state read from analyze_eoc ─────────────────
+// Informational layer (continuation/exhaustion/reversal/trap/range) — shown
+// only when the payload carries it ('normal' accounts genuinely don't
+// receive market_state, see server.py's _tier_payload).
+const _MSTATE_LABELS = {
+  CONTINUATION: { icon: '➜', name: 'Continuation' },
+  EXHAUSTION:   { icon: '⏳', name: 'Exhaustion' },
+  REVERSAL:     { icon: '⤾', name: 'Reversal' },
+  TRAP:         { icon: '⚠', name: 'Trap' },
+  RANGE:        { icon: '↔', name: 'Range' },
+  UNCLEAR:      { icon: '·', name: 'Unclear' },
+};
+
+function renderMarketState(ms) {
+  const card = document.getElementById('mstate-card');
+  if (!card) return;
+  const chip  = document.getElementById('mstate-chip');
+  const bias  = document.getElementById('mstate-bias');
+  const meter = document.getElementById('mstate-meter');
+  const evUl  = document.getElementById('mstate-evidence');
+  const bars  = document.getElementById('mstate-bars');
+
+  if (!ms || !ms.state) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  const lbl = _MSTATE_LABELS[ms.state] || _MSTATE_LABELS.UNCLEAR;
+  chip.className  = `mstate-chip ms-${ms.state.toLowerCase()}`;
+  chip.textContent = `${lbl.icon} ${lbl.name}`;
+
+  if (ms.bias === 'CALL' || ms.bias === 'PUT') {
+    bias.className   = `mstate-bias ${ms.bias.toLowerCase()}`;
+    bias.textContent = (ms.bias === 'CALL' ? '▲' : '▼') + ` leans ${ms.bias}`;
+  } else {
+    bias.className   = 'mstate-bias';
+    bias.textContent = 'no lean';
+  }
+
+  const conv = Math.max(0, Math.min(100, ms.conviction || 0));
+  meter.style.width = `${conv}%`;
+  meter.className   = `mstate-meter ms-${ms.state.toLowerCase()}`;
+  meter.parentElement.title =
+    `Evidence share: ${conv}% of structural points landed on this state — not a win probability.`;
+
+  evUl.innerHTML = '';
+  for (const e of (ms.evidence || [])) {
+    const li = document.createElement('li');
+    li.textContent = e;
+    evUl.appendChild(li);
+  }
+
+  // Compact per-state point bars — how the evidence split across all 5 reads.
+  bars.innerHTML = '';
+  const pts = ms.points || {};
+  const maxPt = Math.max(1, ...Object.values(pts));
+  for (const k of ['TRAP', 'REVERSAL', 'EXHAUSTION', 'CONTINUATION', 'RANGE']) {
+    if (!(k in pts)) continue;
+    const row = document.createElement('div');
+    row.className = 'mstate-bar-row' + (k === ms.state ? ' active' : '');
+    const name = document.createElement('span');
+    name.className = 'mstate-bar-name';
+    name.textContent = (_MSTATE_LABELS[k] || {}).name || k;
+    const track = document.createElement('div');
+    track.className = 'mstate-bar-track';
+    const fill = document.createElement('div');
+    fill.className = `mstate-bar-fill ms-${k.toLowerCase()}`;
+    fill.style.width = `${Math.round(100 * (pts[k] || 0) / maxPt)}%`;
+    track.appendChild(fill);
+    const val = document.createElement('span');
+    val.className = 'mstate-bar-val';
+    val.textContent = pts[k];
+    row.appendChild(name); row.appendChild(track); row.appendChild(val);
+    bars.appendChild(row);
+  }
 }
 
 // ── Signals tab: badge/meta text shared between the auto-popup and the
@@ -949,6 +1114,7 @@ let _popupTimer = null;
 
 function _showSignalPopup(pred) {
   if (!pred || pred.signal === 'NEUTRAL') return;   // defensive — see analyze_eoc's rare early-exit guards
+  if (!userPrefs.popup) return;                     // user preference (Settings)
   const popup = document.getElementById('signal-popup');
   const badge = document.getElementById('signal-popup-badge');
   const meta  = document.getElementById('signal-popup-meta');
@@ -1045,6 +1211,12 @@ function _updatePairBtn() {
       (p.status === 'live' ? '<span class="pair-live-dot">●</span> ' : '') +
       `${p.display} <span class="pair-btn-sub">${p.status === 'live' ? 'Real' : 'Otc'}${pay}</span>`;
   }
+  // Home status band mirrors the same selection (display-only, no picker).
+  const hp   = document.getElementById('home-pair');
+  const hpay = document.getElementById('home-payout');
+  if (hp)   hp.textContent   = p ? p.display : currentAsset;
+  if (hpay) hpay.textContent =
+    (p && typeof p.payout === 'number') ? `${p.payout}% payout` : '';
 }
 
 function _payClass(p) {
@@ -1231,14 +1403,202 @@ async function _loadAdminDashboard() {
   if (!card) return;
   card.classList.remove('hidden');
   try {
-    const [usersRes, statsRes] = await Promise.all([
+    const [usersRes, statsRes, promoRes, noticeRes] = await Promise.all([
       fetch('/api/admin/users'),
       fetch('/api/admin/analytics'),
+      fetch('/api/admin/promos'),
+      fetch('/api/admin/notices'),
     ]);
-    if (usersRes.ok) _renderAdminUsers((await usersRes.json()).users || []);
-    if (statsRes.ok) _renderAdminAnalytics(await statsRes.json());
+    if (usersRes.ok)  _renderAdminUsers((await usersRes.json()).users || []);
+    if (statsRes.ok)  _renderAdminAnalytics(await statsRes.json());
+    if (promoRes.ok)  _renderAdminPromos((await promoRes.json()).promos || []);
+    if (noticeRes.ok) _renderAdminNotices((await noticeRes.json()).notices || []);
   } catch (_) {}
 }
+
+// ── Admin CMS: promotions ──────────────────────────────────────────────────
+function _renderAdminPromos(promos) {
+  const list = document.getElementById('admin-promo-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!promos.length) {
+    list.innerHTML = '<li class="notif-empty">No promos yet</li>';
+    return;
+  }
+  for (const p of promos) {
+    const li = document.createElement('li');
+    li.className = 'cms-item' + (p.active ? '' : ' inactive');
+    const info = document.createElement('div');
+    info.className = 'cms-item-info';
+    const t = document.createElement('div');
+    t.className = 'cms-item-title';
+    t.textContent = p.title + (p.code ? ` · ${p.code}` : '');
+    const m = document.createElement('div');
+    m.className = 'cms-item-meta';
+    m.textContent = `${p.target}${p.active ? '' : ' · paused'}` +
+      (p.ends_at ? ` · until ${new Date(p.ends_at * 1000)
+        .toLocaleDateString([], { month: 'short', day: 'numeric' })}` : '');
+    info.appendChild(t); info.appendChild(m);
+    li.appendChild(info);
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'history-btn cms-btn';
+    toggle.textContent = p.active ? 'Pause' : 'Resume';
+    toggle.addEventListener('click', async () => {
+      toggle.disabled = true;
+      try {
+        await fetch(`/api/admin/promos/${p.id}/active`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ active: !p.active }),
+        });
+      } catch (_) {}
+      _loadAdminDashboard();
+      _loadPromos();          // own Home reflects the change too
+    });
+    li.appendChild(toggle);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'history-btn cms-btn cms-del';
+    del.textContent = '✕';
+    del.title = 'Delete promo';
+    del.addEventListener('click', async () => {
+      del.disabled = true;
+      try { await fetch(`/api/admin/promos/${p.id}`, { method: 'DELETE' }); }
+      catch (_) {}
+      _loadAdminDashboard();
+      _loadPromos();
+    });
+    li.appendChild(del);
+    list.appendChild(li);
+  }
+}
+
+const promoForm = document.getElementById('promo-form');
+if (promoForm) promoForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('promo-msg');
+  msg.className = 'pw-msg';
+  const title = document.getElementById('promo-title').value.trim();
+  if (!title) {
+    msg.textContent = 'Title is required';
+    msg.classList.add('err');
+    return;
+  }
+  msg.textContent = 'Publishing…';
+  try {
+    const r = await fetch('/api/admin/promos', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        body:   document.getElementById('promo-body').value.trim(),
+        code:   document.getElementById('promo-code').value.trim(),
+        target: document.getElementById('promo-target').value,
+        days:   parseInt(document.getElementById('promo-days').value, 10) || 0,
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      msg.textContent = 'Published';
+      msg.classList.add('ok');
+      promoForm.reset();
+      _loadAdminDashboard();
+      _loadPromos();
+    } else {
+      msg.textContent = d.error || 'Could not publish';
+      msg.classList.add('err');
+    }
+  } catch (_) {
+    msg.textContent = 'Network error — try again';
+    msg.classList.add('err');
+  }
+});
+
+// ── Admin CMS: notifications ───────────────────────────────────────────────
+function _renderAdminNotices(notices) {
+  const list = document.getElementById('admin-notice-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!notices.length) {
+    list.innerHTML = '<li class="notif-empty">Nothing sent yet</li>';
+    return;
+  }
+  for (const n of notices) {
+    const li = document.createElement('li');
+    li.className = 'cms-item';
+    const info = document.createElement('div');
+    info.className = 'cms-item-info';
+    const t = document.createElement('div');
+    t.className = 'cms-item-title';
+    t.textContent = n.title;
+    const m = document.createElement('div');
+    m.className = 'cms-item-meta';
+    m.textContent = `${n.target} · ${new Date(n.created_at * 1000)
+      .toLocaleString([], { month: 'short', day: 'numeric',
+                            hour: '2-digit', minute: '2-digit' })}`;
+    info.appendChild(t); info.appendChild(m);
+    li.appendChild(info);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'history-btn cms-btn cms-del';
+    del.textContent = '✕';
+    del.title = 'Delete notification';
+    del.addEventListener('click', async () => {
+      del.disabled = true;
+      try { await fetch(`/api/admin/notices/${n.id}`, { method: 'DELETE' }); }
+      catch (_) {}
+      _loadAdminDashboard();
+      _loadNotices();
+    });
+    li.appendChild(del);
+    list.appendChild(li);
+  }
+}
+
+const noticeForm = document.getElementById('notice-form');
+if (noticeForm) noticeForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('notice-msg');
+  msg.className = 'pw-msg';
+  const title = document.getElementById('notice-title').value.trim();
+  if (!title) {
+    msg.textContent = 'Title is required';
+    msg.classList.add('err');
+    return;
+  }
+  msg.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/admin/notices', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        body:   document.getElementById('notice-body').value.trim(),
+        target: document.getElementById('notice-target').value,
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      msg.textContent = 'Sent to every connected client';
+      msg.classList.add('ok');
+      noticeForm.reset();
+      _loadAdminDashboard();
+      // Own bell updates via the WS nudge; fetch anyway in case this
+      // admin's WS is reconnecting right now.
+      _loadNotices();
+    } else {
+      msg.textContent = d.error || 'Could not send';
+      msg.classList.add('err');
+    }
+  } catch (_) {
+    msg.textContent = 'Network error — try again';
+    msg.classList.add('err');
+  }
+});
 
 function _renderAdminAnalytics(data) {
   const viewers = document.getElementById('admin-viewers');
@@ -1303,6 +1663,89 @@ document.querySelectorAll('.tab-btn').forEach((b) => {
 });
 _setActiveTab(_activeTab);   // apply the restored/default tab on load
 
+// Home quick cards → tab shortcuts. History must ALSO switch to the Chart
+// (advance) tab first: #history-modal lives inside #tab-advance, and a
+// display:none ancestor hides even a position:fixed modal (same rule the
+// pair-panel comment in index.html documents).
+document.querySelectorAll('.home-card[data-goto]').forEach((b) => {
+  b.addEventListener('click', () => _setActiveTab(b.dataset.goto));
+});
+const homeHistoryCard = document.getElementById('home-card-history');
+if (homeHistoryCard) {
+  homeHistoryCard.addEventListener('click', () => {
+    _setActiveTab('advance');
+    openHistory();
+  });
+}
+// Legal footer links — clicking a link shows its text block (and collapses
+// it again on a second click); the other blocks always close.
+document.querySelectorAll('.home-legal-link').forEach((b) => {
+  b.addEventListener('click', () => {
+    for (const k of ['terms', 'privacy', 'risk']) {
+      const el = document.getElementById(`legal-${k}`);
+      if (!el) continue;
+      el.classList.toggle('hidden',
+        k !== b.dataset.legal || !el.classList.contains('hidden'));
+    }
+  });
+});
+
+// ── Settings: Preferences card ← userPrefs (localStorage) ────────────────
+for (const [id, key] of [['pref-popup', 'popup'], ['pref-klines', 'klines'],
+                         ['pref-wwalls', 'wwalls'], ['pref-ghost', 'ghost']]) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.checked = userPrefs[key];
+  el.addEventListener('change', () => {
+    userPrefs[key] = el.checked;
+    _savePrefs();
+    // Re-render the chart overlays from the current prediction immediately
+    // so the toggle is visible without waiting for the next candle close.
+    if (lastPrediction) applyPrediction(lastPrediction);
+  });
+}
+
+// ── Settings: change-password form ───────────────────────────────────────
+const pwForm = document.getElementById('pw-form');
+if (pwForm) pwForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('pw-msg');
+  const cur = document.getElementById('pw-current').value;
+  const nw  = document.getElementById('pw-new').value;
+  const cf  = document.getElementById('pw-confirm').value;
+  msg.className = 'pw-msg';
+  if (nw.length < 8) {
+    msg.textContent = 'New password must be at least 8 characters';
+    msg.classList.add('err');
+    return;
+  }
+  if (nw !== cf) {
+    msg.textContent = 'New passwords do not match';
+    msg.classList.add('err');
+    return;
+  }
+  msg.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/account/password', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ current: cur, new: nw }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      msg.textContent = 'Password changed — other devices are signed out.';
+      msg.classList.add('ok');
+      pwForm.reset();
+    } else {
+      msg.textContent = d.error || 'Could not change password';
+      msg.classList.add('err');
+    }
+  } catch (_) {
+    msg.textContent = 'Network error — try again';
+    msg.classList.add('err');
+  }
+});
+
 const signalPopupClose = document.getElementById('signal-popup-close');
 if (signalPopupClose) signalPopupClose.addEventListener('click', _hideSignalPopup);
 
@@ -1342,6 +1785,7 @@ function resetAndSubscribe() {
   if (rb) rb.className = 'regime-badge hidden';
   const zzEl = document.getElementById('micro-zigzag');
   if (zzEl) zzEl.className = 'micro-tag hidden';
+  renderMarketState(null);
   renderMicro(null);
   showNoData(false);
   lastDataAt     = Date.now();
@@ -1444,6 +1888,13 @@ function setStatus(cls, text) {
   const el = document.getElementById('status');
   el.className   = `status ${cls}`;
   el.textContent = text;
+  // Home status band mirrors connection state
+  const hl = document.getElementById('home-live');
+  if (hl) {
+    const live = cls === 'connected';
+    hl.className   = 'home-live' + (live ? '' : ' off');
+    hl.textContent = live ? '● LIVE' : '● OFFLINE';
+  }
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -1482,8 +1933,130 @@ function bootChart(attempt) {
   });
   loadStats();
   setInterval(loadStats, 30000);
+  _loadPromos();
+  _loadNotices();
+  setInterval(_loadNotices, 120000);   // poll fallback — WS 'notice' nudge
+                                       // is the fast path (see handleMsg)
 }
 bootChart();
+
+// ── Promo cards (Home tab) — published by admins via the CMS ──────────────
+async function _loadPromos() {
+  const wrap = document.getElementById('home-promos');
+  if (!wrap) return;
+  let promos = [];
+  try {
+    const r = await fetch('/api/promos');
+    if (r.ok) promos = (await r.json()).promos || [];
+  } catch (_) {}
+  wrap.innerHTML = '';
+  wrap.classList.toggle('hidden', !promos.length);
+  for (const p of promos) {
+    const card = document.createElement('div');
+    card.className = 'promo-card';
+    const h = document.createElement('div');
+    h.className = 'promo-title';
+    h.textContent = p.title;
+    card.appendChild(h);
+    if (p.body) {
+      const b = document.createElement('div');
+      b.className = 'promo-body';
+      b.textContent = p.body;
+      card.appendChild(b);
+    }
+    if (p.code) {
+      const c = document.createElement('span');
+      c.className = 'promo-code';
+      c.textContent = p.code;
+      c.title = 'Tap to copy';
+      c.addEventListener('click', () => {
+        try { navigator.clipboard.writeText(p.code); } catch (_) {}
+        c.classList.add('copied');
+        setTimeout(() => c.classList.remove('copied'), 800);
+      });
+      card.appendChild(c);
+    }
+    wrap.appendChild(card);
+  }
+}
+
+// ── Notification bell ──────────────────────────────────────────────────────
+let _notices = [];
+
+async function _loadNotices() {
+  try {
+    const r = await fetch('/api/notices');
+    if (!r.ok) return;
+    const data = await r.json();
+    _notices = data.notices || [];
+    _renderNotifBadge(data.unread || 0);
+    // Panel already open → keep its list current (rare, but the WS nudge
+    // can land while the user is reading).
+    if (!document.getElementById('notif-panel').classList.contains('hidden')) {
+      _renderNotifList();
+    }
+  } catch (_) {}
+}
+
+function _renderNotifBadge(unread) {
+  const badge = document.getElementById('notif-badge');
+  const btn   = document.getElementById('notif-btn');
+  if (!badge || !btn) return;
+  badge.classList.toggle('hidden', unread <= 0);
+  badge.textContent = unread > 9 ? '9+' : String(unread);
+  btn.classList.toggle('has-unread', unread > 0);   // soft pulse only when unread
+}
+
+function _renderNotifList() {
+  const list = document.getElementById('notif-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!_notices.length) {
+    const li = document.createElement('li');
+    li.className = 'notif-empty';
+    li.textContent = 'No notifications yet';
+    list.appendChild(li);
+    return;
+  }
+  for (const n of _notices) {
+    const li = document.createElement('li');
+    li.className = 'notif-item' + (n.read ? '' : ' unread');
+    const t = document.createElement('div');
+    t.className = 'notif-title';
+    t.textContent = n.title;
+    li.appendChild(t);
+    if (n.body) {
+      const b = document.createElement('div');
+      b.className = 'notif-body';
+      b.textContent = n.body;
+      li.appendChild(b);
+    }
+    const d = document.createElement('div');
+    d.className = 'notif-time';
+    d.textContent = new Date(n.created_at * 1000).toLocaleString(
+      [], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    li.appendChild(d);
+    list.appendChild(li);
+  }
+}
+
+const notifBtn = document.getElementById('notif-btn');
+if (notifBtn) notifBtn.addEventListener('click', async () => {
+  const panel = document.getElementById('notif-panel');
+  const opening = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden');
+  if (!opening) return;
+  _renderNotifList();
+  // Opening the panel reads everything — badge clears immediately, the
+  // server-side marks land in the background.
+  _renderNotifBadge(0);
+  try { await fetch('/api/notices/read', { method: 'POST' }); } catch (_) {}
+  _notices = _notices.map((n) => ({ ...n, read: true }));
+});
+const notifClose = document.getElementById('notif-close');
+if (notifClose) notifClose.addEventListener('click', () => {
+  document.getElementById('notif-panel').classList.add('hidden');
+});
 
 // ── History modal — browse past resolved signals from the DB ──────────────
 function _fmtHistTime(ctime) {
