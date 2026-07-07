@@ -38,14 +38,9 @@
            has no effect above that width) — desktop keeps today's single
            unified header exactly as before. -->
       <div class="header-stats" id="header-stats">
-        <div id="winrate-wrap" title="Win rate (this pair / timeframe)">
-          <span class="cdl">Win</span>
-          <span id="winrate">--</span>
-        </div>
-        <div id="countdown-wrap">
-          <span class="cdl">Next</span>
-          <span id="countdown">--</span>
-        </div>
+        <!-- Candle countdown moved out of the header (2026-07-07) — it now
+             rides on the running candle's live price line on the chart
+             (see chart.js _liveLine / _updateLiveLineTimer). -->
         <button type="button" id="refresh-btn" class="history-btn" title="Refresh the app (chart, pairs, connection)">↻</button>
         <button type="button" id="history-btn" class="history-btn" title="View past signal history">History</button>
         <!-- Desktop-only entry point into the Settings tab's content (account
@@ -449,6 +444,17 @@
         <div class="settings-row"><span>Plan</span><span id="profile-tier" class="tier-badge">–</span></div>
         <div class="settings-row"><span>Joined</span><span id="profile-joined">–</span></div>
         <button type="button" id="logout-btn" class="logout-btn">Log out</button>
+      </div>
+
+      <!-- Win rate — moved out of the header (per user, 2026-07-07). Same
+           #winrate id, so chart.js's loadStats keeps populating it; it's
+           per the currently-selected pair / timeframe. -->
+      <div class="info-card">
+        <h2>Performance</h2>
+        <div class="settings-row">
+          <span>Win rate (this pair / timeframe)</span>
+          <span id="winrate">--</span>
+        </div>
       </div>
 
       <!-- Plan / tier comparison — the current tier's row is highlighted

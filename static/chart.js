@@ -133,6 +133,38 @@ let _awaitingSnapshot = false;
 const CLIENT_ID = (crypto.randomUUID && crypto.randomUUID()) ||
   ('cid-' + Math.random().toString(36).slice(2) + Date.now());
 
+// ── Live running-candle price line (also carries the candle countdown) ──────
+// One custom price line pinned to the live close. Its title is the seconds
+// left on the current candle (moved here out of the header), and its colour
+// escalates blue → yellow → red as the candle nears close. Created lazily
+// once mainSeries + a real price exist; mainSeries is never recreated on pair
+// switch (only its data resets), so this reference stays valid for the app's
+// lifetime.
+let _liveLine = null;
+
+function _ensureLiveLine() {
+  if (_liveLine || !mainSeries || !(_rClose > 0)) return;
+  try {
+    _liveLine = mainSeries.createPriceLine({
+      price:            _rClose,
+      color:            '#448aff',
+      lineWidth:        1,
+      lineStyle:        LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title:            '',
+    });
+  } catch (_) { _liveLine = null; }
+}
+
+// Called each second by tickCountdown — updates only the title + colour.
+function _updateLiveLineTimer(left, cls) {
+  if (!_liveLine) return;
+  const color = cls === 'danger' ? '#ff1744'
+              : cls === 'warn'   ? '#ffd740'
+              :                    '#448aff';
+  try { _liveLine.applyOptions({ title: left + 's', color }); } catch (_) {}
+}
+
 // ── Key level price lines ─────────────────────────────────────────────────
 let _klLines = [];
 
@@ -317,6 +349,13 @@ function _rafFrame(ts) {
           close: safeClose,
         });
       } catch (_) {}
+
+      // Keep the live price line (which carries the countdown) glued to the
+      // running close so it moves with the candle instead of lagging it.
+      _ensureLiveLine();
+      if (_liveLine) {
+        try { _liveLine.applyOptions({ price: safeClose }); } catch (_) {}
+      }
     }
   }
 
@@ -442,8 +481,12 @@ function initChart() {
     borderDownColor:  '#ff1744',
     wickUpColor:      '#00e676',
     wickDownColor:    '#ff1744',
-    priceLineVisible: true,
-    lastValueVisible: true,
+    // The built-in last-price line + axis label are replaced by _liveLine
+    // (a custom price line that ALSO carries the candle countdown as its
+    // title) — see _ensureLiveLine / _updateLiveLineTimer. Turning both off
+    // here avoids drawing two overlapping lines / two axis labels.
+    priceLineVisible: false,
+    lastValueVisible: false,
   });
 
   // Auto-resize
@@ -466,14 +509,19 @@ function initChart() {
 function tickCountdown() {
   const now  = Math.floor(Date.now() / 1000);
   const left = currentPeriod - (now % currentPeriod);
-  const el   = document.getElementById('countdown');
-  el.textContent = left + 's';
-  el.className   = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
+  const cls  = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
+
+  // Header countdown was removed (it lives on the chart's live price line
+  // now) — keep this null-safe in case the element is ever absent.
+  const el = document.getElementById('countdown');
+  if (el) { el.textContent = left + 's'; el.className = cls; }
+
   const hc = document.getElementById('home-countdown');
-  if (hc) {
-    hc.textContent = left + 's';
-    hc.className   = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
-  }
+  if (hc) { hc.textContent = left + 's'; hc.className = cls; }
+
+  // The running candle's price line shows the countdown on the chart.
+  _updateLiveLineTimer(left, cls);
+
   updateEntryTiming();
 }
 setInterval(tickCountdown, 1000);

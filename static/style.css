@@ -280,12 +280,8 @@ html, body {
 #countdown.warn   { color: var(--yellow); }
 #countdown.danger { color: var(--red); }
 
-/* ── Win-rate (header) ─────────────────────────────────────────────────────── */
-#winrate-wrap {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
+/* ── Win-rate (now in the Settings tab's Performance card — moved out of the
+      header 2026-07-07; still styled by #winrate + .wr-* colour classes) ───── */
 #winrate {
   font-size: 14px;
   font-weight: 700;
