@@ -1499,6 +1499,21 @@ async function loadHistory() {
   }
 }
 
+// Desktop-only entry point into #tab-settings (account info, admin
+// dashboard, logout) — on desktop that element is normally force-hidden by
+// the mobile-only tab system (see style.css), so this repurposes the SAME
+// element as a modal instead of duplicating its markup/rendering logic.
+function openSettingsModal() {
+  document.getElementById('settings-backdrop').classList.remove('hidden');
+  document.getElementById('tab-settings').classList.add('settings-open');
+  if (myCategory === 'admin') _loadAdminDashboard();
+}
+
+function closeSettingsModal() {
+  document.getElementById('settings-backdrop').classList.add('hidden');
+  document.getElementById('tab-settings').classList.remove('settings-open');
+}
+
 function openHistory() {
   _renderHistoryFilterOptions();
   document.getElementById('history-modal').classList.remove('hidden');
@@ -1520,3 +1535,7 @@ document.getElementById('history-close').addEventListener('click', closeHistory)
 document.getElementById('history-backdrop').addEventListener('click', closeHistory);
 document.getElementById('history-refresh').addEventListener('click', loadHistory);
 document.getElementById('history-pair-filter').addEventListener('change', loadHistory);
+
+document.getElementById('settings-btn').addEventListener('click', openSettingsModal);
+document.getElementById('settings-modal-close').addEventListener('click', closeSettingsModal);
+document.getElementById('settings-backdrop').addEventListener('click', closeSettingsModal);

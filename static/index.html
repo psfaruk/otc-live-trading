@@ -39,6 +39,12 @@
         </div>
         <button type="button" id="refresh-btn" class="history-btn" title="Refresh the app (chart, pairs, connection)">↻</button>
         <button type="button" id="history-btn" class="history-btn" title="View past signal history">History</button>
+        <!-- Desktop-only entry point into the Settings tab's content (account
+             info, admin dashboard, logout) — on desktop #tab-settings is
+             normally force-hidden (it's part of the mobile-only tab system),
+             so without this there is no way to reach it at all above 640px.
+             Hidden on mobile since Settings is already one tap away there. -->
+        <button type="button" id="settings-btn" class="history-btn" title="Account & settings">⚙</button>
       </div>
     </header>
 
@@ -300,8 +306,19 @@
       <button type="button" id="signal-popup-close" class="history-btn">✕</button>
     </div>
 
-    <!-- ═══ SETTINGS TAB — mobile only, logout + about ═══════════════════ -->
+    <!-- Backdrop for #tab-settings when opened as a desktop modal (see
+         #settings-btn) — a plain sibling, not a wrapper, so #tab-settings
+         itself doesn't need to move in the DOM and still works unchanged
+         as a normal mobile tab-screen. -->
+    <div id="settings-backdrop" class="hidden"></div>
+
+    <!-- ═══ SETTINGS TAB — mobile bottom-tab screen; on desktop this same
+         element is repurposed as a modal via #settings-btn (see style.css's
+         #tab-settings.settings-open) since desktop has no bottom-tab nav. -->
     <div id="tab-settings" class="tab-screen hidden">
+      <!-- Only shown when opened as a desktop modal (see style.css) — on
+           mobile you leave this tab by tapping a different bottom tab. -->
+      <button type="button" id="settings-modal-close" class="history-btn">✕</button>
       <div class="info-card">
         <h2>Account</h2>
         <p id="account-summary">–</p>

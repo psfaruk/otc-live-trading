@@ -90,6 +90,53 @@ html, body {
   #tab-advance { display: flex !important; }
 }
 
+/* ── Desktop settings modal (repurposes #tab-settings — see #settings-btn
+   in the header) ─────────────────────────────────────────────────────────
+   #tab-settings.settings-open needs to beat BOTH the min-width:640px rule
+   above (plain #tab-settings, 1 ID) and .tab-screen.hidden (0 ID/2 class)
+   above — 1 ID + 1 class outranks either by CSS specificity regardless of
+   source order, so plain (non-!important) properties below already win;
+   `display` alone needs !important since it's fighting an !important rule. */
+#settings-btn { display: none; }   /* shown on desktop below; mobile already
+  has Settings one tap away via #bottom-tabs, so never show it there */
+
+@media (min-width: 640px) {
+  #settings-btn { display: inline-block; }
+}
+
+#settings-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 59;
+}
+#settings-backdrop.hidden { display: none; }
+
+#tab-settings.settings-open {
+  display: block !important;
+  position: fixed;
+  z-index: 60;
+  top: 6vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(480px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+#settings-modal-close { display: none; }
+#tab-settings.settings-open #settings-modal-close {
+  display: block;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 3px 8px;
+}
+
 /* ── Header ──────────────────────────────────────────────────────────────── */
 /* Two logical rows — .header-top (brand + connection status) and
    .header-stats (win rate / countdown / refresh / history). On wide
