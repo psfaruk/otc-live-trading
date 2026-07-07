@@ -133,13 +133,18 @@ let _awaitingSnapshot = false;
 const CLIENT_ID = (crypto.randomUUID && crypto.randomUUID()) ||
   ('cid-' + Math.random().toString(36).slice(2) + Date.now());
 
-// ── Live running-candle price line (also carries the candle countdown) ──────
-// One custom price line pinned to the live close. Its title is the seconds
-// left on the current candle (moved here out of the header), and its colour
-// escalates blue → yellow → red as the candle nears close. Created lazily
-// once mainSeries + a real price exist; mainSeries is never recreated on pair
+// ── Live running-candle price line ──────────────────────────────────────────
+// One custom price line pinned to the live close, colour escalating
+// blue → yellow → red as the candle nears close. Created lazily once
+// mainSeries + a real price exist; mainSeries is never recreated on pair
 // switch (only its data resets), so this reference stays valid for the app's
 // lifetime.
+//
+// The candle countdown itself does NOT live on this line's title (2026-07-07
+// redesign put it there, but on assets with several key-level/wick-wall
+// lines close in price, their axis-label stack buried the countdown). It now
+// floats in its own #chart-countdown badge, top-left over the chart, clear
+// of that stack — see _updateLiveLineTimer below.
 let _liveLine = null;
 
 function _ensureLiveLine() {
@@ -156,13 +161,22 @@ function _ensureLiveLine() {
   } catch (_) { _liveLine = null; }
 }
 
-// Called each second by tickCountdown — updates only the title + colour.
+// Called each second by tickCountdown — updates the floating badge + the
+// live line's colour (kept in sync so the dashed line still escalates red
+// as a secondary cue, even though its title stays blank).
 function _updateLiveLineTimer(left, cls) {
-  if (!_liveLine) return;
   const color = cls === 'danger' ? '#ff1744'
               : cls === 'warn'   ? '#ffd740'
               :                    '#448aff';
-  try { _liveLine.applyOptions({ title: left + 's', color }); } catch (_) {}
+  if (_liveLine) { try { _liveLine.applyOptions({ color }); } catch (_) {} }
+
+  const badge = document.getElementById('chart-countdown');
+  if (badge) {
+    // Only show once a real live price exists — matches the old title's
+    // behaviour of staying blank until _ensureLiveLine had real data.
+    badge.textContent = left + 's';
+    badge.className   = `chart-countdown ${cls}` + (_liveLine ? '' : ' hidden');
+  }
 }
 
 // ── Key level price lines ─────────────────────────────────────────────────

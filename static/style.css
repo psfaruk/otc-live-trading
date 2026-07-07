@@ -853,6 +853,32 @@ html, body {
   height: 100%;
 }
 
+/* Candle countdown — floats above the chart, top-left, so it stays clear of
+   the price axis's own label stack (key levels / wick walls pile up there
+   and used to bury the countdown when it lived on the live price line's
+   title — see chart.js _updateLiveLineTimer). */
+.chart-countdown {
+  position: absolute;
+  top: 10px;
+  left: 14px;
+  z-index: 6;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(15,17,26,0.72);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255,255,255,0.08);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--green);
+  pointer-events: none;
+  transition: color 0.3s;
+}
+.chart-countdown.warn   { color: var(--yellow); }
+.chart-countdown.danger { color: var(--red); }
+.chart-countdown.hidden { display: none; }
+
 /* Loading overlay for pair-change */
 #chart-loading {
   position: absolute;
