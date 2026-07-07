@@ -817,6 +817,13 @@ function showRunningConf(conf) {
 }
 
 // ── Signal UI ──────────────────────────────────────────────────────────────
+// Tracks the last signal+strength shown on the DESKTOP badge specifically,
+// so the pop animation (see updateSignalUI) fires only on a genuine change
+// — 'tick' WS messages can carry a re-anchored prediction with the SAME
+// signal/strength as the candle evolves intra-candle, and popping on every
+// one of those would read as constant pulsing rather than "new signal".
+let _lastSignalKey = null;
+
 function updateSignalUI(pred) {
   const bar   = document.getElementById('signal-bar');
   const badge = document.getElementById('signal-badge');
@@ -829,6 +836,15 @@ function updateSignalUI(pred) {
   const strength  = pred.strength || 'WEAK';
   badge.className = `signal-badge ${pred.signal.toLowerCase()}` +
                     (isNeutral ? '' : ` str-${strength.toLowerCase()}`);
+
+  const signalKey = `${pred.signal}:${strength}`;
+  if (signalKey !== _lastSignalKey) {
+    _lastSignalKey = signalKey;
+    // className was just reassigned above (without signal-pop), so adding
+    // it now is always a fresh add and the animation reliably (re)plays.
+    badge.classList.add('signal-pop');
+    setTimeout(() => badge.classList.remove('signal-pop'), 300);
+  }
   if (isNeutral) {
     badge.textContent = '– NO TRADE';
   } else {
@@ -945,6 +961,19 @@ function _showSignalPopup(pred) {
   clearTimeout(_popupTimer);
   _popupTimer = setTimeout(_hideSignalPopup, 7000);   // auto-dismiss, or the next signal replaces it sooner
   _updateSignalsLast(pred);
+
+  // Pop animation on both badges — safe to fire unconditionally here since
+  // this function itself is only ever called for a genuinely NEW signal
+  // (the 'eoc' WS case, see the call site), unlike updateSignalUI's desktop
+  // badge which also gets re-invoked by 'tick' messages and needs its own
+  // change-detection to avoid popping on every one of those.
+  badge.classList.add('signal-pop');
+  setTimeout(() => badge.classList.remove('signal-pop'), 300);
+  const lastBadge = document.getElementById('signals-last-badge');
+  if (lastBadge) {
+    lastBadge.classList.add('signal-pop');
+    setTimeout(() => lastBadge.classList.remove('signal-pop'), 300);
+  }
 }
 
 function _hideSignalPopup() {
@@ -1164,7 +1193,16 @@ function _setActiveTab(tab) {
 
   for (const id of ['tab-home', 'tab-signals', 'tab-advance', 'tab-settings']) {
     const el = document.getElementById(id);
-    if (el) el.classList.toggle('hidden', id !== `tab-${tab}`);
+    if (!el) continue;
+    const isTarget = id === `tab-${tab}`;
+    el.classList.toggle('hidden', !isTarget);
+    if (isTarget) {
+      // Short fade+rise on the tab that just became active (see style.css's
+      // .tab-screen.tab-enter) — plays automatically since removing .hidden
+      // is exactly the moment this element enters the render tree.
+      el.classList.add('tab-enter');
+      setTimeout(() => el.classList.remove('tab-enter'), 180);
+    }
   }
   document.querySelectorAll('.tab-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === tab);

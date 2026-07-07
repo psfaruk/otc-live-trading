@@ -5,16 +5,40 @@
   --bg3:      #18181f;
   --border:   #25252f;
   --text:     #dddde8;
-  --text2:    #7777888;
+  --text2:    #8a8aa5;
   --green:    #00e676;
   --red:      #ff1744;
   --blue:     #448aff;
   --yellow:   #ffd740;
-  --r:        7px;
+  --r:        10px;
+  --r-lg:     16px;
   --hh:       50px;   /* header height */
   --ch:       48px;   /* controls height */
   --sh:       38px;   /* signal bar height */
   --side:     220px;  /* side panel width (desktop) */
+
+  /* ── Glass-card design language ─────────────────────────────────────────
+     Translucent card fill (paired with backdrop-filter: blur()) + layered
+     "real" elevation (a tight ambient shadow + a soft diffuse one, not a
+     single flat box-shadow) + per-accent glow shadows reused wherever a
+     signal/state needs to visually pop (see the Signal bar). */
+  --glass:            rgba(17,17,24,0.72);
+  --shadow-card:       0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.35);
+  --shadow-card-hover: 0 2px 4px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.45);
+  --glow-green: 0 0 24px rgba(0,230,118,0.25);
+  --glow-red:   0 0 24px rgba(255,23,68,0.25);
+  --glow-blue:  0 0 24px rgba(68,138,255,0.25);
+}
+
+/* Motion is functional feedback here (new-signal pop, hover lift, modal
+   entrance) — never load-bearing for understanding the UI, so it's safe to
+   drop entirely for users who asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
@@ -23,7 +47,15 @@
 html, body {
   height: 100%;
   overflow: hidden;
-  background: var(--bg);
+  /* Subtle, fixed ambient glow behind the whole app — glass cards need
+     something faintly colorful behind their blur or they just look like a
+     flat dark card (this is the same trick login.html already uses). Kept
+     very low-opacity so it reads as depth, not decoration. */
+  background:
+    radial-gradient(700px 500px at 12% -8%,  rgba(68,138,255,0.07), transparent 60%),
+    radial-gradient(600px 460px at 100% 18%, rgba(0,230,118,0.05), transparent 60%),
+    radial-gradient(560px 420px at 55% 100%, rgba(255,23,68,0.045), transparent 60%),
+    var(--bg);
   color: var(--text);
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   font-size: 13px;
@@ -62,6 +94,15 @@ html, body {
    win over #tab-advance's own `display:flex` below — an ID selector would
    otherwise out-specificity a plain class rule. */
 
+/* Mobile tab switch: a short fade+rise on whichever tab-screen just became
+   active — chart.js's _setActiveTab adds this class for one animation
+   cycle then removes it, at the exact point it already removes .hidden. */
+.tab-screen.tab-enter { animation: tab-fade-in .18s ease-out; }
+@keyframes tab-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 #tab-advance {
   display: flex;
   flex-direction: column;
@@ -71,6 +112,18 @@ html, body {
   display: block;
   overflow-y: auto;
   padding: 10px 8px;
+}
+/* Signals/Settings tend to have short content in a tall mobile viewport
+   (screenshotted as a big empty gap below a single small card) — center it
+   vertically instead of top-pinning it above dead space. #tab-home has
+   enough content to fill the screen already, so it's left as plain block
+   flow. Doesn't affect the desktop settings-modal case: that state sets
+   display:block!important (higher specificity, see #tab-settings.settings-
+   open below), which overrides this flex entirely. */
+#tab-signals, #tab-settings {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 #bottom-tabs {
@@ -108,6 +161,7 @@ html, body {
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.6);
   z-index: 59;
+  animation: modal-backdrop-in .2s ease-out;
 }
 #settings-backdrop.hidden { display: none; }
 
@@ -122,10 +176,13 @@ html, body {
   max-height: 88vh;
   overflow-y: auto;
   padding: 16px;
-  background: var(--bg2);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
   border: 1px solid var(--border);
-  border-radius: var(--r);
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  animation: modal-panel-in-centered .22s ease-out;
 }
 
 #settings-modal-close { display: none; }
@@ -134,6 +191,14 @@ html, body {
   position: absolute;
   top: 12px;
   right: 12px;
+  /* .info-card's backdrop-filter (added for the glass-card look) promotes
+     it to its own z-index:0-equivalent stacking context — without an
+     explicit z-index here, the Account card (later in the DOM, same
+     effective level) paints ON TOP of this button and silently eats
+     clicks, even though the ✕ glyph still shows through the translucent
+     card. Caught by a Playwright click failing with "info-card intercepts
+     pointer events" while verifying this redesign. */
+  z-index: 1;
   padding: 3px 8px;
 }
 
@@ -305,27 +370,61 @@ html, body {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background .15s ease, transform .1s ease;
 }
-.history-btn:hover { border-color: var(--blue); color: var(--blue); }
+.history-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: rgba(68,138,255,0.08);
+}
+.history-btn:active { transform: scale(0.96); }
 .history-close { padding: 5px 9px; margin-left: auto; }
+
+/* ── Shared modal entrance (history modal, settings modal, signal popup) ──
+   Two keyframe variants because the panels use two different centering
+   mechanisms: margin-auto (history panel) vs. left:50%+transform:translateX
+   (signal popup, settings modal) — the latter MUST keep translateX(-50%) in
+   every step or the panel jumps off-center mid-animation. Both share the
+   same timing/easing/choreography (fade + slight rise + scale) so the app
+   feels consistent even though the exact transform differs. Both play
+   automatically whenever the element (or a display:none ancestor) enters
+   the render tree — no JS trigger needed, same mechanism the pre-existing
+   popup-in animation already relied on. */
+@keyframes modal-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes modal-panel-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes modal-panel-in-centered {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.98); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
 
 #history-modal { position: fixed; inset: 0; z-index: 50; }
 #history-modal.hidden { display: none; }
 #history-backdrop {
   position: absolute; inset: 0;
   background: rgba(0,0,0,0.6);
+  animation: modal-backdrop-in .2s ease-out;
 }
 #history-panel {
   position: relative;
   width: min(920px, 94vw);
   height: min(640px, 88vh);
   margin: 5vh auto 0;
-  background: var(--bg2);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
   border: 1px solid var(--border);
-  border-radius: var(--r);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  animation: modal-panel-in .22s ease-out;
 }
 #history-head {
   display: flex;
@@ -349,6 +448,8 @@ html, body {
   text-transform: uppercase;
   border-bottom: 1px solid var(--border);
 }
+#history-table tbody tr { transition: background .12s ease; }
+#history-table tbody tr:hover { background: rgba(255,255,255,0.03); }
 #history-table td {
   padding: 7px 10px;
   border-bottom: 1px solid var(--border);
@@ -395,7 +496,10 @@ html, body {
   cursor: pointer;
   outline: none;
   flex-shrink: 0;
+  transition: border-color .15s ease, background .15s ease;
 }
+.ctrl-select:hover  { border-color: var(--blue); }
+.ctrl-select:focus  { border-color: var(--blue); background: rgba(68,138,255,0.08); }
 /* ── Pair picker (button + fixed dropdown panel with built-in search) ───── */
 .pair-btn {
   display: flex;
@@ -458,6 +562,7 @@ html, body {
   border-radius: 5px;
   font-size: 12.5px;
   cursor: pointer;
+  transition: background .12s ease;
 }
 .pair-row:hover      { background: var(--bg3); }
 .pair-row.active     { background: rgba(68,138,255,0.12); }
@@ -550,28 +655,43 @@ html, body {
   padding: 2px 10px;
   border-radius: var(--r);
   white-space: nowrap;
+  transition: box-shadow .15s ease, filter .15s ease;
 }
 .signal-badge.call {
-  background: rgba(0, 230, 118, 0.12);
+  background: linear-gradient(135deg, rgba(0,230,118,0.22), rgba(0,230,118,0.07));
   color: var(--green);
-  border: 1px solid rgba(0, 230, 118, 0.35);
+  border: 1px solid rgba(0, 230, 118, 0.4);
 }
 .signal-badge.put {
-  background: rgba(255, 23, 68, 0.12);
+  background: linear-gradient(135deg, rgba(255,23,68,0.22), rgba(255,23,68,0.07));
   color: var(--red);
-  border: 1px solid rgba(255, 23, 68, 0.35);
+  border: 1px solid rgba(255, 23, 68, 0.4);
 }
 .signal-badge.neutral {
   background: var(--bg3);
   color: #555566;
   border: 1px solid var(--border);
 }
-/* Strength: STRONG glows (trade these), WEAK is dimmed (skip). */
-.signal-badge.str-strong { box-shadow: 0 0 10px rgba(255,255,255,0.18); filter: saturate(1.3); }
+/* Strength: STRONG glows in ITS OWN direction's color (trade these), WEAK
+   is dimmed (skip). isNeutral signals never carry a str-* class (see
+   chart.js's updateSignalUI), so neutral+str-strong never occurs. */
+.signal-badge.call.str-strong { box-shadow: var(--glow-green); filter: saturate(1.3); }
+.signal-badge.put.str-strong  { box-shadow: var(--glow-red);   filter: saturate(1.3); }
 .signal-badge.str-medium { opacity: 0.92; }
 /* 0.45 read as "broken/disabled" once every-candle mode made WEAK common —
    keep it clearly dimmer than MEDIUM but still legible. */
 .signal-badge.str-weak   { opacity: 0.65; font-weight: 700; }
+
+/* One-shot pop when a NEW signal replaces the old one — chart.js adds this
+   class for a single animation cycle then removes it (see updateSignalUI
+   and the Signals-tab/popup renderers). Functional feedback only: draws
+   the eye to the thing that just changed, not decoration. */
+.signal-badge.signal-pop { animation: signal-pop .3s ease-out; }
+@keyframes signal-pop {
+  0%   { transform: scale(0.94); opacity: 0.6; }
+  60%  { transform: scale(1.04); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
 
 .signal-meta {
   display: flex;
@@ -801,7 +921,9 @@ html, body {
 #side-panel {
   display: none;
   width: var(--side);
-  background: var(--bg2);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
   border-left: 1px solid var(--border);
   padding: 12px 10px;
   overflow-y: auto;
@@ -1066,18 +1188,37 @@ html, body {
   border: none;
   color: #55556a;
   cursor: pointer;
+  position: relative;
+  transition: color .15s ease;
 }
 .tab-btn-icon  { font-size: 17px; line-height: 1; }
 .tab-btn-label { font-size: 10px; font-weight: 600; }
 .tab-btn.active { color: var(--blue); }
+/* Soft pill behind the active tab's icon+label — a pseudo-element inset
+   from the button's own edges rather than a full-width background, so it
+   reads as a "selected chip" instead of a big rectangle. z-index:-1 keeps
+   it behind the icon/label (both normal in-flow content, which otherwise
+   paints on top of an auto-z-index absolute sibling). */
+.tab-btn.active::before {
+  content: '';
+  position: absolute;
+  inset: 4px 10px;
+  background: rgba(68,138,255,0.12);
+  border-radius: var(--r);
+  z-index: -1;
+  animation: modal-backdrop-in .15s ease-out;
+}
 
 /* ── Home / Settings info cards ──────────────────────────────────────────── */
 .info-card {
-  background: var(--bg2);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
   border: 1px solid var(--border);
   border-radius: var(--r);
   padding: 14px;
   margin-bottom: 10px;
+  box-shadow: var(--shadow-card);
 }
 .info-card h2 {
   font-size: 13px;
@@ -1127,8 +1268,10 @@ html, body {
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
+  transition: background .15s ease, transform .1s ease;
 }
 .logout-btn:hover { background: rgba(255,23,68,0.18); }
+.logout-btn:active { transform: scale(0.98); }
 
 /* ── Signals tab ─────────────────────────────────────────────────────────── */
 .signals-pair-btn { width: 100%; margin-bottom: 14px; min-width: 0; }
@@ -1177,16 +1320,18 @@ html, body {
   transform: translateX(-50%);
   z-index: 70;
   width: min(320px, calc(100vw - 24px));
-  background: var(--bg2);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
   border: 1px solid var(--border);
-  border-radius: var(--r);
-  box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card-hover);
   padding: 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  animation: popup-in 0.2s ease-out;
+  animation: modal-panel-in-centered .22s ease-out;
 }
 .signal-popup.hidden { display: none; }
 .signal-popup #signal-popup-close {
@@ -1194,10 +1339,6 @@ html, body {
   top: 8px;
   right: 8px;
   padding: 3px 8px;
-}
-@keyframes popup-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
-  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
 /* ── Premium upgrade placeholder (side panel, 'normal' accounts only) ───── */
@@ -1222,11 +1363,16 @@ html, body {
   margin-bottom: 4px;
 }
 .admin-stat {
+  /* Solid (not glass) on purpose — it sits inside an already-blurred
+     .info-card, so another backdrop-filter layer here would just double-
+     blur for no visual gain. A slightly recessed solid tone reads as
+     "nested" against the glass card around it instead. */
   background: var(--bg3);
   border: 1px solid var(--border);
   border-radius: var(--r);
   padding: 10px 6px;
   text-align: center;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
 }
 .admin-stat span {
   display: block;
@@ -1254,6 +1400,8 @@ html, body {
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
+.admin-users-table tbody tr { transition: background .12s ease; }
+.admin-users-table tbody tr:hover { background: rgba(255,255,255,0.03); }
 .admin-users-table td {
   padding: 7px 10px;
   border-bottom: 1px solid var(--border);
