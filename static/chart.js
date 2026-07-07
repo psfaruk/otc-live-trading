@@ -17,6 +17,31 @@ let reconnTimer = null;
 
 let currentAsset   = 'EURUSD_otc';
 let currentPeriod  = 60;
+
+// Restore the last pair/timeframe the user had open — otherwise every
+// browser refresh silently dropped back to the EURUSD_otc/1m default.
+// try/catch: localStorage can throw (private-browsing quota, etc.) —
+// falling back to the hardcoded defaults above is fine either way.
+try {
+  const _savedAsset  = localStorage.getItem('plybit_asset');
+  const _savedPeriod = parseInt(localStorage.getItem('plybit_period'), 10);
+  if (_savedAsset) currentAsset = _savedAsset;
+  if (_savedPeriod) currentPeriod = _savedPeriod;
+} catch (_) {}
+
+function _savePairPrefs() {
+  try {
+    localStorage.setItem('plybit_asset', currentAsset);
+    localStorage.setItem('plybit_period', String(currentPeriod));
+  } catch (_) {}
+}
+
+// True once the user has actually zoomed/panned the chart (wheel or a
+// drag) — once true, incoming EOC/tick updates stop force-scrolling the
+// view back to "real time" so a manual zoom survives new candles/signals
+// arriving. Reset on a deliberate pair/timeframe switch (resetAndSubscribe),
+// where snapping to the latest data again is exactly what's wanted.
+let _userTouchedChart = false;
 let pairsList      = [];          // [{asset, display, status, payout, locked}] — unified list
 let payoutFloor    = 81;          // min payout % a pair needs to be streamable — server-authoritative
 let pairSearchTerm = '';          // live filter typed into #pair-search
@@ -357,6 +382,12 @@ function initChart() {
   ro.observe(wrap);
   chart.applyOptions({ width: wrap.clientWidth, height: wrap.clientHeight });
 
+  // Mark manual zoom/pan so applySnapshot stops re-centering the view on
+  // every new candle/signal — wheel = zoom, pointerdown = the start of a
+  // mouse or touch drag-to-pan (unified across input types).
+  wrap.addEventListener('wheel', () => { _userTouchedChart = true; }, { passive: true });
+  wrap.addEventListener('pointerdown', () => { _userTouchedChart = true; });
+
   _startRaf();
 }
 
@@ -534,7 +565,12 @@ function applySnapshot(candles, prediction) {
 
   if (prediction) applyPrediction(prediction);
 
-  chart.timeScale().scrollToRealTime();
+  // Only auto-scroll to the latest candle if the user hasn't manually
+  // zoomed/panned since the last pair/timeframe switch — applySnapshot runs
+  // on every new candle close, not just the initial load, so unconditionally
+  // scrolling here used to yank a deliberately-zoomed view back to real-time
+  // the moment the next signal arrived.
+  if (!_userTouchedChart) chart.timeScale().scrollToRealTime();
 }
 
 function applyPrediction(pred) {
@@ -1008,6 +1044,8 @@ document.getElementById('tf-select').addEventListener('change', (e) => {
 });
 
 function resetAndSubscribe() {
+  _savePairPrefs();
+  _userTouchedChart = false;   // fresh selection — resume auto-scroll-to-latest
   _awaitingSnapshot = true;
   if (mainSeries) mainSeries.setData([]);
   if (predSeries) predSeries.setData([]);
@@ -1137,6 +1175,12 @@ function setStatus(cls, text) {
 // instead of failing outright on the very first load.
 function bootChart(attempt) {
   attempt = attempt || 0;
+  // The timeframe <select> hardcodes 1m as `selected` in the HTML — if a
+  // restored currentPeriod (see localStorage restore above) differs, sync
+  // the dropdown to match so it doesn't show "1m" while actually running,
+  // say, 5m.
+  const tfSel = document.getElementById('tf-select');
+  if (tfSel && tfSel.value !== String(currentPeriod)) tfSel.value = String(currentPeriod);
   if (typeof LightweightCharts === 'undefined') {
     if (attempt >= 20) {   // ~10s of retrying
       showFatalError('Chart library failed to load',
