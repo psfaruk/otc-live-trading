@@ -937,6 +937,8 @@ function _updateMktBadge() {
   badge.classList.toggle('hidden', !st || st === 'unknown');
 }
 
+let _panelOpenWidth = 0;   // see the resize listener below — mobile-keyboard guard
+
 function _openPairPanel() {
   const btn   = document.getElementById('pair-btn');
   const panel = document.getElementById('pair-panel');
@@ -947,6 +949,7 @@ function _openPairPanel() {
   panel.classList.remove('hidden');
   btn.classList.add('open');
   _renderPairRows();
+  _panelOpenWidth = window.innerWidth;
   const search = document.getElementById('pair-search');
   search.value = pairSearchTerm = '';
   _renderPairRows();
@@ -979,7 +982,19 @@ function _closePairPanel() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') _closePairPanel();
   });
-  window.addEventListener('resize', () => _closePairPanel());
+  // Real device rotation/window resize closes the panel (its position was
+  // computed for the old layout) — but on mobile, focusing #pair-search
+  // (right below, on open) pops the on-screen keyboard, which ALSO fires
+  // a resize (viewport height shrinks, width doesn't). That used to close
+  // the panel we'd just opened a moment earlier — looked exactly like the
+  // app "wouldn't open the pair list" / "crashed" on phones (reported by
+  // user 2026-07-06; a desktop/Playwright mobile-viewport test couldn't
+  // catch it because emulation has no real virtual keyboard to trigger
+  // the resize). Only close on a WIDTH change — that's an actual
+  // rotation/resize; a keyboard never changes viewport width.
+  window.addEventListener('resize', () => {
+    if (window.innerWidth !== _panelOpenWidth) _closePairPanel();
+  });
   search.addEventListener('input', (e) => {
     pairSearchTerm = e.target.value;
     _renderPairRows();
