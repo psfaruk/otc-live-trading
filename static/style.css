@@ -114,14 +114,17 @@ html, body {
   overflow-y: auto;
   padding: 10px 8px;
 }
-/* Signals/Settings tend to have short content in a tall mobile viewport
+/* #tab-signals tends to have short content in a tall mobile viewport
    (screenshotted as a big empty gap below a single small card) — center it
    vertically instead of top-pinning it above dead space. #tab-home has
    enough content to fill the screen already, so it's left as plain block
-   flow. Doesn't affect the desktop settings-modal case: that state sets
-   display:block!important (higher specificity, see #tab-settings.settings-
-   open below), which overrides this flex entirely. */
-#tab-signals, #tab-settings {
+   flow. #tab-settings is NOT centered here: it has grown far taller than
+   one viewport (Profile/Plan/Security/Preferences/admin CMS/Legal/About),
+   and centering an overflowing flex column clips content off both the top
+   AND bottom with no way to scroll to the clipped part — the fix for that
+   bug is just leaving it as normal top-aligned block flow (from the rule
+   above), which scrolls exactly like a page. */
+#tab-signals {
   display: flex;
   flex-direction: column;
   justify-content: center;
