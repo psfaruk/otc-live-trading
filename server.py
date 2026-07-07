@@ -129,6 +129,18 @@ async def login(req: LoginReq):
                     media_type="application/json")
 
 
+@app.post("/api/logout")
+async def logout():
+    # _session_token() is a static HMAC of APP_PASSWORD, not a per-session
+    # token — this clears the cookie from THIS browser only, it doesn't
+    # revoke the token itself. Changing APP_PASSWORD is still the only way
+    # to invalidate every outstanding cookie at once (see _session_token).
+    resp = Response(status_code=200, content='{"ok":true}',
+                    media_type="application/json")
+    resp.delete_cookie(_COOKIE_NAME)
+    return resp
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     # Cookies ride along on the WS handshake automatically (same-origin),

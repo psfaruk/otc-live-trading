@@ -23,7 +23,12 @@
         </div>
         <div id="status" class="status disconnected">● Connecting</div>
       </div>
-      <div class="header-stats">
+      <!-- Hidden on mobile (<640px) while a non-Advance tab is active — see
+           #bottom-tabs JS. Always shown on desktop regardless (the
+           max-width:639px scoping on .header-stats.hidden means the class
+           has no effect above that width) — desktop keeps today's single
+           unified header exactly as before. -->
+      <div class="header-stats" id="header-stats">
         <div id="winrate-wrap" title="Win rate (this pair / timeframe)">
           <span class="cdl">Win</span>
           <span id="winrate">--</span>
@@ -37,57 +42,181 @@
       </div>
     </header>
 
-    <!-- ── History modal ───────────────────────────────────────────── -->
-    <div id="history-modal" class="hidden">
-      <div id="history-backdrop"></div>
-      <div id="history-panel">
-        <div id="history-head">
-          <span id="history-title">Signal History</span>
-          <select id="history-pair-filter" class="ctrl-select" title="Filter by pair">
-            <option value="">All pairs</option>
-          </select>
-          <button type="button" id="history-refresh" class="history-btn">↻ Refresh</button>
-          <button type="button" id="history-close" class="history-btn history-close">✕</button>
-        </div>
-        <div id="history-body">
-          <table id="history-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Pair</th>
-                <th>Signal</th>
-                <th>Strength</th>
-                <th>Result</th>
-                <th>Why</th>
-              </tr>
-            </thead>
-            <tbody id="history-rows">
-              <tr><td colspan="6" class="history-empty">Loading…</td></tr>
-            </tbody>
-          </table>
+    <!-- ═══════════════════════════════════════════════════════════════
+         ADVANCE TAB — today's entire existing interface, unchanged.
+         On mobile (<640px) this is one of 4 bottom-tab screens; on
+         desktop (>=640px) it is always shown regardless of tab state
+         (see the min-width:640px override in style.css) — the tab
+         system doesn't exist as far as desktop is concerned.
+         ═══════════════════════════════════════════════════════════════ -->
+    <div id="tab-advance" class="tab-screen">
+
+      <!-- ── History modal ───────────────────────────────────────────── -->
+      <div id="history-modal" class="hidden">
+        <div id="history-backdrop"></div>
+        <div id="history-panel">
+          <div id="history-head">
+            <span id="history-title">Signal History</span>
+            <select id="history-pair-filter" class="ctrl-select" title="Filter by pair">
+              <option value="">All pairs</option>
+            </select>
+            <button type="button" id="history-refresh" class="history-btn">↻ Refresh</button>
+            <button type="button" id="history-close" class="history-btn history-close">✕</button>
+          </div>
+          <div id="history-body">
+            <table id="history-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Pair</th>
+                  <th>Signal</th>
+                  <th>Strength</th>
+                  <th>Result</th>
+                  <th>Why</th>
+                </tr>
+              </thead>
+              <tbody id="history-rows">
+                <tr><td colspan="6" class="history-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
-    </div>
 
-    <!-- ── Controls ────────────────────────────────────────────────── -->
-    <div id="controls">
-      <button type="button" id="pair-btn" class="ctrl-select pair-btn" title="Select trading pair">
-        <span id="pair-btn-label">Loading…</span>
-        <span class="pair-caret">▾</span>
-      </button>
-      <span id="mkt-badge" class="mkt-badge hidden"></span>
-      <select id="tf-select" class="ctrl-select tf-select" title="Candle timeframe">
-        <option value="30">30s</option>
-        <option value="60" selected>1m</option>
-        <option value="300">5m</option>
-        <option value="900">15m</option>
-      </select>
-      <span id="regime-badge" class="regime-badge hidden"></span>
-    </div>
+      <!-- ── Controls ────────────────────────────────────────────────── -->
+      <div id="controls">
+        <button type="button" id="pair-btn" class="ctrl-select pair-btn" title="Select trading pair">
+          <span id="pair-btn-label">Loading…</span>
+          <span class="pair-caret">▾</span>
+        </button>
+        <span id="mkt-badge" class="mkt-badge hidden"></span>
+        <select id="tf-select" class="ctrl-select tf-select" title="Candle timeframe">
+          <option value="30">30s</option>
+          <option value="60" selected>1m</option>
+          <option value="300">5m</option>
+          <option value="900">15m</option>
+        </select>
+        <span id="regime-badge" class="regime-badge hidden"></span>
+      </div>
 
-    <!-- Pair picker dropdown panel — position:fixed and OUTSIDE #controls,
-         because #controls scrolls horizontally (overflow-x:auto) and would
-         clip an absolutely-positioned child panel. -->
+      <!-- ── Signal Bar ──────────────────────────────────────────────── -->
+      <div id="signal-bar" class="hidden">
+        <div id="signal-badge" class="signal-badge neutral">–</div>
+        <div class="signal-meta">
+          <div id="signal-score">–</div>
+          <div class="conf-bar-wrap"><div id="signal-conf-bar" class="conf-bar"></div></div>
+          <div id="signal-conf">–</div>
+        </div>
+        <div id="entry-timing" class="entry-timing hidden"></div>
+        <div id="accuracy-wrap" class="hidden">
+          <span id="accuracy-label"></span>
+        </div>
+        <div id="running-conf" class="running-conf hidden"></div>
+      </div>
+
+      <!-- ── Accuracy history strip ──────────────────────────────────── -->
+      <div id="accuracy-strip" class="hidden"></div>
+
+      <!-- ── Main area: chart + side panel ──────────────────────────── -->
+      <div id="main">
+        <div id="chart-wrap">
+          <div id="chart"></div>
+          <div id="chart-loading" class="hidden">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">Loading chart data…</div>
+          </div>
+          <div id="no-data" class="hidden">
+            <div class="no-data-icon">⚠</div>
+            <div class="no-data-text">No live data</div>
+            <div class="no-data-sub" id="no-data-sub-text">This pair isn't streaming — select an OTC pair</div>
+          </div>
+          <div id="fatal-error" class="hidden">
+            <div class="no-data-icon">⛔</div>
+            <div class="no-data-text" id="fatal-error-text">Chart failed to load</div>
+            <div class="no-data-sub" id="fatal-error-sub">Retrying…</div>
+          </div>
+        </div>
+        <aside id="side-panel">
+
+          <!-- TRUE per-theory accuracy (from DB WHY report) -->
+          <div class="panel-title">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
+          <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
+
+          <!-- Key levels active on chart -->
+          <div class="panel-title panel-title-gap">Key Levels</div>
+          <ul id="key-levels-list"><li class="empty">–</li></ul>
+
+          <!-- Live microstructure -->
+          <div class="panel-title panel-title-gap">Live Flow</div>
+          <div id="micro-wrap" class="micro-wrap hidden">
+            <div class="micro-pressure-row">
+              <span id="micro-buy-pct" class="micro-buy">B 50%</span>
+              <div class="micro-bar-track">
+                <div id="micro-bar-fill" class="micro-bar-fill micro-bar-init"></div>
+              </div>
+              <span id="micro-sell-pct" class="micro-sell">S 50%</span>
+            </div>
+            <div id="micro-pressure" class="micro-tag">–</div>
+            <div id="micro-fight"    class="micro-tag hidden">⚡ Fight Zone</div>
+            <div id="micro-trap"     class="micro-tag hidden"></div>
+            <div id="micro-zigzag"   class="micro-tag hidden"></div>
+            <div id="micro-last-react" class="micro-tag hidden">–</div>
+            <div id="micro-round"     class="micro-tag hidden">–</div>
+            <div id="micro-reaction"  class="micro-tag hidden">–</div>
+            <div class="micro-phases-row">
+              <span class="micro-phase-lbl">Early</span>
+              <span id="micro-phase-0" class="micro-phase">–</span>
+              <span class="micro-phase-lbl">Mid</span>
+              <span id="micro-phase-1" class="micro-phase">–</span>
+              <span class="micro-phase-lbl">Late</span>
+              <span id="micro-phase-2" class="micro-phase">–</span>
+            </div>
+            <div class="micro-hold-row">
+              <span class="micro-hold-lbl">Hold zone</span>
+              <span id="micro-hold-price">–</span>
+            </div>
+          </div>
+          <div id="micro-forming" class="micro-forming">Collecting ticks…</div>
+
+          <div class="panel-title panel-title-gap">EOC Analysis</div>
+          <div id="eoc-summary" class="eoc-summary">–</div>
+          <ul id="reasons-list"></ul>
+
+          <div class="panel-title panel-title-gap">Theories</div>
+          <ul id="theory-legend">
+            <li><span class="t-num">RUN</span> Tick pressure (effort vs result)</li>
+            <li><span class="t-num">T7</span> Engulfing @key level</li>
+            <li><span class="t-num">T2</span> Pin bar @key level</li>
+            <li><span class="t-num">TRAP</span> Liquidity trap / exhaustion</li>
+            <li><span class="t-num">MARB</span> Marubozu momentum</li>
+            <li><span class="t-num">STAR</span> Morning/Evening Star</li>
+            <li><span class="t-num">STREAK</span> 4+ candle streak exhaustion</li>
+            <li><span class="t-num">SWEEP</span> Liquidity sweep / stop-hunt</li>
+            <li><span class="t-num">MICRO</span> Tick microstructure signals</li>
+            <li><span class="t-num">HARAMI</span> Indecision inside bar</li>
+            <li><span class="t-num">THREE</span> Three-candle reversal</li>
+            <li><span class="t-num">OUTSIDE</span> Outside bar engulf</li>
+            <li><span class="t-num">SPIN</span> Spinning top uncertainty</li>
+            <li><span class="t-num">GAP</span> Gap-open signal</li>
+            <li><span class="t-num">REGIME</span> Market trend + zone context</li>
+            <li><span class="t-num">ZIGZAG</span> Alternating candle pattern</li>
+            <li><span class="t-num">WICKWALL</span> Repeated wick rejection zone</li>
+            <li><span class="t-num">MTF</span> Multi-timeframe (5x trend + half-candle momentum)</li>
+          </ul>
+        </aside>
+      </div>
+    </div><!-- #tab-advance -->
+
+    <!-- Pair picker dropdown panel — a SIBLING of the tab-screens, not
+         nested inside #tab-advance: a display:none ANCESTOR hides a
+         position:fixed descendant too (fixed positioning only escapes
+         overflow clipping, not a display:none ancestor) — nesting it
+         inside #tab-advance made it unusable from the Signals tab, since
+         #tab-advance is display:none whenever a different tab is active.
+         Shared by BOTH the Advance tab's #pair-btn and the Signals tab's
+         #signals-pair-btn — there is only ever one (asset,period)
+         subscription per browser tab server-side, so one shared picker
+         is correct, not a simplification. -->
     <div id="pair-panel" class="pair-panel hidden">
       <div class="pair-panel-search">
         <span class="pair-panel-search-icon">⌕</span>
@@ -96,112 +225,90 @@
       <ul id="pair-list" class="pair-list"></ul>
     </div>
 
-    <!-- ── Signal Bar ──────────────────────────────────────────────── -->
-    <div id="signal-bar" class="hidden">
-      <div id="signal-badge" class="signal-badge neutral">–</div>
-      <div class="signal-meta">
-        <div id="signal-score">–</div>
-        <div class="conf-bar-wrap"><div id="signal-conf-bar" class="conf-bar"></div></div>
-        <div id="signal-conf">–</div>
-      </div>
-      <div id="entry-timing" class="entry-timing hidden"></div>
-      <div id="accuracy-wrap" class="hidden">
-        <span id="accuracy-label"></span>
-      </div>
-      <div id="running-conf" class="running-conf hidden"></div>
-    </div>
-
-    <!-- ── Accuracy history strip ──────────────────────────────────── -->
-    <div id="accuracy-strip" class="hidden"></div>
-
-    <!-- ── Main area: chart + side panel ──────────────────────────── -->
-    <div id="main">
-      <div id="chart-wrap">
-        <div id="chart"></div>
-        <div id="chart-loading" class="hidden">
-          <div class="loading-spinner"></div>
-          <div class="loading-text">Loading chart data…</div>
-        </div>
-        <div id="no-data" class="hidden">
-          <div class="no-data-icon">⚠</div>
-          <div class="no-data-text">No live data</div>
-          <div class="no-data-sub" id="no-data-sub-text">This pair isn't streaming — select an OTC pair</div>
-        </div>
-        <div id="fatal-error" class="hidden">
-          <div class="no-data-icon">⛔</div>
-          <div class="no-data-text" id="fatal-error-text">Chart failed to load</div>
-          <div class="no-data-sub" id="fatal-error-sub">Retrying…</div>
-        </div>
-      </div>
-      <aside id="side-panel">
-
-        <!-- TRUE per-theory accuracy (from DB WHY report) -->
-        <div class="panel-title">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
-        <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
-
-        <!-- Key levels active on chart -->
-        <div class="panel-title panel-title-gap">Key Levels</div>
-        <ul id="key-levels-list"><li class="empty">–</li></ul>
-
-        <!-- Live microstructure -->
-        <div class="panel-title panel-title-gap">Live Flow</div>
-        <div id="micro-wrap" class="micro-wrap hidden">
-          <div class="micro-pressure-row">
-            <span id="micro-buy-pct" class="micro-buy">B 50%</span>
-            <div class="micro-bar-track">
-              <div id="micro-bar-fill" class="micro-bar-fill micro-bar-init"></div>
-            </div>
-            <span id="micro-sell-pct" class="micro-sell">S 50%</span>
-          </div>
-          <div id="micro-pressure" class="micro-tag">–</div>
-          <div id="micro-fight"    class="micro-tag hidden">⚡ Fight Zone</div>
-          <div id="micro-trap"     class="micro-tag hidden"></div>
-          <div id="micro-zigzag"   class="micro-tag hidden"></div>
-          <div id="micro-last-react" class="micro-tag hidden">–</div>
-          <div id="micro-round"     class="micro-tag hidden">–</div>
-          <div id="micro-reaction"  class="micro-tag hidden">–</div>
-          <div class="micro-phases-row">
-            <span class="micro-phase-lbl">Early</span>
-            <span id="micro-phase-0" class="micro-phase">–</span>
-            <span class="micro-phase-lbl">Mid</span>
-            <span id="micro-phase-1" class="micro-phase">–</span>
-            <span class="micro-phase-lbl">Late</span>
-            <span id="micro-phase-2" class="micro-phase">–</span>
-          </div>
-          <div class="micro-hold-row">
-            <span class="micro-hold-lbl">Hold zone</span>
-            <span id="micro-hold-price">–</span>
-          </div>
-        </div>
-        <div id="micro-forming" class="micro-forming">Collecting ticks…</div>
-
-        <div class="panel-title panel-title-gap">EOC Analysis</div>
-        <div id="eoc-summary" class="eoc-summary">–</div>
-        <ul id="reasons-list"></ul>
-
-        <div class="panel-title panel-title-gap">Theories</div>
-        <ul id="theory-legend">
-          <li><span class="t-num">RUN</span> Tick pressure (effort vs result)</li>
-          <li><span class="t-num">T7</span> Engulfing @key level</li>
-          <li><span class="t-num">T2</span> Pin bar @key level</li>
-          <li><span class="t-num">TRAP</span> Liquidity trap / exhaustion</li>
-          <li><span class="t-num">MARB</span> Marubozu momentum</li>
-          <li><span class="t-num">STAR</span> Morning/Evening Star</li>
-          <li><span class="t-num">STREAK</span> 4+ candle streak exhaustion</li>
-          <li><span class="t-num">SWEEP</span> Liquidity sweep / stop-hunt</li>
-          <li><span class="t-num">MICRO</span> Tick microstructure signals</li>
-          <li><span class="t-num">HARAMI</span> Indecision inside bar</li>
-          <li><span class="t-num">THREE</span> Three-candle reversal</li>
-          <li><span class="t-num">OUTSIDE</span> Outside bar engulf</li>
-          <li><span class="t-num">SPIN</span> Spinning top uncertainty</li>
-          <li><span class="t-num">GAP</span> Gap-open signal</li>
-          <li><span class="t-num">REGIME</span> Market trend + zone context</li>
-          <li><span class="t-num">ZIGZAG</span> Alternating candle pattern</li>
-          <li><span class="t-num">WICKWALL</span> Repeated wick rejection zone</li>
-          <li><span class="t-num">MTF</span> Multi-timeframe (5x trend + half-candle momentum)</li>
+    <!-- ═══ HOME TAB — mobile only, info + disclaimer ═══════════════════ -->
+    <div id="tab-home" class="tab-screen hidden">
+      <div class="info-card">
+        <h2>What Plybit AI does</h2>
+        <p>Streams live OTC forex candles from Quotex and runs a set of
+          price-action theories (tick pressure, wick rejection, candle
+          patterns, multi-timeframe trend) against every closed candle to
+          produce a CALL/PUT read with a STRONG/MEDIUM/WEAK strength
+          label.</p>
+        <ul>
+          <li>Only forex pairs at or above the live payout floor stream
+            continuously — everything else is blocked from opening.</li>
+          <li>Each theory's real accuracy is tracked over a rolling 7-day
+            window; any theory measured below coin-flip is automatically
+            muted until it recovers.</li>
+          <li>Strength reflects how much independent evidence backs a
+            signal, not a promised win rate.</li>
         </ul>
-      </aside>
+      </div>
+      <div class="info-card disclaimer-card">
+        <h2>⚠ Read this before trading</h2>
+        <p>This project measured the OTC feed directly — a 6,000-candle
+          statistical test and a separate 42,000-signal live production
+          record — and both agree: the feed behaves like an unbeatable
+          RNG. No theory, combination, or strength tier has shown a real
+          edge above 50%.</p>
+        <p>This app exists to analyze that feed honestly, not to promise
+          winning trades. Treat every signal as informational, never as
+          a guarantee.</p>
+      </div>
     </div>
+
+    <!-- ═══ SIGNALS TAB — mobile only, pair picker + popup results ══════ -->
+    <div id="tab-signals" class="tab-screen hidden">
+      <button type="button" id="signals-pair-btn" class="ctrl-select pair-btn signals-pair-btn" title="Select trading pair">
+        <span id="signals-pair-btn-label">Loading…</span>
+        <span class="pair-caret">▾</span>
+      </button>
+      <div id="signals-idle" class="signals-idle">
+        <div class="signals-idle-icon">◷</div>
+        <div>Waiting for the next signal…</div>
+      </div>
+      <div id="signals-last" class="signals-last hidden">
+        <div class="signals-last-label">Last signal</div>
+        <div id="signals-last-badge" class="signal-badge neutral">–</div>
+        <div id="signals-last-meta" class="signals-last-meta">–</div>
+      </div>
+    </div>
+
+    <!-- Signal popup — fixed overlay, a sibling of the tab-screens so it
+         can cover the whole app regardless of scroll position. -->
+    <div id="signal-popup" class="signal-popup hidden">
+      <div id="signal-popup-badge" class="signal-badge neutral">–</div>
+      <div id="signal-popup-meta" class="signals-last-meta">–</div>
+      <button type="button" id="signal-popup-close" class="history-btn">✕</button>
+    </div>
+
+    <!-- ═══ SETTINGS TAB — mobile only, logout + about ═══════════════════ -->
+    <div id="tab-settings" class="tab-screen hidden">
+      <div class="info-card">
+        <h2>Account</h2>
+        <button type="button" id="logout-btn" class="logout-btn">Log out</button>
+      </div>
+      <div class="info-card">
+        <h2>About</h2>
+        <p>Plybit AI — live OTC price-action signal dashboard.</p>
+      </div>
+    </div>
+
+    <!-- ═══ Bottom tab bar — mobile only (see style.css) ═════════════════ -->
+    <nav id="bottom-tabs">
+      <button type="button" class="tab-btn" data-tab="home">
+        <span class="tab-btn-icon">⌂</span><span class="tab-btn-label">Home</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="signals">
+        <span class="tab-btn-icon">⚡</span><span class="tab-btn-label">Signals</span>
+      </button>
+      <button type="button" class="tab-btn active" data-tab="advance">
+        <span class="tab-btn-icon">📈</span><span class="tab-btn-label">Advance</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="settings">
+        <span class="tab-btn-icon">⚙</span><span class="tab-btn-label">Settings</span>
+      </button>
+    </nav>
 
   </div><!-- #app -->
 

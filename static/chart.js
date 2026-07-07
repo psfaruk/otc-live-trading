@@ -36,6 +36,17 @@ function _savePairPrefs() {
   } catch (_) {}
 }
 
+// Mobile-only bottom-tab navigation (Home/Signals/Advance/Settings — see
+// #bottom-tabs). Desktop ignores this entirely via a >=640px CSS override
+// that always shows #tab-advance regardless of this value, so no
+// window-width branching is needed here. Defaults to 'advance' — Home is
+// an info screen, not something to force on a returning user.
+let _activeTab = 'advance';
+try {
+  const _savedTab = localStorage.getItem('plybit_tab');
+  if (_savedTab) _activeTab = _savedTab;
+} catch (_) {}
+
 // True once the user has actually zoomed/panned the chart (wheel or a
 // drag) — once true, incoming EOC/tick updates stop force-scrolling the
 // view back to "real time" so a manual zoom survives new candles/signals
@@ -494,6 +505,10 @@ function handleMsg(msg, perfNow) {
           _pushResult(lastPrediction.signal, msg.accuracy);
         }
       }
+      // Signals tab: an automatic popup the moment a new signal lands —
+      // only while that tab is active (Advance's own #signal-bar, updated
+      // above via applySnapshot, keeps working regardless of active tab).
+      if (_activeTab === 'signals' && msg.prediction) _showSignalPopup(msg.prediction);
       loadStats();
       break;
 
@@ -868,6 +883,61 @@ function updateSignalUI(pred) {
   }
 }
 
+// ── Signals tab: badge/meta text shared between the auto-popup and the
+// persistent "last signal" summary (same convention as #signal-bar's own
+// badge in updateSignalUI, kept separate rather than refactored in there
+// to avoid touching the already-verified Advance tab rendering path). ────
+function _fmtSignalBadge(pred) {
+  const strength = pred.strength || 'WEAK';
+  const tag = strength === 'STRONG' ? '★ ' : strength === 'WEAK' ? '· ' : '';
+  return {
+    cls:  `signal-badge ${pred.signal.toLowerCase()} str-${strength.toLowerCase()}`,
+    text: (pred.signal === 'CALL' ? '▲ CALL' : '▼ PUT') + `  ${tag}${strength}`,
+  };
+}
+function _fmtSignalMeta(pred) {
+  const agreeCount = pred.agree || 0;
+  return `Score ${pred.score > 0 ? '+' : ''}${pred.score}  ·  ${agreeCount} theor${agreeCount === 1 ? 'y' : 'ies'} agree`;
+}
+
+let _popupTimer = null;
+
+function _showSignalPopup(pred) {
+  if (!pred || pred.signal === 'NEUTRAL') return;   // defensive — see analyze_eoc's rare early-exit guards
+  const popup = document.getElementById('signal-popup');
+  const badge = document.getElementById('signal-popup-badge');
+  const meta  = document.getElementById('signal-popup-meta');
+  if (!popup || !badge || !meta) return;
+  const { cls, text } = _fmtSignalBadge(pred);
+  badge.className   = cls;
+  badge.textContent = text;
+  meta.textContent  = _fmtSignalMeta(pred);
+  popup.classList.remove('hidden');
+  clearTimeout(_popupTimer);
+  _popupTimer = setTimeout(_hideSignalPopup, 7000);   // auto-dismiss, or the next signal replaces it sooner
+  _updateSignalsLast(pred);
+}
+
+function _hideSignalPopup() {
+  const popup = document.getElementById('signal-popup');
+  if (popup) popup.classList.add('hidden');
+  clearTimeout(_popupTimer);
+}
+
+function _updateSignalsLast(pred) {
+  const idle  = document.getElementById('signals-idle');
+  const last  = document.getElementById('signals-last');
+  const badge = document.getElementById('signals-last-badge');
+  const meta  = document.getElementById('signals-last-meta');
+  if (!last || !badge || !meta) return;
+  const { cls, text } = _fmtSignalBadge(pred);
+  badge.className   = cls;
+  badge.textContent = text;
+  meta.textContent  = _fmtSignalMeta(pred);
+  last.classList.remove('hidden');
+  if (idle) idle.classList.add('hidden');
+}
+
 // ── Controls ───────────────────────────────────────────────────────────────
 async function loadPairs() {
   try {
@@ -904,14 +974,19 @@ function renderPairSelect() {
 }
 
 function _updatePairBtn() {
-  const label = document.getElementById('pair-btn-label');
-  if (!label) return;
   const p = pairsList.find((x) => x.asset === currentAsset);
-  if (!p) { label.textContent = currentAsset; return; }
-  const pay = typeof p.payout === 'number' ? ` · ${p.payout}%` : '';
-  label.innerHTML =
-    (p.status === 'live' ? '<span class="pair-live-dot">●</span> ' : '') +
-    `${p.display} <span class="pair-btn-sub">${p.status === 'live' ? 'Real' : 'Otc'}${pay}</span>`;
+  // Two trigger buttons share one picker/state — the Advance tab's
+  // #pair-btn and the Signals tab's #signals-pair-btn. Update whichever
+  // of them exist in the DOM.
+  for (const id of ['pair-btn-label', 'signals-pair-btn-label']) {
+    const label = document.getElementById(id);
+    if (!label) continue;
+    if (!p) { label.textContent = currentAsset; continue; }
+    const pay = typeof p.payout === 'number' ? ` · ${p.payout}%` : '';
+    label.innerHTML =
+      (p.status === 'live' ? '<span class="pair-live-dot">●</span> ' : '') +
+      `${p.display} <span class="pair-btn-sub">${p.status === 'live' ? 'Real' : 'Otc'}${pay}</span>`;
+  }
 }
 
 function _payClass(p) {
@@ -974,16 +1049,20 @@ function _updateMktBadge() {
 }
 
 let _panelOpenWidth = 0;   // see the resize listener below — mobile-keyboard guard
+let _panelOpenTrigger = null;   // whichever button opened it — see _closePairPanel
 
-function _openPairPanel() {
-  const btn   = document.getElementById('pair-btn');
+// Shared by both trigger buttons (Advance tab's #pair-btn, Signals tab's
+// #signals-pair-btn) — there's only ever one (asset,period) subscription
+// per browser tab server-side, so one panel/state genuinely serves both.
+function _openPairPanel(triggerBtn) {
   const panel = document.getElementById('pair-panel');
-  const rect  = btn.getBoundingClientRect();
+  const rect  = triggerBtn.getBoundingClientRect();
   panel.style.left     = `${Math.max(8, Math.min(rect.left, window.innerWidth - 328))}px`;
   panel.style.top      = `${rect.bottom + 6}px`;
   panel.style.maxHeight = `${Math.max(180, window.innerHeight - rect.bottom - 20)}px`;
   panel.classList.remove('hidden');
-  btn.classList.add('open');
+  triggerBtn.classList.add('open');
+  _panelOpenTrigger = triggerBtn;
   _renderPairRows();
   _panelOpenWidth = window.innerWidth;
   const search = document.getElementById('pair-search');
@@ -994,7 +1073,8 @@ function _openPairPanel() {
 
 function _closePairPanel() {
   document.getElementById('pair-panel').classList.add('hidden');
-  document.getElementById('pair-btn').classList.remove('open');
+  if (_panelOpenTrigger) _panelOpenTrigger.classList.remove('open');
+  _panelOpenTrigger = null;
 }
 
 // Guarded wiring: if any picker element is missing (e.g. a stale
@@ -1010,9 +1090,19 @@ function _closePairPanel() {
 
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (panel.classList.contains('hidden')) _openPairPanel();
+    if (panel.classList.contains('hidden')) _openPairPanel(btn);
     else _closePairPanel();
   });
+  // Second trigger — Signals tab. Guarded independently: it may be absent
+  // in an older cached HTML without breaking the primary #pair-btn wiring.
+  const signalsBtn = document.getElementById('signals-pair-btn');
+  if (signalsBtn) {
+    signalsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (panel.classList.contains('hidden')) _openPairPanel(signalsBtn);
+      else _closePairPanel();
+    });
+  }
   panel.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => _closePairPanel());
   document.addEventListener('keydown', (e) => {
@@ -1036,6 +1126,51 @@ function _closePairPanel() {
     _renderPairRows();
   });
 })();
+
+// ── Bottom tab navigation (mobile only — see the >=640px CSS override that
+// makes this invisible/inert on desktop) ────────────────────────────────
+function _setActiveTab(tab) {
+  _activeTab = tab;
+  try { localStorage.setItem('plybit_tab', tab); } catch (_) {}
+
+  for (const id of ['tab-home', 'tab-signals', 'tab-advance', 'tab-settings']) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', id !== `tab-${tab}`);
+  }
+  document.querySelectorAll('.tab-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  // The win-rate/countdown/refresh/History cluster is Advance-specific —
+  // hide it on mobile for the other 3 tabs (desktop always shows it, see
+  // the .header-stats.hidden scoping to the <640px media query in style.css).
+  const stats = document.getElementById('header-stats');
+  if (stats) stats.classList.toggle('hidden', tab !== 'advance');
+
+  if (tab === 'signals') {
+    _hideSignalPopup();
+    // Show whatever the last real (non-NEUTRAL) prediction was immediately
+    // on switching here, WITHOUT the popup animation — the popup itself is
+    // reserved for a genuinely NEW signal landing per the automatic-popup
+    // scope, not for re-displaying stale data when navigating tabs.
+    if (lastPrediction) _updateSignalsLast(lastPrediction);
+  }
+}
+
+document.querySelectorAll('.tab-btn').forEach((b) => {
+  b.addEventListener('click', () => _setActiveTab(b.dataset.tab));
+});
+_setActiveTab(_activeTab);   // apply the restored/default tab on load
+
+const signalPopupClose = document.getElementById('signal-popup-close');
+if (signalPopupClose) signalPopupClose.addEventListener('click', _hideSignalPopup);
+
+const logoutBtn = document.getElementById('logout-btn');
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', async () => {
+    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) {}
+    location.href = '/login';
+  });
+}
 
 document.getElementById('tf-select').addEventListener('change', (e) => {
   currentPeriod = parseInt(e.target.value, 10);

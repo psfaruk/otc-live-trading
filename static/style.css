@@ -42,6 +42,54 @@ html, body {
   height: 100dvh;
 }
 
+/* ── Mobile tab system (Home/Signals/Advance/Settings) ────────────────────── *
+ * Mobile-only (<640px) navigation layer on top of the existing single-page
+ * app. #tab-advance is TODAY's entire interface, unchanged, just wrapped —
+ * it takes over #main's old role as the flex:1 child of #app, so it needs
+ * the same flex-column + min-height:0 treatment #app used to give #main
+ * directly. #tab-home/#tab-signals/#tab-settings are plain content panels
+ * (block flow, own scrolling).
+ *
+ * Desktop (>=640px) ignores this system entirely via the !important
+ * overrides at the bottom of this block — #bottom-tabs stays hidden and
+ * #tab-advance is forced visible regardless of the JS-toggled .hidden
+ * class, so desktop's layout is exactly what it was before this feature. */
+.tab-screen {
+  flex: 1;
+  min-height: 0;
+}
+.tab-screen.hidden { display: none !important; }   /* !important: must always
+   win over #tab-advance's own `display:flex` below — an ID selector would
+   otherwise out-specificity a plain class rule. */
+
+#tab-advance {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;   /* #main/#chart-wrap manage their own internal scrolling */
+}
+#tab-home, #tab-signals, #tab-settings {
+  display: block;
+  overflow-y: auto;
+  padding: 10px 8px;
+}
+
+#bottom-tabs {
+  display: none;   /* default: desktop */
+  flex-shrink: 0;
+}
+
+@media (max-width: 639px) {
+  #bottom-tabs { display: flex; }
+  .header-stats.hidden { display: none; }   /* Advance-only on mobile — see
+    #header-stats JS toggle; desktop always shows it (no such rule exists
+    outside this media query). */
+}
+
+@media (min-width: 640px) {
+  #tab-home, #tab-signals, #tab-settings { display: none !important; }
+  #tab-advance { display: flex !important; }
+}
+
 /* ── Header ──────────────────────────────────────────────────────────────── */
 /* Two logical rows — .header-top (brand + connection status) and
    .header-stats (win rate / countdown / refresh / history). On wide
@@ -951,3 +999,156 @@ html, body {
 /* ── Zigzag micro tag ────────────────────────────────────────────────────── */
 .micro-tag.zz-call { color: var(--green); background: rgba(0,230,118,0.10); border: 1px solid rgba(0,230,118,0.3); border-radius: 4px; }
 .micro-tag.zz-put  { color: var(--red);   background: rgba(255,23,68,0.10);  border: 1px solid rgba(255,23,68,0.3);  border-radius: 4px; }
+
+/* ── Bottom tab bar ──────────────────────────────────────────────────────── */
+#bottom-tabs {
+  align-items: stretch;
+  justify-content: space-around;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+}
+.tab-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 7px 0 6px;
+  background: transparent;
+  border: none;
+  color: #55556a;
+  cursor: pointer;
+}
+.tab-btn-icon  { font-size: 17px; line-height: 1; }
+.tab-btn-label { font-size: 10px; font-weight: 600; }
+.tab-btn.active { color: var(--blue); }
+
+/* ── Home / Settings info cards ──────────────────────────────────────────── */
+.info-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 14px;
+  margin-bottom: 10px;
+}
+.info-card h2 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.info-card p {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #9999ac;
+  margin-bottom: 8px;
+}
+.info-card p:last-child { margin-bottom: 0; }
+.info-card ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.info-card li {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9999ac;
+  padding-left: 14px;
+  position: relative;
+}
+.info-card li::before {
+  content: '–';
+  position: absolute;
+  left: 0;
+  color: var(--blue);
+}
+.disclaimer-card {
+  border-color: rgba(255,215,64,0.35);
+  background: rgba(255,215,64,0.04);
+}
+.disclaimer-card h2 { color: var(--yellow); }
+
+.logout-btn {
+  width: 100%;
+  padding: 10px;
+  background: rgba(255,23,68,0.10);
+  border: 1px solid rgba(255,23,68,0.35);
+  border-radius: var(--r);
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.logout-btn:hover { background: rgba(255,23,68,0.18); }
+
+/* ── Signals tab ─────────────────────────────────────────────────────────── */
+.signals-pair-btn { width: 100%; margin-bottom: 14px; min-width: 0; }
+.signals-idle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #55556a;
+  font-size: 12px;
+  padding: 40px 0;
+  text-align: center;
+}
+.signals-idle-icon { font-size: 26px; }
+.signals-idle.hidden { display: none; }
+
+.signals-last {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.signals-last.hidden { display: none; }
+.signals-last-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #55556a;
+}
+.signals-last-meta {
+  font-size: 12px;
+  color: #8888a0;
+  text-align: center;
+}
+
+/* ── Signal popup (Signals tab, auto-shown on every new candle) ─────────── */
+.signal-popup {
+  position: fixed;
+  left: 50%;
+  bottom: 76px;   /* clears #bottom-tabs on mobile */
+  transform: translateX(-50%);
+  z-index: 70;
+  width: min(320px, calc(100vw - 24px));
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  animation: popup-in 0.2s ease-out;
+}
+.signal-popup.hidden { display: none; }
+.signal-popup #signal-popup-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 8px;
+}
+@keyframes popup-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
