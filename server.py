@@ -2,9 +2,11 @@ import asyncio
 import hashlib
 import hmac
 import os
+import re
+import secrets
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -12,58 +14,124 @@ import uvicorn
 
 load_dotenv()
 
+import db as _db
 from feed import QuotexFeed
 
 feed = QuotexFeed()
 _clients: set[WebSocket] = set()
+# Populated at /ws accept, read by _broadcast — lets the shared fan-out send
+# a different (full vs tier-trimmed) payload per socket without feed.py
+# knowing anything about user accounts. See _tier_payload below.
+_client_category: dict[WebSocket, str] = {}
 
-# ── Access gate ───────────────────────────────────────────────────────────
-# Single shared password for the whole site (no per-user accounts — matches
-# the rest of this app's "one shared feed, many anonymous viewers" model).
-# APP_PASSWORD unset => gate disabled (local dev doesn't need a login).
-# Cookie-based (not HTTP Basic) so the login screen is our own styled page
-# (static/login.html) instead of the browser's unstylable native popup.
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
-_COOKIE_NAME = "plybit_auth"
+# ── Access gate — real per-user accounts (email + password), 3 categories:
+# normal / premium / admin. Replaces the old single-shared-password gate.
+#
+# SESSION_SECRET signs the identity cookie; it must be a STABLE value you
+# set yourself (Railway env var) — unlike a per-process random fallback,
+# a stable secret means sessions survive a redeploy (this app redeploys
+# often). If unset, a random secret is generated for this process only —
+# fine for local dev, but every restart logs everyone out.
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
+if not SESSION_SECRET:
+    SESSION_SECRET = secrets.token_hex(32)
+    print("[auth] SESSION_SECRET not set — using a random per-process secret "
+          "(sessions will NOT survive a restart/redeploy). Set SESSION_SECRET "
+          "in your environment for real deployments.")
+
+_COOKIE_NAME = "plybit_session"
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _session_token() -> str:
-    # Derived from the password: changing APP_PASSWORD invalidates every
-    # previously-issued cookie at once, with no server-side session store.
-    return hmac.new(APP_PASSWORD.encode(), b"plybit-session-v1",
-                    hashlib.sha256).hexdigest()
+def _sign(user_id: int, token_version: int) -> str:
+    msg = f"{user_id}:{token_version}"
+    return hmac.new(SESSION_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
 
-def _cookie_ok(cookie_header: str | None) -> bool:
-    if not APP_PASSWORD:
-        return True
+def _make_cookie_value(user_id: int, token_version: int) -> str:
+    return f"{user_id}:{token_version}:{_sign(user_id, token_version)}"
+
+
+def _parse_cookie_value(cookie_header: str | None) -> tuple[int, int] | None:
+    """Verify the signature and return (user_id, token_version) — pure
+    compute, no DB access, so this stays as fast as the old static-HMAC
+    check even though sessions are now per-user. Actual authorization
+    (does this user/token_version still exist right now) is checked
+    separately, once per request, in auth_middleware — see its comment
+    for why that check needs a DB read and this one deliberately doesn't."""
     if not cookie_header:
-        return False
+        return None
+    value = None
     for part in cookie_header.split(";"):
-        name, _, value = part.strip().partition("=")
+        name, _, v = part.strip().partition("=")
         if name == _COOKIE_NAME:
-            return hmac.compare_digest(value, _session_token())
-    return False
+            value = v
+            break
+    if not value:
+        return None
+    try:
+        uid_s, tv_s, sig = value.split(":", 2)
+        user_id, token_version = int(uid_s), int(tv_s)
+    except ValueError:
+        return None
+    if not hmac.compare_digest(sig, _sign(user_id, token_version)):
+        return None
+    return user_id, token_version
 
 
-# Paths reachable WITHOUT a session: the health probe, the login page
-# itself, the login API it posts to, and the brand logo the login page
-# displays (it renders BEFORE authentication, so its image can't sit
-# behind the gate). Everything else on the login page is inline.
-_OPEN_PATHS = {"/healthz", "/login", "/api/login", "/logo.png"}
+# Paths reachable WITHOUT a session: the health probe, the login page and
+# its signup/login APIs, and the brand logo the login page displays (it
+# renders BEFORE authentication, so its image can't sit behind the gate).
+_OPEN_PATHS = {"/healthz", "/login", "/api/login", "/api/signup", "/logo.png"}
 
 
 async def _broadcast(data: dict) -> None:
     dead = set()
+    # Both payload variants are built at most once per broadcast (not once
+    # per client) — feed.py stays completely unaware of user accounts;
+    # _tier_payload is the one place that knows what 'normal' can't see.
+    reduced = None
     # Snapshot: _clients mutates while we await sends (connect/disconnect),
     # iterating the live set raises "Set changed size during iteration" and
     # kills the feed loop that called us.
     for ws in list(_clients):
+        category = _client_category.get(ws, "normal")
+        if category == "normal":
+            if reduced is None:
+                reduced = _tier_payload(data, category)
+            payload = reduced
+        else:
+            payload = data
         try:
-            await ws.send_json(data)
+            await ws.send_json(payload)
         except Exception:
             dead.add(ws)
     _clients.difference_update(dead)
+
+
+def _tier_payload(data: dict, category: str) -> dict:
+    """The one place that trims candle/prediction/microstructure data for
+    'normal' accounts — applied at every point this data reaches a client
+    (the WS initial snapshot, every WS broadcast via _client_category, and
+    /api/subscribe's response). 'premium' and 'admin' always get the
+    untrimmed dict unchanged. Covers both message shapes feed.py emits:
+    'snapshot'/'eoc' (candles + prediction) and 'tick' (micro +
+    running_conf, and occasionally a re-anchored prediction)."""
+    if category in ("premium", "admin"):
+        return data
+    out = dict(data)
+    if isinstance(out.get("candles"), list):
+        out["candles"] = out["candles"][-100:]
+    pred = out.get("prediction")
+    if isinstance(pred, dict):
+        pred = dict(pred)
+        pred.pop("reasons", None)
+        pred.pop("key_levels", None)
+        pred.pop("wick_walls", None)
+        out["prediction"] = pred
+    out.pop("micro", None)
+    out.pop("running_conf", None)
+    return out
 
 
 @asynccontextmanager
@@ -81,15 +149,40 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Plybit AI", lifespan=lifespan)
 
 
+async def _authenticate(request: Request) -> dict | None:
+    """Verify the cookie's signature (pure compute), then confirm — via ONE
+    indexed DB read — that the account still exists AND this exact
+    token_version hasn't been revoked. Done here, once per request, rather
+    than left to individual route handlers: that's what closes both gaps a
+    per-route check would leave open — a route that forgets the check
+    would otherwise silently skip authorization entirely, and a deleted
+    account's still-correctly-SIGNED cookie would keep passing everywhere
+    that never separately re-checks it. asyncio.to_thread is required
+    (not a bare call) because this middleware is on the same event loop
+    that also drives feed.py's live tick processing — see the sync-def
+    convention on the /api/stats-style endpoints below for the same reason."""
+    parsed = _parse_cookie_value(request.headers.get("cookie"))
+    if not parsed:
+        return None
+    return await asyncio.to_thread(_db.get_user_for_session, *parsed)
+
+
 @app.middleware("http")
-async def auth_middleware(request, call_next):
+async def auth_middleware(request: Request, call_next):
     # Covers everything: the static-file mount (index.html/chart.js/style.css)
     # AND every /api/* route, since it runs before routing decides which one
     # handles the request. /healthz stays open — Railway's healthcheck can't
     # authenticate, and gating it made password-protected deployments get
     # marked unhealthy (observed live).
-    if (request.url.path in _OPEN_PATHS
-            or _cookie_ok(request.headers.get("cookie"))):
+    if request.url.path in _OPEN_PATHS:
+        return await call_next(request)
+    user = await _authenticate(request)
+    if user:
+        # Route handlers read these instead of re-querying the DB — e.g.
+        # the /api/admin/* routes just check request.state.category.
+        request.state.user_id  = user["id"]
+        request.state.email    = user["email"]
+        request.state.category = user["category"]
         return await call_next(request)
     # Page loads go to the styled login screen; API calls get a plain 401
     # (a redirect would just confuse fetch() callers).
@@ -112,33 +205,69 @@ async def login_page():
     return resp
 
 
+def _set_session_cookie(response: Response, user: dict) -> None:
+    response.set_cookie(
+        _COOKIE_NAME, _make_cookie_value(user["id"], user["token_version"]),
+        max_age=30 * 86400, httponly=True, samesite="lax")
+
+
+class SignupReq(BaseModel):
+    email: str = ""
+    password: str = ""
+
+
+@app.post("/api/signup")
+def signup(req: SignupReq, response: Response):
+    # sync def, not async: hash_password() runs PBKDF2 at 200k iterations —
+    # genuinely expensive blocking CPU work. Same reasoning as the
+    # /api/stats-style endpoints further down: FastAPI runs sync endpoints
+    # in its threadpool, so this can't stall feed.py's live tick processing
+    # the way a blocking call inside an async def would.
+    email = req.email.strip()
+    if not _EMAIL_RE.match(email):
+        response.status_code = 400
+        return {"ok": False, "error": "Enter a valid email address"}
+    if len(req.password) < 8:
+        response.status_code = 400
+        return {"ok": False, "error": "Password must be at least 8 characters"}
+    user = _db.create_user(email, req.password)
+    if not user:
+        response.status_code = 409
+        return {"ok": False, "error": "That email is already registered"}
+    _set_session_cookie(response, user)
+    return {"ok": True, "email": user["email"], "category": user["category"]}
+
+
 class LoginReq(BaseModel):
+    email: str = ""
     password: str = ""
 
 
 @app.post("/api/login")
-async def login(req: LoginReq):
-    if not APP_PASSWORD or hmac.compare_digest(req.password, APP_PASSWORD):
-        resp = Response(status_code=200, content='{"ok":true}',
-                        media_type="application/json")
-        resp.set_cookie(
-            _COOKIE_NAME, _session_token(),
-            max_age=30 * 86400, httponly=True, samesite="lax")
-        return resp
-    return Response(status_code=401, content='{"ok":false}',
-                    media_type="application/json")
+def login(req: LoginReq, response: Response):
+    user = _db.verify_login(req.email, req.password)
+    if not user:
+        response.status_code = 401
+        return {"ok": False, "error": "Wrong email or password"}
+    _set_session_cookie(response, user)
+    return {"ok": True, "email": user["email"], "category": user["category"]}
 
 
 @app.post("/api/logout")
 async def logout():
-    # _session_token() is a static HMAC of APP_PASSWORD, not a per-session
-    # token — this clears the cookie from THIS browser only, it doesn't
-    # revoke the token itself. Changing APP_PASSWORD is still the only way
-    # to invalidate every outstanding cookie at once (see _session_token).
+    # The cookie only ever proves identity (see _parse_cookie_value) — this
+    # clears it from THIS browser only. Bumping the user's token_version
+    # (db.py — no UI calls this yet) is the actual revoke-everywhere lever.
     resp = Response(status_code=200, content='{"ok":true}',
                     media_type="application/json")
     resp.delete_cookie(_COOKIE_NAME)
     return resp
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    # Populated by auth_middleware — no extra DB call needed here.
+    return {"email": request.state.email, "category": request.state.category}
 
 
 @app.websocket("/ws")
@@ -146,18 +275,21 @@ async def ws_endpoint(ws: WebSocket) -> None:
     # Cookies ride along on the WS handshake automatically (same-origin),
     # so the same session check works here — checked explicitly since
     # @app.middleware("http") doesn't wrap the WebSocket protocol.
-    if not _cookie_ok(ws.headers.get("cookie")):
+    parsed = _parse_cookie_value(ws.headers.get("cookie"))
+    user = await asyncio.to_thread(_db.get_user_for_session, *parsed) if parsed else None
+    if not user:
         await ws.close(code=1008)
         return
     await ws.accept()
     _clients.add(ws)
+    _client_category[ws] = user["category"]
     cid    = ws.query_params.get("cid")
     asset  = ws.query_params.get("asset")
     period = ws.query_params.get("period")
     if asset and period and period.isdigit():
         snap = feed.snapshot(asset, int(period))
         if snap:
-            await ws.send_json(snap)
+            await ws.send_json(_tier_payload(snap, user["category"]))
     try:
         while True:
             await ws.receive_text()
@@ -165,6 +297,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         pass
     finally:
         _clients.discard(ws)
+        _client_category.pop(ws, None)
         if cid:
             await feed.drop_interest(cid)
 
@@ -176,8 +309,9 @@ class SubReq(BaseModel):
 
 
 @app.post("/api/subscribe")
-async def subscribe(req: SubReq):
-    return await feed.ensure_stream(req.asset, req.period, req.cid)
+async def subscribe(req: SubReq, request: Request):
+    result = await feed.ensure_stream(req.asset, req.period, req.cid)
+    return _tier_payload(result, request.state.category)
 
 
 @app.get("/api/pairs")
@@ -225,6 +359,49 @@ def theory_perf(asset: str | None = None, period: int | None = None,
     """Live per-theory accuracy — the data feeding the disable gate."""
     import db as _db
     return _db.theory_perf(asset, period, days=days)
+
+
+def _require_admin(request: Request) -> Response | None:
+    """Shared 403 check for the /api/admin/* routes below. request.state.category
+    is already fresh for THIS request (set by auth_middleware's DB read) —
+    no extra query needed here."""
+    if request.state.category != "admin":
+        return Response(status_code=403, content='{"ok":false,"error":"Admin only"}',
+                        media_type="application/json")
+    return None
+
+
+@app.get("/api/admin/users")
+def admin_list_users(request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    return {"users": _db.list_users()}
+
+
+class CategoryReq(BaseModel):
+    category: str = ""
+
+
+@app.post("/api/admin/users/{user_id}/category")
+def admin_set_category(user_id: int, req: CategoryReq, request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    if not _db.set_user_category(user_id, req.category):
+        return Response(status_code=400,
+                        content='{"ok":false,"error":"Unknown user or category"}',
+                        media_type="application/json")
+    return {"ok": True}
+
+
+@app.get("/api/admin/analytics")
+def admin_analytics(request: Request):
+    if (forbidden := _require_admin(request)) is not None:
+        return forbidden
+    return {
+        "live_viewers": len(_clients),
+        "streams": feed.stream_status(),
+        "stats": _db.get_stats(),
+    }
 
 
 class NoCacheStaticFiles(StaticFiles):

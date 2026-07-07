@@ -96,6 +96,21 @@
       color: #ff5b76;
       min-height: 18px;
     }
+    .toggle {
+      margin-top: 18px;
+      font-size: 13px;
+      color: #7777a0;
+    }
+    .toggle button {
+      all: unset;
+      width: auto;
+      margin: 0;
+      color: #448aff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .toggle button:hover { text-decoration: underline; }
+    .field.hidden { display: none; }
     @media (max-width: 420px) {
       .card { padding: 32px 22px 26px; }
       .logo { width: 74px; height: 74px; }
@@ -151,43 +166,98 @@
 
     <form id="login-form">
       <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="username"
+               placeholder="you@example.com" autofocus />
+      </div>
+      <div class="field">
         <label for="password">Password</label>
         <input id="password" type="password" autocomplete="current-password"
-               placeholder="Enter access password" autofocus />
+               placeholder="Enter your password" />
+      </div>
+      <div class="field hidden" id="confirm-field">
+        <label for="confirm">Confirm password</label>
+        <input id="confirm" type="password" autocomplete="new-password"
+               placeholder="Re-enter your password" />
       </div>
       <button type="submit" id="submit-btn">Sign in</button>
       <div class="err" id="err"></div>
+      <div class="toggle">
+        <span id="toggle-text">Don't have an account?</span>
+        <button type="button" id="toggle-btn">Create one</button>
+      </div>
     </form>
   </div>
 
   <script>
     'use strict';
-    const form = document.getElementById('login-form');
-    const btn  = document.getElementById('submit-btn');
-    const err  = document.getElementById('err');
+    const form         = document.getElementById('login-form');
+    const btn          = document.getElementById('submit-btn');
+    const err          = document.getElementById('err');
+    const emailEl      = document.getElementById('email');
+    const passwordEl   = document.getElementById('password');
+    const confirmField = document.getElementById('confirm-field');
+    const confirmEl    = document.getElementById('confirm');
+    const toggleText   = document.getElementById('toggle-text');
+    const toggleBtn    = document.getElementById('toggle-btn');
+
+    let mode = 'login';   // 'login' | 'signup'
+
+    function applyMode() {
+      err.textContent = '';
+      if (mode === 'login') {
+        confirmField.classList.add('hidden');
+        passwordEl.autocomplete = 'current-password';
+        btn.textContent = 'Sign in';
+        toggleText.textContent = "Don't have an account?";
+        toggleBtn.textContent = 'Create one';
+      } else {
+        confirmField.classList.remove('hidden');
+        passwordEl.autocomplete = 'new-password';
+        btn.textContent = 'Create account';
+        toggleText.textContent = 'Already have an account?';
+        toggleBtn.textContent = 'Sign in';
+      }
+    }
+
+    toggleBtn.addEventListener('click', () => {
+      mode = mode === 'login' ? 'signup' : 'login';
+      applyMode();
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       err.textContent = '';
+
+      const email    = emailEl.value.trim();
+      const password = passwordEl.value;
+      if (mode === 'signup' && password !== confirmEl.value) {
+        err.textContent = "Passwords don't match";
+        return;
+      }
+
       btn.disabled = true;
-      btn.textContent = 'Signing in…';
+      btn.textContent = mode === 'login' ? 'Signing in…' : 'Creating account…';
       try {
-        const res = await fetch('/api/login', {
+        const res  = await fetch(mode === 'login' ? '/api/login' : '/api/signup', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ password: document.getElementById('password').value }),
+          body:    JSON.stringify({ email, password }),
         });
-        if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
           location.href = '/';
           return;
         }
-        err.textContent = 'Wrong password — try again';
+        err.textContent = data.error || 'Something went wrong — try again';
       } catch (_) {
         err.textContent = 'Connection failed — try again';
       }
       btn.disabled = false;
-      btn.textContent = 'Sign in';
+      applyMode();
     });
+
+    applyMode();
   </script>
 </body>
 </html>

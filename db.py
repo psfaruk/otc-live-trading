@@ -7,9 +7,12 @@ Each row = one closed candle's summary:
 This lets EOC analysis see what the *previous* candle's internal pressure
 looked like — information that would otherwise be discarded when ticks.clear().
 """
+import hashlib
 import os
+import secrets
 import sqlite3
 import threading
+import time
 
 # QX_DB_PATH lets a deployment point this at a persistent volume (e.g.
 # Railway's ephemeral filesystem otherwise loses this file on every redeploy)
@@ -123,6 +126,22 @@ CREATE TABLE IF NOT EXISTS candle_running (
 );
 CREATE INDEX IF NOT EXISTS idx_running_asset_ctime
     ON candle_running (asset, period, ctime DESC, snap_time DESC);
+
+-- Per-user accounts. category gates analysis depth (see server.py's
+-- _tier_payload) and admin dashboard access — 'normal'/'premium'/'admin',
+-- enforced app-side, not a DB CHECK constraint (keeps category updates a
+-- plain UPDATE, no migration surprises if a 4th tier is added later).
+-- token_version exists purely as a revocation lever: bumping it (nothing
+-- does yet — see server.py's session cookie) invalidates every
+-- already-issued cookie for that user at once, without a sessions table.
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT    NOT NULL UNIQUE,   -- always stored lowercased/stripped
+    password_hash TEXT    NOT NULL,          -- "salt_hex:hash_hex", see hash_password()
+    category      TEXT    NOT NULL DEFAULT 'normal',
+    token_version INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL
+);
 """
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -165,6 +184,133 @@ def init() -> None:
                 ON signal_log (setup_id, ctime DESC)
             """)
             con.commit()
+        finally:
+            con.close()
+
+
+# ── Accounts ──────────────────────────────────────────────────────────────────
+
+_PBKDF2_ITERATIONS = 200_000
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt,
+                                 _PBKDF2_ITERATIONS)
+    return f"{salt.hex()}:{digest.hex()}"
+
+
+def _check_password(password: str, stored: str) -> bool:
+    try:
+        salt_hex, digest_hex = stored.split(":", 1)
+    except ValueError:
+        return False
+    salt = bytes.fromhex(salt_hex)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt,
+                                 _PBKDF2_ITERATIONS)
+    return secrets.compare_digest(digest.hex(), digest_hex)
+
+
+def _admin_emails() -> set[str]:
+    raw = os.environ.get("ADMIN_EMAILS", "")
+    return {_normalize_email(e) for e in raw.split(",") if e.strip()}
+
+
+def _row_to_user(row) -> dict:
+    return {"id": row[0], "email": row[1], "category": row[2],
+            "token_version": row[3], "created_at": row[4]}
+
+
+def create_user(email: str, password: str) -> dict | None:
+    """Create a normal (or auto-promoted admin) user. None if the email is
+    already taken."""
+    email = _normalize_email(email)
+    category = "admin" if email in _admin_emails() else "normal"
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            try:
+                cur = con.execute(
+                    """INSERT INTO users (email, password_hash, category, created_at)
+                       VALUES (?,?,?,?)""",
+                    (email, hash_password(password), category, int(time.time())))
+            except sqlite3.IntegrityError:
+                return None
+            con.commit()
+            row = con.execute(
+                "SELECT id, email, category, token_version, created_at"
+                " FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+            return _row_to_user(row)
+        finally:
+            con.close()
+
+
+def verify_login(email: str, password: str) -> dict | None:
+    """Check credentials; re-syncs admin status from ADMIN_EMAILS on every
+    successful login (auto-promote only — see the users table comment for
+    why demotion is never automatic). Returns the user row or None."""
+    email = _normalize_email(email)
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            row = con.execute(
+                "SELECT id, email, password_hash, category, token_version,"
+                " created_at FROM users WHERE email=?", (email,)).fetchone()
+            if not row or not _check_password(password, row[2]):
+                return None
+            user_id, category = row[0], row[3]
+            if category != "admin" and email in _admin_emails():
+                con.execute("UPDATE users SET category='admin' WHERE id=?",
+                           (user_id,))
+                con.commit()
+                category = "admin"
+            return _row_to_user((user_id, row[1], category, row[4], row[5]))
+        finally:
+            con.close()
+
+
+def get_user_for_session(user_id: int, token_version: int) -> dict | None:
+    """The auth-middleware check: None means the account was deleted OR
+    this cookie's token_version was revoked (e.g. a future password-change
+    feature bumping it) — both correctly read as 'not logged in'."""
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            row = con.execute(
+                "SELECT id, email, category, token_version, created_at"
+                " FROM users WHERE id=? AND token_version=?",
+                (user_id, token_version)).fetchone()
+            return _row_to_user(row) if row else None
+        finally:
+            con.close()
+
+
+def set_user_category(user_id: int, category: str) -> bool:
+    if category not in ("normal", "premium", "admin"):
+        return False
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            cur = con.execute("UPDATE users SET category=? WHERE id=?",
+                             (category, user_id))
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+def list_users() -> list[dict]:
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            rows = con.execute(
+                "SELECT id, email, category, token_version, created_at"
+                " FROM users ORDER BY created_at DESC").fetchall()
+            return [_row_to_user(r) for r in rows]
         finally:
             con.close()
 

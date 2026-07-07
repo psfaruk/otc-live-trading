@@ -138,71 +138,89 @@
         </div>
         <aside id="side-panel">
 
-          <!-- TRUE per-theory accuracy (from DB WHY report) -->
-          <div class="panel-title">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
-          <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
-
-          <!-- Key levels active on chart -->
-          <div class="panel-title panel-title-gap">Key Levels</div>
-          <ul id="key-levels-list"><li class="empty">–</li></ul>
-
-          <!-- Live microstructure -->
-          <div class="panel-title panel-title-gap">Live Flow</div>
-          <div id="micro-wrap" class="micro-wrap hidden">
-            <div class="micro-pressure-row">
-              <span id="micro-buy-pct" class="micro-buy">B 50%</span>
-              <div class="micro-bar-track">
-                <div id="micro-bar-fill" class="micro-bar-fill micro-bar-init"></div>
-              </div>
-              <span id="micro-sell-pct" class="micro-sell">S 50%</span>
-            </div>
-            <div id="micro-pressure" class="micro-tag">–</div>
-            <div id="micro-fight"    class="micro-tag hidden">⚡ Fight Zone</div>
-            <div id="micro-trap"     class="micro-tag hidden"></div>
-            <div id="micro-zigzag"   class="micro-tag hidden"></div>
-            <div id="micro-last-react" class="micro-tag hidden">–</div>
-            <div id="micro-round"     class="micro-tag hidden">–</div>
-            <div id="micro-reaction"  class="micro-tag hidden">–</div>
-            <div class="micro-phases-row">
-              <span class="micro-phase-lbl">Early</span>
-              <span id="micro-phase-0" class="micro-phase">–</span>
-              <span class="micro-phase-lbl">Mid</span>
-              <span id="micro-phase-1" class="micro-phase">–</span>
-              <span class="micro-phase-lbl">Late</span>
-              <span id="micro-phase-2" class="micro-phase">–</span>
-            </div>
-            <div class="micro-hold-row">
-              <span class="micro-hold-lbl">Hold zone</span>
-              <span id="micro-hold-price">–</span>
-            </div>
+          <!-- Shown instead of the detail sections below when the account
+               is 'normal' — the server (see server.py's _tier_payload)
+               genuinely omits reasons/key_levels/wick_walls from a
+               'normal' account's data, so this isn't just a UI skin: the
+               underlying detail sections stay in the DOM but empty. -->
+          <div id="upgrade-placeholder" class="info-card hidden">
+            <h2>🔒 Premium analysis</h2>
+            <p>Theory accuracy, key levels, live tick flow, and the full
+              why-this-signal reasons list are available on Premium and
+              Admin accounts. Ask an admin to upgrade your account.</p>
           </div>
-          <div id="micro-forming" class="micro-forming">Collecting ticks…</div>
 
-          <div class="panel-title panel-title-gap">EOC Analysis</div>
-          <div id="eoc-summary" class="eoc-summary">–</div>
-          <ul id="reasons-list"></ul>
+          <!-- Everything below is real per-account data (see server.py's
+               _tier_payload) — wrapped in one element so it can be hidden
+               as a unit for 'normal' accounts instead of rendering a pile
+               of empty/placeholder sections under the upgrade card above. -->
+          <div id="side-panel-detail">
+            <!-- TRUE per-theory accuracy (from DB WHY report) -->
+            <div class="panel-title">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
+            <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
 
-          <div class="panel-title panel-title-gap">Theories</div>
-          <ul id="theory-legend">
-            <li><span class="t-num">RUN</span> Tick pressure (effort vs result)</li>
-            <li><span class="t-num">T7</span> Engulfing @key level</li>
-            <li><span class="t-num">T2</span> Pin bar @key level</li>
-            <li><span class="t-num">TRAP</span> Liquidity trap / exhaustion</li>
-            <li><span class="t-num">MARB</span> Marubozu momentum</li>
-            <li><span class="t-num">STAR</span> Morning/Evening Star</li>
-            <li><span class="t-num">STREAK</span> 4+ candle streak exhaustion</li>
-            <li><span class="t-num">SWEEP</span> Liquidity sweep / stop-hunt</li>
-            <li><span class="t-num">MICRO</span> Tick microstructure signals</li>
-            <li><span class="t-num">HARAMI</span> Indecision inside bar</li>
-            <li><span class="t-num">THREE</span> Three-candle reversal</li>
-            <li><span class="t-num">OUTSIDE</span> Outside bar engulf</li>
-            <li><span class="t-num">SPIN</span> Spinning top uncertainty</li>
-            <li><span class="t-num">GAP</span> Gap-open signal</li>
-            <li><span class="t-num">REGIME</span> Market trend + zone context</li>
-            <li><span class="t-num">ZIGZAG</span> Alternating candle pattern</li>
-            <li><span class="t-num">WICKWALL</span> Repeated wick rejection zone</li>
-            <li><span class="t-num">MTF</span> Multi-timeframe (5x trend + half-candle momentum)</li>
-          </ul>
+            <!-- Key levels active on chart -->
+            <div class="panel-title panel-title-gap">Key Levels</div>
+            <ul id="key-levels-list"><li class="empty">–</li></ul>
+
+            <!-- Live microstructure -->
+            <div class="panel-title panel-title-gap">Live Flow</div>
+            <div id="micro-wrap" class="micro-wrap hidden">
+              <div class="micro-pressure-row">
+                <span id="micro-buy-pct" class="micro-buy">B 50%</span>
+                <div class="micro-bar-track">
+                  <div id="micro-bar-fill" class="micro-bar-fill micro-bar-init"></div>
+                </div>
+                <span id="micro-sell-pct" class="micro-sell">S 50%</span>
+              </div>
+              <div id="micro-pressure" class="micro-tag">–</div>
+              <div id="micro-fight"    class="micro-tag hidden">⚡ Fight Zone</div>
+              <div id="micro-trap"     class="micro-tag hidden"></div>
+              <div id="micro-zigzag"   class="micro-tag hidden"></div>
+              <div id="micro-last-react" class="micro-tag hidden">–</div>
+              <div id="micro-round"     class="micro-tag hidden">–</div>
+              <div id="micro-reaction"  class="micro-tag hidden">–</div>
+              <div class="micro-phases-row">
+                <span class="micro-phase-lbl">Early</span>
+                <span id="micro-phase-0" class="micro-phase">–</span>
+                <span class="micro-phase-lbl">Mid</span>
+                <span id="micro-phase-1" class="micro-phase">–</span>
+                <span class="micro-phase-lbl">Late</span>
+                <span id="micro-phase-2" class="micro-phase">–</span>
+              </div>
+              <div class="micro-hold-row">
+                <span class="micro-hold-lbl">Hold zone</span>
+                <span id="micro-hold-price">–</span>
+              </div>
+            </div>
+            <div id="micro-forming" class="micro-forming">Collecting ticks…</div>
+
+            <div class="panel-title panel-title-gap">EOC Analysis</div>
+            <div id="eoc-summary" class="eoc-summary">–</div>
+            <ul id="reasons-list"></ul>
+
+            <div class="panel-title panel-title-gap">Theories</div>
+            <ul id="theory-legend">
+              <li><span class="t-num">RUN</span> Tick pressure (effort vs result)</li>
+              <li><span class="t-num">T7</span> Engulfing @key level</li>
+              <li><span class="t-num">T2</span> Pin bar @key level</li>
+              <li><span class="t-num">TRAP</span> Liquidity trap / exhaustion</li>
+              <li><span class="t-num">MARB</span> Marubozu momentum</li>
+              <li><span class="t-num">STAR</span> Morning/Evening Star</li>
+              <li><span class="t-num">STREAK</span> 4+ candle streak exhaustion</li>
+              <li><span class="t-num">SWEEP</span> Liquidity sweep / stop-hunt</li>
+              <li><span class="t-num">MICRO</span> Tick microstructure signals</li>
+              <li><span class="t-num">HARAMI</span> Indecision inside bar</li>
+              <li><span class="t-num">THREE</span> Three-candle reversal</li>
+              <li><span class="t-num">OUTSIDE</span> Outside bar engulf</li>
+              <li><span class="t-num">SPIN</span> Spinning top uncertainty</li>
+              <li><span class="t-num">GAP</span> Gap-open signal</li>
+              <li><span class="t-num">REGIME</span> Market trend + zone context</li>
+              <li><span class="t-num">ZIGZAG</span> Alternating candle pattern</li>
+              <li><span class="t-num">WICKWALL</span> Repeated wick rejection zone</li>
+              <li><span class="t-num">MTF</span> Multi-timeframe (5x trend + half-candle momentum)</li>
+            </ul>
+          </div>
         </aside>
       </div>
     </div><!-- #tab-advance -->
@@ -286,8 +304,33 @@
     <div id="tab-settings" class="tab-screen hidden">
       <div class="info-card">
         <h2>Account</h2>
+        <p id="account-summary">–</p>
         <button type="button" id="logout-btn" class="logout-btn">Log out</button>
       </div>
+
+      <!-- Admin-only — shown by chart.js only when /api/me reports
+           category==='admin'. Fetched lazily when this tab is opened,
+           not at boot. -->
+      <div id="admin-card" class="info-card hidden">
+        <h2>Admin Dashboard</h2>
+        <div class="admin-analytics" id="admin-analytics">
+          <div class="admin-stat"><span id="admin-viewers">–</span><label>Live viewers</label></div>
+          <div class="admin-stat"><span id="admin-active-pairs">–</span><label>Active streams</label></div>
+          <div class="admin-stat"><span id="admin-winrate">–</span><label>Overall win rate</label></div>
+        </div>
+        <div class="panel-title panel-title-gap">Users</div>
+        <div class="admin-users-wrap">
+          <table id="admin-users-table" class="admin-users-table">
+            <thead>
+              <tr><th>Email</th><th>Category</th><th>Joined</th></tr>
+            </thead>
+            <tbody id="admin-users-rows">
+              <tr><td colspan="3" class="history-empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="info-card">
         <h2>About</h2>
         <p>Plybit AI — live OTC price-action signal dashboard.</p>

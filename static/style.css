@@ -1152,3 +1152,65 @@ html, body {
   from { opacity: 0; transform: translateX(-50%) translateY(12px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
+
+/* ── Premium upgrade placeholder (side panel, 'normal' accounts only) ───── */
+/* #side-panel-detail holds the real per-account data (Theory Accuracy, Key
+   Levels, Live Flow, EOC Analysis, Theories legend) — hidden as one unit
+   for 'normal' so the upgrade card above isn't followed by a pile of
+   empty/placeholder sections. Both toggled by chart.js's _loadMe(). */
+#upgrade-placeholder.hidden { display: none; }
+#side-panel-detail.hidden   { display: none; }
+#upgrade-placeholder {
+  border-color: rgba(68,138,255,0.35);
+  background: rgba(68,138,255,0.05);
+}
+#upgrade-placeholder h2 { color: var(--blue); }
+
+/* ── Admin dashboard (Settings tab, admin-only) ──────────────────────────── */
+#admin-card.hidden { display: none; }
+.admin-analytics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.admin-stat {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 10px 6px;
+  text-align: center;
+}
+.admin-stat span {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.admin-stat label {
+  display: block;
+  font-size: 10px;
+  color: #8888a0;
+  margin-top: 3px;
+}
+.admin-users-wrap { overflow-x: auto; }
+.admin-users-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.admin-users-table th {
+  position: sticky; top: 0;
+  background: var(--bg3);
+  text-align: left;
+  padding: 8px 10px;
+  color: #8888a0;
+  font-size: 11px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.admin-users-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.admin-cat-select { width: auto; }

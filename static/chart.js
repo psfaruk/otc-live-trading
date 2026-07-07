@@ -47,6 +47,35 @@ try {
   if (_savedTab) _activeTab = _savedTab;
 } catch (_) {}
 
+// Current account — fetched once from /api/me at boot (see _loadMe).
+// 'normal' accounts genuinely don't RECEIVE reasons/key_levels/wick_walls
+// (server.py's _tier_payload strips them before they ever reach the
+// browser), so myCategory drives which UI state to show, not just what to
+// hide — see the upgrade-placeholder toggle in updateSignalUI/_setKLLines.
+let myEmail    = null;
+let myCategory = 'normal';
+
+async function _loadMe() {
+  try {
+    const r = await fetch('/api/me');
+    if (!r.ok) return;
+    const data = await r.json();
+    myEmail    = data.email;
+    myCategory = data.category || 'normal';
+  } catch (_) {}
+
+  const summary = document.getElementById('account-summary');
+  if (summary && myEmail) {
+    const tierLabel = myCategory === 'admin' ? 'Admin'
+                     : myCategory === 'premium' ? 'Premium' : 'Normal';
+    summary.textContent = `${myEmail} · ${tierLabel}`;
+  }
+  const placeholder = document.getElementById('upgrade-placeholder');
+  if (placeholder) placeholder.classList.toggle('hidden', myCategory !== 'normal');
+  const detail = document.getElementById('side-panel-detail');
+  if (detail) detail.classList.toggle('hidden', myCategory === 'normal');
+}
+
 // True once the user has actually zoomed/panned the chart (wheel or a
 // drag) — once true, incoming EOC/tick updates stop force-scrolling the
 // view back to "real time" so a manual zoom survives new candles/signals
@@ -1154,6 +1183,81 @@ function _setActiveTab(tab) {
     // scope, not for re-displaying stale data when navigating tabs.
     if (lastPrediction) _updateSignalsLast(lastPrediction);
   }
+
+  if (tab === 'settings' && myCategory === 'admin') _loadAdminDashboard();
+}
+
+// ── Admin dashboard (Settings tab, admin-only — see myCategory) ──────────
+async function _loadAdminDashboard() {
+  const card = document.getElementById('admin-card');
+  if (!card) return;
+  card.classList.remove('hidden');
+  try {
+    const [usersRes, statsRes] = await Promise.all([
+      fetch('/api/admin/users'),
+      fetch('/api/admin/analytics'),
+    ]);
+    if (usersRes.ok) _renderAdminUsers((await usersRes.json()).users || []);
+    if (statsRes.ok) _renderAdminAnalytics(await statsRes.json());
+  } catch (_) {}
+}
+
+function _renderAdminAnalytics(data) {
+  const viewers = document.getElementById('admin-viewers');
+  const active  = document.getElementById('admin-active-pairs');
+  const winrate = document.getElementById('admin-winrate');
+  if (viewers) viewers.textContent = data.live_viewers ?? '–';
+  if (active)  active.textContent  = data.streams?.count ?? '–';
+  if (winrate) {
+    const s = data.stats || {};
+    winrate.textContent = s.total ? `${s.rate}% (${s.correct}/${s.total})` : '–';
+  }
+}
+
+function _renderAdminUsers(users) {
+  const tbody = document.getElementById('admin-users-rows');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!users.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="history-empty">No users yet</td></tr>';
+    return;
+  }
+  for (const u of users) {
+    const tr = document.createElement('tr');
+    const joined = new Date(u.created_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    tr.innerHTML =
+      `<td>${u.email}</td>` +
+      `<td></td>` +
+      `<td>${joined}</td>`;
+    const sel = document.createElement('select');
+    sel.className = 'ctrl-select admin-cat-select';
+    for (const cat of ['normal', 'premium', 'admin']) {
+      const opt = document.createElement('option');
+      opt.value = cat;
+      opt.textContent = cat[0].toUpperCase() + cat.slice(1);
+      if (cat === u.category) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener('change', async () => {
+      const prev = sel.dataset.prev || u.category;
+      sel.disabled = true;
+      try {
+        const r = await fetch(`/api/admin/users/${u.id}/category`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ category: sel.value }),
+        });
+        if (!r.ok) { sel.value = prev; }
+        else sel.dataset.prev = sel.value;
+      } catch (_) {
+        sel.value = prev;
+      }
+      sel.disabled = false;
+    });
+    sel.dataset.prev = u.category;
+    tr.children[1].appendChild(sel);
+    tbody.appendChild(tr);
+  }
 }
 
 document.querySelectorAll('.tab-btn').forEach((b) => {
@@ -1333,6 +1437,7 @@ function bootChart(attempt) {
     setTimeout(() => location.reload(), 2500);
     return;
   }
+  _loadMe();
   loadPairs().then(() => connect()).catch(() => {
     showFatalError('Failed to start', 'Reloading…');
     setTimeout(() => location.reload(), 2500);
