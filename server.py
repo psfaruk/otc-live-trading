@@ -85,8 +85,34 @@ def _parse_cookie_value(cookie_header: str | None) -> tuple[int, int] | None:
 # renders BEFORE authentication, so its image can't sit behind the gate).
 _OPEN_PATHS = {"/healthz", "/login", "/api/login", "/api/signup", "/logo.png"}
 
+# ── Login/signup rate limiting (2026-07-08 addition) ─────────────────────────
+# In-process only (no DB/Redis) — resets on redeploy, and doesn't share state
+# across multiple instances if this app ever runs more than one. Good enough
+# to blunt a simple credential-stuffing/brute-force script from a single IP;
+# not a substitute for a real distributed rate limiter if that becomes needed.
+_login_attempts: dict[str, list[float]] = {}
+_RATE_MAX_ATTEMPTS = 10
+_RATE_WINDOW_SECONDS = 300  # 5 minutes
+
+
+def _check_rate_limit(request: Request) -> bool:
+    """True if this client should be blocked (too many recent attempts)."""
+    # x-forwarded-for: this app runs behind Railway's proxy (see project
+    # memory) — request.client.host would just be the proxy's own address.
+    ip = request.headers.get("x-forwarded-for", "unknown").split(",")[0].strip()
+    now = time.time()
+    attempts = [t for t in _login_attempts.get(ip, []) if now - t < _RATE_WINDOW_SECONDS]
+    if len(attempts) >= _RATE_MAX_ATTEMPTS:
+        _login_attempts[ip] = attempts
+        return True
+    attempts.append(now)
+    _login_attempts[ip] = attempts
+    return False
+
 
 async def _broadcast(data: dict) -> None:
+    if not _clients:
+        return  # nothing to build a payload for
     dead = set()
     # Both payload variants are built at most once per broadcast (not once
     # per client) — feed.py stays completely unaware of user accounts;
@@ -104,10 +130,18 @@ async def _broadcast(data: dict) -> None:
         else:
             payload = data
         try:
-            await ws.send_json(payload)
-        except Exception:
+            await asyncio.wait_for(ws.send_json(payload), timeout=2.0)
+        except asyncio.TimeoutError:
             dead.add(ws)
-    _clients.difference_update(dead)
+            print("[ws] send timeout, disconnecting client")
+        except Exception as e:
+            dead.add(ws)
+            if str(e) != "WebSocket is not connected":
+                print(f"[ws] send error: {type(e).__name__}")
+    if dead:
+        _clients.difference_update(dead)
+        for ws in dead:
+            _client_category.pop(ws, None)
 
 
 def _tier_payload(data: dict, category: str) -> dict:
@@ -220,12 +254,15 @@ class SignupReq(BaseModel):
 
 
 @app.post("/api/signup")
-def signup(req: SignupReq, response: Response):
+def signup(req: SignupReq, request: Request, response: Response):
     # sync def, not async: hash_password() runs PBKDF2 at 200k iterations —
     # genuinely expensive blocking CPU work. Same reasoning as the
     # /api/stats-style endpoints further down: FastAPI runs sync endpoints
     # in its threadpool, so this can't stall feed.py's live tick processing
     # the way a blocking call inside an async def would.
+    if _check_rate_limit(request):
+        response.status_code = 429
+        return {"ok": False, "error": "Too many attempts. Try again in 5 minutes."}
     email = req.email.strip()
     if not _EMAIL_RE.match(email):
         response.status_code = 400
@@ -247,7 +284,10 @@ class LoginReq(BaseModel):
 
 
 @app.post("/api/login")
-def login(req: LoginReq, response: Response):
+def login(req: LoginReq, request: Request, response: Response):
+    if _check_rate_limit(request):
+        response.status_code = 429
+        return {"ok": False, "error": "Too many attempts. Try again in 5 minutes."}
     user = _db.verify_login(req.email, req.password)
     if not user:
         response.status_code = 401
@@ -305,9 +345,17 @@ async def ws_endpoint(ws: WebSocket) -> None:
     # so the same session check works here — checked explicitly since
     # @app.middleware("http") doesn't wrap the WebSocket protocol.
     parsed = _parse_cookie_value(ws.headers.get("cookie"))
-    user = await asyncio.to_thread(_db.get_user_for_session, *parsed) if parsed else None
+    if not parsed:
+        await ws.close(code=1008, reason="No session cookie")
+        return
+    try:
+        user = await asyncio.to_thread(_db.get_user_for_session, *parsed)
+    except Exception as e:
+        print(f"[ws] DB error during auth: {type(e).__name__}: {e}")
+        await ws.close(code=1011, reason="Internal error")
+        return
     if not user:
-        await ws.close(code=1008)
+        await ws.close(code=1008, reason="Session invalid or expired")
         return
     await ws.accept()
     _clients.add(ws)

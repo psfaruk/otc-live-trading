@@ -701,7 +701,8 @@ class QuotexFeed:
         result = analyze_eoc(candles, ticks,
                              micro_history=micro_hist,
                              period=period,
-                             muted=self._muted_theories)
+                             muted=self._muted_theories,
+                             asset=asset)
         return result, micro_hist
 
     def _run_eoc(self, stream: _AssetStream,

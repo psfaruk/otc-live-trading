@@ -9,12 +9,24 @@ from what price actually does — see _ALL_THEORIES for the active vote set:
                           (RUN), exhausted one-sided candles (TRAP), prior-
                           candle tick patterns from the DB (MICRO)
   - Candle patterns      : engulfing/piercing at S/R (T7), pin bar (T2),
-                           marubozu (MARB), morning/evening star (STAR),
+                           morning/evening star (STAR),
                            three outside up (OUTSIDE), spinning top (SPIN),
                            streak exhaustion (STREAK), alternation (ZIGZAG)
-  - Market structure     : liquidity sweep (SWEEP), repeated wick-rejection
-                           zones (WICKWALL), regime/zone context (REGIME —
-                           score filter only, not a graded vote)
+  - Market structure     : repeated wick-rejection zones (WICKWALL), range-
+                           expansion mean-reversion (ANOMALY), regime/zone
+                           context (REGIME — score filter only, not a
+                           graded vote)
+
+2026-07-08 overhaul: MARB and SWEEP removed as graded votes (2026 audit:
+47.9%/46.1%, both below coin-flip on the samples then available — see
+project memory for later, larger-sample numbers that complicate this;
+removed per explicit user instruction anyway, not because the case was
+airtight). SWEEP's raw stop-hunt DETECTION is kept (feeds the MARKET STATE
+TRAP read below) — only its own score vote was removed. REGIME's own
+UPTREND/DOWNTREND/SIDEWAYS+zone vote block was removed the same way; the
+separate ATTENUATION mechanism (which dampens trend-following votes) is
+unrelated and was left in place. ZIGZAG's SIDEWAYS-only context gate was
+removed — it now votes in every regime.
 
 Bias controls (2026-07-04 audit — 87% of live signals were just repeating
 the last candle's color at coin-flip accuracy):
@@ -27,6 +39,12 @@ the last candle's color at coin-flip accuracy):
                        to WEAK
   - THEORY MUTE GATE : live 7-day per-theory accuracy (db.theory_perf via
                        feed.py) mutes theories proven below coin-flip
+  - CONFLUENCE       : 3+ independent theories net-agreeing get a +20%
+                       score boost (untested addition — 2026-07-08)
+  - TIME FILTER      : score dampened 20% in the 22:00-07:00 UTC
+                       low-liquidity window (untested addition — 2026-07-08)
+  - SIGNAL COOLDOWN  : repeat signals for the same asset+period within 30s
+                       are capped to WEAK (untested addition — 2026-07-08)
 
 Every-candle mode (2026-07-06, user decision): a direction is emitted on
 EVERY analyzed candle; the guards above demote quality to WEAK instead of
@@ -39,6 +57,7 @@ Note: Academic research (and this account's own logged history) confirms
 """
 import math
 import re
+import time
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -54,17 +73,25 @@ def _round_level(price: float) -> tuple[float, float, str]:
     if price <= 0:
         return price, 0.0, "NONE"
     mag = 10.0 ** math.floor(math.log10(abs(price)))
+    # A fixed 8dp round() silently destroys `step` for very small-magnitude
+    # prices (e.g. sub-cent instruments where step itself is < 1e-8) —
+    # scale the rounding precision to the step size instead of hardcoding
+    # it. No-op for normal forex/OTC price scales (still rounds to 8dp there).
+    def _snap(price: float, step: float) -> float:
+        decimals = max(8, -math.floor(math.log10(step)) + 2)
+        return round(round(price / step) * step, decimals)
+
     best: tuple[float, float, str] | None = None
     for frac, label, thr in [(0.01, "BIG", 0.05), (0.005, "MID", 0.06), (0.001, "SMALL", 0.10)]:
         step  = mag * frac
-        level = round(round(price / step) * step, 8)
+        level = _snap(price, step)
         dist  = abs(price - level)
         if dist < step * thr and (best is None or dist < best[1]):
             best = (level, dist, label)
     if best:
         return best
     step  = mag * 0.01
-    level = round(round(price / step) * step, 8)
+    level = _snap(price, step)
     return level, abs(price - level), "NONE"
 
 
@@ -275,22 +302,32 @@ def _parse_votes(reasons: list[str],
     return out
 
 
-_ALL_THEORIES = {"RUN", "T7", "T2", "SWEEP", "MARB", "TRAP", "STAR", "STREAK",
+_ALL_THEORIES = {"RUN", "T7", "T2", "TRAP", "STAR", "STREAK",
                  "MICRO", "OUTSIDE", "SPIN",
-                 "ZIGZAG", "WICKWALL", "MTF"}
+                 "ZIGZAG", "WICKWALL", "MTF", "ANOMALY"}
 # HARAMI, THREE, GAP: theories removed 2026-07-03 (see inline comments where
-# their scoring blocks used to be). REGIME: converted from an independent
-# vote to a score-only filter (2026-07-03) — its reasons still adjust score
-# but are intentionally excluded here so it's no longer graded as its own
-# theory or counted toward `agree` (WITH_REGIME measured 44.6% vs
-# COUNTER_REGIME 54.5% — a real signal, but on being right about the
-# ensemble's OTHER votes, not on REGIME being a reliable standalone caller).
+# their scoring blocks used to be). SWEEP, MARB: removed 2026-07-08 (see
+# module docstring). REGIME: converted from an independent vote to a
+# score-only filter (2026-07-03) — its reasons still adjust score but are
+# intentionally excluded here so it's no longer graded as its own theory or
+# counted toward `agree` (WITH_REGIME measured 44.6% vs COUNTER_REGIME 54.5%
+# — a real signal, but on being right about the ensemble's OTHER votes, not
+# on REGIME being a reliable standalone caller).
+
+# Signal-cooldown state (2026-07-08 addition) — module-level so it persists
+# across calls for the life of the process. Keyed by "asset:period"; a
+# repeat non-neutral signal for the same key within _COOLDOWN_SECONDS is
+# capped to WEAK (see the Final section) rather than skipped outright —
+# every-candle mode (2026-07-06) never withholds a direction.
+_last_signal_time: dict[str, float] = {}
+_COOLDOWN_SECONDS = 30
 
 
 def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 micro_history: list[dict] | None = None,
                 period: int | None = None,
-                muted: dict[str, str] | None = None) -> dict:
+                muted: dict[str, str] | None = None,
+                asset: str | None = None) -> dict:
     """
     Predict next candle direction from the just-closed candle.
 
@@ -312,6 +349,9 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     listed in reasons (suffixed "[MUTED <annotation>]") and
                     still shadow-graded, but contribute nothing to score,
                     `agree`, or the parrot guard.
+    asset         : asset symbol, e.g. "EURUSD_otc" — only used to key the
+                    signal-cooldown check (needs period too). Optional;
+                    cooldown is skipped entirely when omitted.
     Returns : {signal, score, confidence, agree, strength, reasons}
     """
     # MAX_SCORE calibrates the confidence% shown to the user (confidence =
@@ -352,7 +392,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # CALL" — the exact bias this 2026-07-04 audit was about (87% of live
     # signals did that). The theory code is carried so a MUTED theory's
     # votes can't enable the guard either.
-    # Color-FORCED sites (never tagged): T7/MARB/OUTSIDE/STAR, RUN result/
+    # Color-FORCED sites (never tagged): T7/OUTSIDE/STAR, RUN result/
     # lean reads, MICRO chains/recovery/fight/hold/persistent, since their
     # branch conditions require is_bull (or close-position, which implies it).
     indep_dirs: list[tuple[str, int]] = []
@@ -607,6 +647,10 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             f" -> CALL (x{mag})")
 
     # ── SWEEP  Liquidity sweep / stop-hunt — pierce a key level then reclaim ─
+    # REMOVED as a graded vote 2026-07-08 (DB analysis measured 46.1%
+    # accurate, an anti-signal at ±3). The DETECTION itself (_best_sweep) is
+    # kept — it feeds the MARKET STATE TRAP read further below — it just no
+    # longer casts its own score vote or appears in reasons/_ALL_THEORIES.
     # Smart money pushes price BEYOND a key level (or round number) to trigger
     # the stop-losses resting there, then reverses. The wick pierces the level
     # but the candle CLOSES back inside, trapping the breakout traders → fuel
@@ -628,44 +672,11 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         elif c <= _lvl < h and (h - max(o, c)) > total_range * 0.30:
             if _best_sweep is None or _tch > _best_sweep[0]:
                 _best_sweep = (_tch, -1, _lvl)
-    if _best_sweep:
-        _tch, _sdir, _lvl = _best_sweep
-        # DB analysis: SWEEP = 46.1% accurate (anti-signal at ±3).
-        # Root cause: OTC fake sweeps are common; many pierce-and-reclaim patterns
-        # are random price noise, not genuine stop-hunts.
-        # Fix: score reduced to ±1 regardless of touches. The pattern still provides
-        # directional information but no longer drives the signal on its own.
-        _mag = 1
-        if _sdir > 0:
-            score += _mag
-            indep_dirs.append(("SWEEP", +1))
-            reasons.append(
-                f"SWEEP Liquidity grab below {_lvl:.5g} then reclaim -> CALL (x{_mag})")
-        else:
-            score -= _mag
-            indep_dirs.append(("SWEEP", -1))
-            reasons.append(
-                f"SWEEP Liquidity grab above {_lvl:.5g} then reject -> PUT (x{_mag})")
 
-    # ── MARB  Marubozu — strong body ─────────────────────────────────────────────
-    # A marubozu has a dominant body (≥75% of range) with tiny wicks.
-    # OTC asymmetry: Bull marubozu → buyers dominated → continuation (CALL valid).
-    # Bear marubozu → sellers dominated → OTC exhaustion: sellers used all capital
-    # → next candle reverses UP. Do NOT vote PUT for bear marubozus in OTC.
-    if body / total_range >= 0.75 and total_range > 0:
-        prev_range = prev["high"] - prev["low"]
-        if prev_range > 0 and body >= prev_range * 0.80:
-            if is_bull:
-                # Weight cut 2 -> 1 (2026-07-03): live data showed 47.9%
-                # (n=190, below coin-flip) — the continuation thesis is
-                # weaker in practice than assumed, kept only as a light lean.
-                score += 1
-                forced_score += 1
-                reasons.append(
-                    f"MARB Bull marubozu (body {body/total_range:.0%} of range)"
-                    f" -> CALL (x1)")
-            # Bear marubozu: no PUT vote — treat as exhaustion neutral in OTC.
-            # The TRAP signal will handle it if tick data confirms extreme seller dominance.
+    # ── MARB  Marubozu — REMOVED as a graded vote 2026-07-08 ─────────────────
+    # DB analysis: 47.9% accurate (n=190, below coin-flip). No replacement —
+    # marubozu shape is still read elsewhere (MARKET STATE's EXHAUSTION check
+    # for a full-power candle hitting a tested level), just not as its own vote.
 
     # ── TRAP  Liquidity Trap — exhausted one-sided candle → reversal ────────────
     # In OTC markets, when a candle is BOTH large-bodied AND overwhelmingly one-
@@ -742,9 +753,14 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             c1_strong = c1_body / c1_range >= 0.50    # decisive first candle
             c2_small  = c2_body / c2_range <= 0.35    # indecision / doji middle
             c1_mid    = (c1["open"] + c1["close"]) / 2
+            # Require closing meaningfully past the midpoint (5% of c1's
+            # body as a buffer), not by a hair — a bare `c >= c1_mid` let a
+            # close just 1 tick over the line count as a full "3-candle
+            # reversal", which overstates how decisive the pattern is.
+            _star_buf = c1_body * 0.05
 
             # Morning Star: big bear → small body → current closes above c1 midpoint
-            if (not c1_bull) and c1_strong and c2_small and is_bull and c >= c1_mid:
+            if (not c1_bull) and c1_strong and c2_small and is_bull and c >= c1_mid + _star_buf:
                 bonus, lbl = _sr_bonus(l, True)
                 mag = 2 + (1 if bonus >= 1 else 0)
                 score += mag
@@ -754,7 +770,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     f"{', @' + lbl if lbl else ''}) -> CALL (x{mag})")
 
             # Evening Star: big bull → small body → current closes below c1 midpoint
-            elif c1_bull and c1_strong and c2_small and (not is_bull) and c <= c1_mid:
+            elif c1_bull and c1_strong and c2_small and (not is_bull) and c <= c1_mid - _star_buf:
                 bonus, lbl = _sr_bonus(h, False)
                 mag = 2 + (1 if bonus >= 1 else 0)
                 score -= mag
@@ -911,8 +927,19 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # so unusable now) is replaced by symmetric x1-x2 both sides.
     _sup_walls, _res_walls, _ww_atr = _wick_wall(candles[:-1])
     # ATR-based touch tolerance: current candle's l/h must be within half an
-    # average candle range of the wall to count as "testing" it.
-    _ww_tol   = _ww_atr * 0.50 if _ww_atr > 0 else total_range * 0.50
+    # average candle range of the wall to count as "testing" it. _ww_atr is
+    # 0 when _wick_wall() had under 4 prior candles to average — the
+    # fallback must still come from PRIOR candles (the wall is theirs, not
+    # the current candle's), so it re-derives an average range from
+    # candles[:-1] rather than reaching for the current candle's own
+    # total_range. total_range is only the last-resort, kept because it's
+    # guaranteed non-zero (the zero-range early-return above already ruled
+    # that out), for the degenerate case where prior candles are also flat.
+    _prior_12  = candles[:-1][-12:]
+    _prior_avg = (sum(x["high"] - x["low"] for x in _prior_12)
+                  / len(_prior_12)) if _prior_12 else 0.0
+    _ww_tol = 0.50 * (
+        _ww_atr if _ww_atr > 0 else _prior_avg if _prior_avg > 0 else total_range)
 
     def _ww_mag(n: int) -> int:
         return 2 if n >= 5 else 1
@@ -947,54 +974,35 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # ── REGIME  Market regime (trend + zone) context ──────────────────────────
     # Classifies the last 20 candles as UPTREND/DOWNTREND/SIDEWAYS and detects
     # whether the current price is in a SUPPORT, RESISTANCE or NEUTRAL zone.
+    # _regime/_zone feed the ATTENUATION block below (dampens trend-following
+    # votes) and the MARKET STATE read further down — both still active.
     #
+    # REGIME's own direct UPTREND/DOWNTREND/SIDEWAYS+zone score vote was
+    # REMOVED 2026-07-08 (guide: 44.3% n=212, below coin-flip). Note for the
+    # record: a LATER, larger audit found the WITH/COUNTER_REGIME gap this
+    # number was based on had already closed to 55.3%/52.7% after the 2026-
+    # 07-03 flip below was applied, and "no further regime action" was the
+    # conclusion at the time — removed anyway per explicit instruction. The
+    # 2026-07-03 flip context is kept here since ATTENUATION (unaffected by
+    # this removal) still relies on the same reasoning.
     # FLIPPED (2026-07-03): a 1564-row audit showed WITH_REGIME (final signal
     # matches this theory's own original direction) at 44.3% (n=212) vs
     # COUNTER_REGIME at 54.9% (n=184) — a statistically significant gap
     # (z≈2.1) in the OPPOSITE direction from the original assumption below.
     # Same anti-signal pattern already handled for RUN's "Sellers WON" and
     # T7's "Bear Engulfing" — the raw trend/zone read is real, but OTC
-    # continuation logic on top of it was backwards, so the vote is now
-    # inverted rather than removed outright.
+    # continuation logic on top of it was backwards.
     _regime, _zone = _market_regime(candles)
-    if _regime == "UPTREND":
-        if _zone == "SUPPORT":
-            score -= 2
-            reasons.append("REGIME UPTREND + SUPPORT zone -> PUT (x2)")
-        elif _zone == "RESISTANCE":
-            score += 1
-            reasons.append("REGIME UPTREND + RESISTANCE zone -> CALL (x1)")
-        elif is_bull:
-            score -= 1
-            reasons.append("REGIME UPTREND + bull candle -> PUT (x1)")
-    elif _regime == "DOWNTREND":
-        if _zone == "RESISTANCE":
-            score += 2
-            reasons.append("REGIME DOWNTREND + RESISTANCE zone -> CALL (x2)")
-        elif _zone == "SUPPORT":
-            score -= 1
-            reasons.append("REGIME DOWNTREND + SUPPORT zone -> PUT (x1)")
-        elif not is_bull:
-            score += 1
-            reasons.append("REGIME DOWNTREND + bear candle -> CALL (x1)")
-    else:  # SIDEWAYS
-        if _zone == "SUPPORT":
-            score -= 2
-            reasons.append("REGIME SIDEWAYS + SUPPORT zone -> PUT (x2)")
-        elif _zone == "RESISTANCE":
-            score += 2
-            reasons.append("REGIME SIDEWAYS + RESISTANCE zone -> CALL (x2)")
 
     # ── ZIGZAG  Alternating candle pattern detection ───────────────────────────
     # OTC RNG frequently produces alternating green/red candles because the
     # random walk oscillates. When 4+ consecutive candles alternate direction,
     # predicting OPPOSITE of the last candle has meaningful edge.
     # 6+ alternating: stronger signal (the oscillation is deeply established).
-    # CONTEXT GATE: alternation is a RANGING-market phenomenon — betting on a
-    # reversal every candle inside a trend fights the trend, so ZIGZAG only
-    # votes when the regime is SIDEWAYS. (Live data: ZIGZAG 25% overall.)
+    # CONTEXT GATE REMOVED (2026-07-08): previously gated to SIDEWAYS regime
+    # only (measured 25% fire-rate); now votes in every regime per guide.
     _zz_predict, _zz_len = _zigzag_signal(candles)
-    if _zz_predict != 0 and _regime == "SIDEWAYS":
+    if _zz_predict != 0:
         _zz_mag = 2 if _zz_len >= 6 else 1
         if _zz_predict > 0:
             score += _zz_mag
@@ -1008,6 +1016,34 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             reasons.append(
                 f"ZIGZAG {_zz_len}-candle alternating pattern"
                 f" -> PUT (x{_zz_mag})")
+
+    # ── ANOMALY  Spread/range spike detection (2026-07-08 addition, untested) ─
+    # OTC brokers often widen effective spread / reduce liquidity before a
+    # fake move. A sudden range expansion after a quiet period can be a trap.
+    # Pure OHLC — no tick data needed. UNTESTED: not yet measured against
+    # live data (see module docstring bias-controls list).
+    _ANOMALY_LOOKBACK = 10
+    if len(candles) >= _ANOMALY_LOOKBACK + 1:
+        _prev_ranges = [candles[-i]["high"] - candles[-i]["low"]
+                        for i in range(2, _ANOMALY_LOOKBACK + 2)]
+        _avg_range = sum(_prev_ranges) / len(_prev_ranges)
+        if _avg_range > 0:
+            _range_ratio = total_range / _avg_range
+            if _range_ratio >= 2.5:
+                # After a huge anomaly candle, expect mean-reversion.
+                _anom_mag = 2 if _range_ratio >= 4.0 else 1
+                if is_bull:
+                    score -= _anom_mag
+                    indep_dirs.append(("ANOMALY", -1))
+                    reasons.append(
+                        f"ANOMALY Range {_range_ratio:.1f}x average"
+                        f" -> reversal expected -> PUT (x{_anom_mag})")
+                else:
+                    score += _anom_mag
+                    indep_dirs.append(("ANOMALY", +1))
+                    reasons.append(
+                        f"ANOMALY Range {_range_ratio:.1f}x average"
+                        f" -> reversal expected -> CALL (x{_anom_mag})")
 
     # ── MICRO  Multi-candle microstructure (DB tick history of prior candles) ─
     #
@@ -1051,8 +1087,30 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         _prev_fresh = bool(_per) and (
             prev_m.get("time") == cur.get("time", 0) - _per)
 
+        def _chain_fresh(n: int) -> bool:
+            """_prev_fresh generalized to an N-candle window: True only if
+            the last n micro_history rows are truly CONSECUTIVE candles
+            ending immediately before this one (each exactly `period`
+            apart). A single missed save (e.g. a brief outage) leaves a
+            gap inside an otherwise-recent window — db.get_micro_history's
+            before_ctime bound stops rows from being hours/days stale, but
+            doesn't stop a gap, and chain/exhaustion-count reads below
+            silently mean something different across a gap than across
+            truly back-to-back candles."""
+            if not _per or len(micro_history) < n:
+                return False
+            expect = cur.get("time", 0) - _per
+            for m in reversed(micro_history[-n:]):
+                if m.get("time") != expect:
+                    return False
+                expect -= _per
+            return True
+
+        _hist3_fresh = _chain_fresh(len(hist3))
+
         # ── (a) Pressure Chain ─────────────────────────────────────────────
-        pcts = [m["buy_pct"] for m in hist3 if m.get("buy_pct") is not None]
+        pcts = ([m["buy_pct"] for m in hist3 if m.get("buy_pct") is not None]
+                if _hist3_fresh else [])
         if len(pcts) >= 2:
             trend  = pcts[-1] - pcts[0]
             avg    = sum(pcts) / len(pcts)
@@ -1103,7 +1161,8 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         # ── (b) Exhaustion Chain ───────────────────────────────────────────
         # DB: 2x exhaustion in last 3 candles = 6R/0W = 100% accuracy.
         # Score raised from ±2 to ±3 to reflect its actual predictive power.
-        ex_n = sum(1 for m in hist3 if m.get("last_react") == "EXHAUST")
+        ex_n = (sum(1 for m in hist3 if m.get("last_react") == "EXHAUST")
+                if _hist3_fresh else 0)
         if ex_n >= 2:
             if is_bull:
                 score -= 3
@@ -1141,7 +1200,8 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         # ── (c) Fight-zone Breakout ────────────────────────────────────────
         # DB: bull breakout = 80% (4R/1W); bear breakout = 50% (6R/6W).
         # Bull breakout is reliable; bear breakout is coin-flip. Differentiate.
-        fight_n = sum(1 for m in micro_history[-2:] if m.get("is_fight"))
+        fight_n = (sum(1 for m in micro_history[-2:] if m.get("is_fight"))
+                   if _chain_fresh(2) else 0)
         if fight_n >= 2 and body / total_range >= 0.50:
             if is_bull:
                 score += 2
@@ -1317,13 +1377,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # "[MUTED ...]") so they remain visible and shadow-gradeable, letting a
     # muted theory earn its way back in.
     if muted:
-        # T7/MARB/OUTSIDE/STAR votes are 100% color-forced, so un-counting
-        # them must also come out of forced_score. RUN/MICRO mix forced and
+        # T7/OUTSIDE/STAR votes are 100% color-forced, so un-counting them
+        # must also come out of forced_score. RUN/MICRO mix forced and
         # independent sub-votes; their forced share is left in forced_score
         # (slight over-capping toward NEUTRAL — the safe direction — and
         # both hover ~50%, far from the mute threshold, so this path is
         # unlikely to matter in practice).
-        _FORCED_ONLY = {"T7", "MARB", "OUTSIDE", "STAR"}
+        _FORCED_ONLY = {"T7", "OUTSIDE", "STAR"}
         for _mi, _mr in enumerate(reasons):
             _mv = _parse_votes([_mr])
             if not _mv:
@@ -1407,6 +1467,41 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     f"REGIME UPTREND+RESISTANCE CALL capped to MEDIUM"
                     f" -> -{_att} (attenuation)")
 
+    # ── CONFLUENCE MULTIPLIER (2026-07-08 addition, untested) ────────────────
+    # When 3+ color-independent theories net-agree with the current score
+    # direction, boost the combined score 20%. Muted theories are excluded
+    # (their votes shouldn't be able to trigger a boost). UNTESTED — not yet
+    # measured against live data; the STRONG tier (agree>=3, |score|>=3) below
+    # already rewards a similar shape of evidence, so this may prove partly
+    # redundant with it — worth checking via replay before trusting it.
+    _muted_set = set(muted) if muted else set()
+    _indep_active = [(_t, _d) for _t, _d in indep_dirs if _t not in _muted_set]
+    if len(_indep_active) >= 3 and score != 0:
+        _conf_dir = 1 if score > 0 else -1
+        _agreeing = sum(1 for _t, _d in _indep_active if (_d > 0) == (_conf_dir > 0))
+        if _agreeing >= 3:
+            _boost = max(1, int(abs(score) * 0.20))
+            score += _boost if _conf_dir > 0 else -_boost
+            reasons.append(
+                f"(coordination confluence) {_agreeing} independent theories"
+                f" agree -> {'+' if _conf_dir > 0 else '-'}{_boost} boost")
+
+    # ── TIME FILTER (2026-07-08 addition, untested) ──────────────────────────
+    # Dampens score 20% during the 22:00-07:00 UTC low-liquidity window.
+    # UNTESTED — OTC's own randomness (see module docstring) means there is
+    # no prior evidence this window behaves any differently; applied only
+    # because explicitly requested. Uses wall-clock UTC time, not candle
+    # time, so replay/backtest runs will NOT reproduce this dampening the
+    # way it applied live.
+    _cur_hour = time.gmtime().tm_hour
+    if (_cur_hour < 7 or _cur_hour >= 22) and score != 0:
+        _tdamp = max(1, int(abs(score) * 0.20))
+        _tsign = "-" if score > 0 else "+"
+        score += -_tdamp if score > 0 else _tdamp
+        reasons.append(
+            f"(attenuation) low-liquidity hour (UTC {_cur_hour:02d})"
+            f" -> {_tsign}{_tdamp}")
+
     # ── Final ─────────────────────────────────────────────────────────────────
     # EVERY-CANDLE MODE (2026-07-06, user decision): a direction is emitted
     # on every candle — quality lives in the STRENGTH label instead of in
@@ -1417,6 +1512,22 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     _weak_cap_reasons: list[str] = []
     _indep_net = sum(_d for _t, _d in indep_dirs)
     signal = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
+
+    # SIGNAL COOLDOWN (2026-07-08 addition, untested): a repeat non-neutral
+    # signal for the same asset+period within _COOLDOWN_SECONDS is capped to
+    # WEAK rather than skipped (every-candle mode never withholds a
+    # direction). In practice this rarely fires — analyze_eoc is normally
+    # called once per candle close, and most periods (>=60s) already exceed
+    # the 30s window — it mainly guards against rapid re-analysis of the
+    # same close (e.g. a manual refresh) rather than normal operation.
+    _cooldown_key = f"{asset}:{period}" if asset and period else None
+    if _cooldown_key and score != 0:
+        _now = time.time()
+        if _now - _last_signal_time.get(_cooldown_key, 0) < _COOLDOWN_SECONDS:
+            _weak_cap_reasons.append(
+                f"(coordination cooldown) repeat signal within"
+                f" {_COOLDOWN_SECONDS}s -> WEAK")
+        _last_signal_time[_cooldown_key] = _now
 
     if signal == "NEUTRAL":
         # score == 0 — no net evidence. Tiebreak chain, weakest-first
