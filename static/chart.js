@@ -102,6 +102,9 @@ async function _loadMe() {
   if (placeholder) placeholder.classList.toggle('hidden', myCategory !== 'normal');
   const detail = document.getElementById('side-panel-detail');
   if (detail) detail.classList.toggle('hidden', myCategory === 'normal');
+  // Mobile Signals tab's Deep Analysis mirror — same tier gate as above
+  const signalsMstateWrap = document.getElementById('signals-mstate-wrap');
+  if (signalsMstateWrap) signalsMstateWrap.classList.toggle('hidden', myCategory === 'normal');
 }
 
 // True once the user has actually zoomed/panned the chart (wheel or a
@@ -1040,8 +1043,10 @@ function updateSignalUI(pred) {
     }
   }
 
-  // Deep-analysis market state card
+  // Deep-analysis market state card — Advance tab's sidebar and the
+  // mobile Signals tab's mirror (see index.html's #signals-mstate-card)
   renderMarketState(pred.market_state);
+  renderMarketState(pred.market_state, 'signals-mstate');
 
   // Home hero mirrors the same signal (mobile Home tab)
   const hb = document.getElementById('home-hero-badge');
@@ -1090,14 +1095,14 @@ const _MSTATE_LABELS = {
   UNCLEAR:      { icon: '·', name: 'Unclear' },
 };
 
-function renderMarketState(ms) {
-  const card = document.getElementById('mstate-card');
+function renderMarketState(ms, prefix = 'mstate') {
+  const card = document.getElementById(`${prefix}-card`);
   if (!card) return;
-  const chip  = document.getElementById('mstate-chip');
-  const bias  = document.getElementById('mstate-bias');
-  const meter = document.getElementById('mstate-meter');
-  const evUl  = document.getElementById('mstate-evidence');
-  const bars  = document.getElementById('mstate-bars');
+  const chip  = document.getElementById(`${prefix}-chip`);
+  const bias  = document.getElementById(`${prefix}-bias`);
+  const meter = document.getElementById(`${prefix}-meter`);
+  const evUl  = document.getElementById(`${prefix}-evidence`);
+  const bars  = document.getElementById(`${prefix}-bars`);
 
   if (!ms || !ms.state) {
     card.classList.add('hidden');

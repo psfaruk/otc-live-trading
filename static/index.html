@@ -401,6 +401,26 @@
         <div id="signals-last-badge" class="signal-badge neutral">–</div>
         <div id="signals-last-meta" class="signals-last-meta">–</div>
       </div>
+
+      <!-- Deep market-state read — mobile mirror of the Advance tab's
+           #mstate-card (see chart.js's renderMarketState 'signals-mstate'
+           instance). Title+card are wrapped together and hidden as a unit
+           for 'normal' accounts by _loadMe (same tier gate as desktop's
+           #side-panel-detail) — market_state is genuinely never sent to
+           'normal' accounts, so without this the title would dangle with
+           an empty card under it forever. -->
+      <div id="signals-mstate-wrap" class="hidden">
+        <div class="panel-title panel-title-gap">Deep Analysis</div>
+        <div id="signals-mstate-card" class="mstate-card">
+          <div class="mstate-head">
+            <span id="signals-mstate-chip" class="mstate-chip">–</span>
+            <span id="signals-mstate-bias" class="mstate-bias"></span>
+          </div>
+          <div class="mstate-meter-track"><div id="signals-mstate-meter" class="mstate-meter"></div></div>
+          <ul id="signals-mstate-evidence" class="mstate-evidence"><li class="empty">Waiting for the next closed candle…</li></ul>
+          <div id="signals-mstate-bars" class="mstate-bars"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Notification panel — fixed overlay under the bell; a sibling of the
