@@ -280,6 +280,13 @@ class QuotexFeed:
         self._muted_theories: dict[str, str] = {}
         self._last_perf_refresh: float = 0.0
 
+        # DB row-count housekeeping. Was startup-only for a long time (see
+        # run()'s initial _db.cleanup() call) — this service can stay up for
+        # weeks without a redeploy, so unbounded growth between restarts
+        # filled the Railway volume to 83% (2026-07-08 incident). Now also
+        # re-run periodically from the manager loop.
+        self._last_db_cleanup: float = 0.0
+
     # ── Public ────────────────────────────────────────────────────────────────
 
     def available_pairs(self) -> dict:
@@ -1786,6 +1793,17 @@ class QuotexFeed:
                 if time.time() - self._last_perf_refresh > 300:
                     self._last_perf_refresh = time.time()
                     await self._refresh_theory_mutes()
+
+                # ── DB row-count cleanup every 6 hours ─────────────────────
+                # asyncio.to_thread: _db.cleanup() is blocking sqlite3 I/O
+                # (holds db._lock) — same reasoning as every other DB call
+                # on this event loop (see _authenticate in server.py).
+                if time.time() - self._last_db_cleanup > 6 * 3600:
+                    self._last_db_cleanup = time.time()
+                    try:
+                        await asyncio.to_thread(_db.cleanup)
+                    except Exception as exc:
+                        print(f"[feed] periodic db.cleanup() failed: {exc}")
 
             except Exception as exc:
                 import traceback
