@@ -121,15 +121,28 @@ def _pred_candle(candles: list[dict], signal: str, period: int, actual_open: flo
     op   = actual_open if actual_open is not None else last["close"]
     atr  = _atr(candles[-20:]) if len(candles) >= 20 else (last["high"] - last["low"]) or 0.0001
     t    = last["time"] + period
+
+    # Realistic candle proportions (fractions of ATR)
+    # Body is the main body, wick extends from body tip (signal direction),
+    # tail extends from open (opposite direction).
+    # Total range = body + wick + tail = 0.85 * ATR (close to average candle)
+    body = atr * 0.45   # ~45% of ATR — typical for a moderately strong candle
+    wick = atr * 0.25   # ~25% of ATR — main wick in signal direction (from close)
+    tail = atr * 0.15   # ~15% of ATR — opposite wick (from open)
+
     if signal == "CALL":
-        return {"time": t, "open": op,
-                "high": round(op + atr * 0.85, 6),
-                "low":  round(op - atr * 0.20, 6),
-                "close":round(op + atr * 0.50, 6)}
-    return {"time": t, "open": op,
-            "high": round(op + atr * 0.20, 6),
-            "low":  round(op - atr * 0.85, 6),
-            "close":round(op - atr * 0.50, 6)}
+        # Green candle: open at bottom, close at top
+        # upper wick extends FROM close upward, lower tail extends FROM open downward
+        return {"time":  t, "open":  op,
+                "high":  round(op + body + wick, 6),
+                "low":   round(op - tail, 6),
+                "close": round(op + body, 6)}
+    # PUT — red candle: open at top, close at bottom
+    # lower wick extends FROM close downward, upper tail extends FROM open upward
+    return {"time":  t, "open":  op,
+            "high":  round(op + tail, 6),
+            "low":   round(op - body - wick, 6),
+            "close": round(op - body, 6)}
 
 
 def _normalise(raw) -> list[dict]:

@@ -9,184 +9,200 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
       height: 100%;
-      background: #070a0f;
-      color: #e8ecf5;
+      background: #06080d;
+      color: #e6edf3;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
     }
     body {
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 20px;
-      /* soft radial glow behind the card */
       background:
-        radial-gradient(600px 400px at 50% 30%, rgba(68,138,255,0.07), transparent 70%),
-        #070a0f;
+        radial-gradient(700px 500px at 20% 10%, rgba(68,138,255,0.06), transparent 60%),
+        radial-gradient(500px 400px at 80% 90%, rgba(0,230,118,0.04), transparent 60%),
+        #06080d;
     }
-    .card {
+    .login-container {
       width: 100%;
-      max-width: 380px;
-      background: #10131a;
-      border: 1px solid #2a3345;
-      border-radius: 14px;
-      padding: 40px 32px 32px;
+      max-width: 400px;
+      animation: loginFadeIn 0.5s ease-out;
+    }
+    @keyframes loginFadeIn {
+      from { opacity: 0; transform: translateY(16px) scale(0.97); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .login-brand {
       text-align: center;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-    }
-    .logo { width: 88px; height: 88px; margin: 0 auto 6px; display: block; object-fit: contain; }
-    .logo.hidden { display: none; }
-    /* the raster logo sits on its own black square — round it like an
-       app icon so the square edge doesn't fight the card background */
-    img.logo { border-radius: 20px; }
-    .brand {
-      font-size: 22px;
-      font-weight: 800;
-      letter-spacing: 2.5px;
-      color: #fff;
-      margin-bottom: 2px;
-    }
-    .brand em { color: #448aff; font-style: normal; }
-    .tag {
-      font-size: 12px;
-      color: #5a6478;
       margin-bottom: 28px;
-      letter-spacing: 0.4px;
     }
-    .field { margin-bottom: 14px; text-align: left; }
+    .brand-logo {
+      width: 72px;
+      height: 72px;
+      margin: 0 auto 12px;
+      display: block;
+      object-fit: contain;
+      border-radius: 18px;
+    }
+    .brand-logo.hidden { display: none; }
+    .brand-name {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: #fff;
+    }
+    .brand-name em { color: #448aff; font-style: normal; }
+    .brand-tag {
+      font-size: 12px;
+      color: #484f58;
+      margin-top: 4px;
+      letter-spacing: 0.5px;
+    }
+    .login-card {
+      background: rgba(13,17,23,0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid #21262d;
+      border-radius: 16px;
+      padding: 32px 28px 28px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .field { margin-bottom: 16px; text-align: left; }
     .field label {
       display: block;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.8px;
-      color: #7777a0;
+      color: #484f58;
       margin-bottom: 6px;
+      font-weight: 600;
     }
     .field input {
       width: 100%;
-      background: #1b2230;
-      border: 1px solid #2a3345;
-      border-radius: 8px;
-      color: #e8ecf5;
-      font-size: 15px;
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 10px;
+      color: #e6edf3;
+      font-size: 14px;
       padding: 12px 14px;
       outline: none;
-      transition: border-color 0.15s;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
-    .field input:focus { border-color: #448aff; }
-    button {
+    .field input:focus {
+      border-color: #448aff;
+      box-shadow: 0 0 0 3px rgba(68,138,255,0.12);
+    }
+    .field input::placeholder { color: #484f58; }
+    .submit-btn {
       width: 100%;
       margin-top: 8px;
       background: #448aff;
       border: none;
-      border-radius: 8px;
+      border-radius: 10px;
       color: #fff;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 700;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.3px;
       padding: 12px;
       cursor: pointer;
-      transition: filter 0.15s, transform 0.05s;
+      transition: filter 0.15s, transform 0.1s, box-shadow 0.2s;
+      box-shadow: 0 0 20px rgba(68,138,255,0.2);
     }
-    button:hover  { filter: brightness(1.12); }
-    button:active { transform: scale(0.99); }
-    button:disabled { opacity: 0.6; cursor: default; }
+    .submit-btn:hover {
+      filter: brightness(1.1);
+      box-shadow: 0 0 28px rgba(68,138,255,0.3);
+    }
+    .submit-btn:active { transform: scale(0.98); }
+    .submit-btn:disabled { opacity: 0.6; cursor: default; filter: none; box-shadow: none; }
     .err {
       margin-top: 14px;
       font-size: 13px;
       color: #ff5b76;
       min-height: 18px;
+      text-align: center;
     }
     .toggle {
       margin-top: 18px;
       font-size: 13px;
-      color: #7777a0;
+      color: #484f58;
+      text-align: center;
     }
-    .toggle button {
-      all: unset;
-      width: auto;
-      margin: 0;
+    .toggle a {
       color: #448aff;
       cursor: pointer;
       font-weight: 600;
+      text-decoration: none;
+      transition: color 0.15s;
     }
-    .toggle button:hover { text-decoration: underline; }
+    .toggle a:hover { color: #66a3ff; text-decoration: underline; }
     .field.hidden { display: none; }
     @media (max-width: 420px) {
-      .card { padding: 32px 22px 26px; }
-      .logo { width: 74px; height: 74px; }
+      .login-card { padding: 24px 20px 22px; }
+      .brand-logo { width: 60px; height: 60px; }
+      .brand-name { font-size: 20px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .login-container { animation: none; }
     }
   </style>
 </head>
 <body>
-  <div class="card">
-    <!-- Real brand logo: drop the file at static/logo.png and it's used
-         automatically; until then the inline SVG below is the fallback. -->
-    <img class="logo hidden" id="logo-img" src="/logo.png" alt="Plybit AI logo"
-         onload="this.classList.remove('hidden'); document.getElementById('logo-fallback').classList.add('hidden');" />
-    <!-- Fallback: layered flame/drop — red-gold, cream, blue-violet -->
-    <svg class="logo" id="logo-fallback" viewBox="0 0 120 120" aria-hidden="true">
-      <defs>
-        <linearGradient id="gRed" x1="0" y1="0" x2="0.6" y2="1">
-          <stop offset="0" stop-color="#e8322e"/>
-          <stop offset="0.55" stop-color="#e05a3a"/>
-          <stop offset="1" stop-color="#d9a552"/>
-        </linearGradient>
-        <linearGradient id="gCream" x1="0.3" y1="0" x2="0.7" y2="1">
-          <stop offset="0" stop-color="#aebfae"/>
-          <stop offset="0.5" stop-color="#f2f0dc"/>
-          <stop offset="1" stop-color="#d8d4b8"/>
-        </linearGradient>
-        <linearGradient id="gBlue" x1="0.2" y1="0" x2="0.8" y2="1">
-          <stop offset="0" stop-color="#7b8fd9"/>
-          <stop offset="0.5" stop-color="#4a3fd4"/>
-          <stop offset="1" stop-color="#3b2fbf"/>
-        </linearGradient>
-      </defs>
-      <!-- red-gold left flame -->
-      <path fill="url(#gRed)" d="M58 6
-        C 42 34, 26 48, 26 74
-        C 26 88, 32 98, 42 104
-        C 36 92, 36 82, 42 70
-        C 50 52, 58 36, 58 6 Z"/>
-      <!-- cream middle sweep -->
-      <path fill="url(#gCream)" d="M63 18
-        C 58 44, 44 58, 42 78
-        C 41 92, 48 103, 58 108
-        C 52 96, 53 86, 59 74
-        C 66 58, 68 40, 63 18 Z"/>
-      <!-- blue-violet right petal -->
-      <path fill="url(#gBlue)" d="M88 44
-        C 84 60, 72 70, 68 84
-        C 65 96, 70 106, 80 110
-        C 76 100, 78 92, 84 82
-        C 92 70, 92 56, 88 44 Z"/>
-    </svg>
-    <div class="brand">PLYBIT <em>AI</em></div>
-    <div class="tag">Binary Trading Signals</div>
+  <div class="login-container">
+    <div class="login-brand">
+      <img class="brand-logo hidden" id="logo-img" src="/logo.png" alt="Plybit AI logo"
+           onload="this.classList.remove('hidden'); document.getElementById('logo-fallback').classList.add('hidden');" />
+      <svg class="brand-logo" id="logo-fallback" viewBox="0 0 120 120" aria-hidden="true">
+        <defs>
+          <linearGradient id="gRed" x1="0" y1="0" x2="0.6" y2="1">
+            <stop offset="0" stop-color="#e8322e"/>
+            <stop offset="0.55" stop-color="#e05a3a"/>
+            <stop offset="1" stop-color="#d9a552"/>
+          </linearGradient>
+          <linearGradient id="gCream" x1="0.3" y1="0" x2="0.7" y2="1">
+            <stop offset="0" stop-color="#aebfae"/>
+            <stop offset="0.5" stop-color="#f2f0dc"/>
+            <stop offset="1" stop-color="#d8d4b8"/>
+          </linearGradient>
+          <linearGradient id="gBlue" x1="0.2" y1="0" x2="0.8" y2="1">
+            <stop offset="0" stop-color="#7b8fd9"/>
+            <stop offset="0.5" stop-color="#4a3fd4"/>
+            <stop offset="1" stop-color="#3b2fbf"/>
+          </linearGradient>
+        </defs>
+        <path fill="url(#gRed)" d="M58 6 C 42 34, 26 48, 26 74 C 26 88, 32 98, 42 104 C 36 92, 36 82, 42 70 C 50 52, 58 36, 58 6 Z"/>
+        <path fill="url(#gCream)" d="M63 18 C 58 44, 44 58, 42 78 C 41 92, 48 103, 58 108 C 52 96, 53 86, 59 74 C 66 58, 68 40, 63 18 Z"/>
+        <path fill="url(#gBlue)" d="M88 44 C 84 60, 72 70, 68 84 C 65 96, 70 106, 80 110 C 76 100, 78 92, 84 82 C 92 70, 92 56, 88 44 Z"/>
+      </svg>
+      <div class="brand-name">PLYBIT <em>AI</em></div>
+      <div class="brand-tag">Binary Trading Signals</div>
+    </div>
 
-    <form id="login-form">
-      <div class="field">
-        <label for="email">Email</label>
-        <input id="email" type="email" autocomplete="username"
-               placeholder="you@example.com" autofocus />
-      </div>
-      <div class="field">
-        <label for="password">Password</label>
-        <input id="password" type="password" autocomplete="current-password"
-               placeholder="Enter your password" />
-      </div>
-      <div class="field hidden" id="confirm-field">
-        <label for="confirm">Confirm password</label>
-        <input id="confirm" type="password" autocomplete="new-password"
-               placeholder="Re-enter your password" />
-      </div>
-      <button type="submit" id="submit-btn">Sign in</button>
-      <div class="err" id="err"></div>
-      <div class="toggle">
-        <span id="toggle-text">Don't have an account?</span>
-        <button type="button" id="toggle-btn">Create one</button>
-      </div>
-    </form>
+    <div class="login-card">
+      <form id="login-form">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="username"
+                 placeholder="you@example.com" autofocus />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password"
+                 placeholder="Enter your password" />
+        </div>
+        <div class="field hidden" id="confirm-field">
+          <label for="confirm">Confirm password</label>
+          <input id="confirm" type="password" autocomplete="new-password"
+                 placeholder="Re-enter your password" />
+        </div>
+        <button type="submit" id="submit-btn" class="submit-btn">Sign in</button>
+        <div class="err" id="err"></div>
+        <div class="toggle">
+          <span id="toggle-text">Don't have an account?</span>
+          <a id="toggle-btn">Create one</a>
+        </div>
+      </form>
+    </div>
   </div>
 
   <script>
@@ -201,7 +217,7 @@
     const toggleText   = document.getElementById('toggle-text');
     const toggleBtn    = document.getElementById('toggle-btn');
 
-    let mode = 'login';   // 'login' | 'signup'
+    let mode = 'login';
 
     function applyMode() {
       err.textContent = '';
@@ -228,14 +244,12 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       err.textContent = '';
-
       const email    = emailEl.value.trim();
       const password = passwordEl.value;
       if (mode === 'signup' && password !== confirmEl.value) {
         err.textContent = "Passwords don't match";
         return;
       }
-
       btn.disabled = true;
       btn.textContent = mode === 'login' ? 'Signing in…' : 'Creating account…';
       try {

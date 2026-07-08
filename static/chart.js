@@ -1430,34 +1430,28 @@ function _setActiveTab(tab) {
   _activeTab = tab;
   try { localStorage.setItem('plybit_tab', tab); } catch (_) {}
 
-  for (const id of ['tab-home', 'tab-signals', 'tab-advance', 'tab-settings']) {
-    const el = document.getElementById(id);
-    if (!el) continue;
-    const isTarget = id === `tab-${tab}`;
-    el.classList.toggle('hidden', !isTarget);
-    if (isTarget) {
-      // Short fade+rise on the tab that just became active (see style.css's
-      // .tab-screen.tab-enter) — plays automatically since removing .hidden
-      // is exactly the moment this element enters the render tree.
-      el.classList.add('tab-enter');
-      setTimeout(() => el.classList.remove('tab-enter'), 180);
+  // Delegate page switching to nav.js (sidebar + bottom tabs stay in sync)
+  if (typeof Nav !== 'undefined' && Nav.setPage) {
+    Nav.setPage(tab);
+  } else {
+    // Fallback if nav.js didn't load
+    for (const id of ['tab-home', 'tab-signals', 'tab-advance', 'tab-settings']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const isTarget = id === `tab-${tab}`;
+      el.classList.toggle('hidden', !isTarget);
     }
   }
+
   document.querySelectorAll('.tab-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
-  // The win-rate/countdown/refresh/History cluster is Advance-specific —
-  // hide it on mobile for the other 3 tabs (desktop always shows it, see
-  // the .header-stats.hidden scoping to the <640px media query in style.css).
+  // The header-stats cluster is Advance-specific — hide on mobile for other tabs
   const stats = document.getElementById('header-stats');
   if (stats) stats.classList.toggle('hidden', tab !== 'advance');
 
   if (tab === 'signals') {
     _hideSignalPopup();
-    // Show whatever the last real (non-NEUTRAL) prediction was immediately
-    // on switching here, WITHOUT the popup animation — the popup itself is
-    // reserved for a genuinely NEW signal landing per the automatic-popup
-    // scope, not for re-displaying stale data when navigating tabs.
     if (lastPrediction) _updateSignalsLast(lastPrediction);
   }
 
@@ -2177,19 +2171,14 @@ async function loadHistory() {
   }
 }
 
-// Desktop-only entry point into #tab-settings (account info, admin
-// dashboard, logout) — on desktop that element is normally force-hidden by
-// the mobile-only tab system (see style.css), so this repurposes the SAME
-// element as a modal instead of duplicating its markup/rendering logic.
+// Desktop entry point into Settings — now navigates to the Settings page
+// instead of opening a modal (redesigned layout has Settings as a full page).
 function openSettingsModal() {
-  document.getElementById('settings-backdrop').classList.remove('hidden');
-  document.getElementById('tab-settings').classList.add('settings-open');
-  if (myCategory === 'admin') _loadAdminDashboard();
+  _setActiveTab('settings');
 }
 
 function closeSettingsModal() {
-  document.getElementById('settings-backdrop').classList.add('hidden');
-  document.getElementById('tab-settings').classList.remove('settings-open');
+  _setActiveTab('advance');
 }
 
 function openHistory() {
