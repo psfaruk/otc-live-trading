@@ -1926,7 +1926,9 @@ async function loadStats() {
       // ZIGZAG, MTF, ANOMALY, OBLOCK) may still have rows in the DB from
       // past logs, but they no longer vote and shouldn't clutter the panel.
       const ACTIVE_THEORIES = new Set([
-        'RUN', 'WICKWALL', 'MICRO', 'DIVERGENCE', 'LIVE', 'MARKET_STATE'
+        'RUN', 'WICKWALL', 'MICRO', 'DIVERGENCE',
+        'LIVE', 'TICKSWEEP', 'ABSORBWALL', 'LATEFLIP',
+        'MARKET_STATE'
       ]);
       const entries = Object.entries(tr || {})
         .filter(([code]) => ACTIVE_THEORIES.has(code));
