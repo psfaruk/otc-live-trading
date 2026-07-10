@@ -1921,7 +1921,15 @@ async function loadStats() {
     const ul = document.getElementById('theory-stats');
     if (ul) {
       ul.innerHTML = '';
-      const entries = Object.entries(tr || {});
+      // Only show theories that are still active in the engine — old
+      // removed theories (T7, T2, TRAP, STAR, STREAK, OUTSIDE, SPIN,
+      // ZIGZAG, MTF, ANOMALY, OBLOCK) may still have rows in the DB from
+      // past logs, but they no longer vote and shouldn't clutter the panel.
+      const ACTIVE_THEORIES = new Set([
+        'RUN', 'WICKWALL', 'MICRO', 'DIVERGENCE', 'LIVE', 'MARKET_STATE'
+      ]);
+      const entries = Object.entries(tr || {})
+        .filter(([code]) => ACTIVE_THEORIES.has(code));
       if (!entries.length) {
         ul.innerHTML = '<li class="empty">Collecting results…</li>';
       } else {
