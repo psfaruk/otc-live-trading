@@ -61,6 +61,13 @@ import time
 
 
 ENABLE_LIVE_THEORY = os.environ.get('ENABLE_LIVE_THEORY', '1') == '1'
+# Running-candle reaction theories (Phase 2, 2026-07-10). Each detects a
+# specific real-time reaction pattern on the running (still-open) candle.
+# All three are x3 weight — they catch high-conviction reversal patterns
+# that the LIVE theory misses (LIVE focuses on absorption + momentum).
+ENABLE_TICKSWEEP   = os.environ.get('ENABLE_TICKSWEEP',   '1') == '1'
+ENABLE_ABSORBWALL  = os.environ.get('ENABLE_ABSORBWALL',  '1') == '1'
+ENABLE_LATEFLIP    = os.environ.get('ENABLE_LATEFLIP',    '1') == '1'
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -228,7 +235,14 @@ def _market_regime(candles: list[dict], lookback: int = 20) -> tuple[str, str]:
 # 5 confirming theories + market state (main predictor). Removed: T7, T2,
 # TRAP, STAR, STREAK, OUTSIDE, SPIN, ZIGZAG, MTF, ANOMALY, OBLOCK — all
 # either color-forced (continuation bias) or below coin-flip on live data.
-_ALL_THEORIES = {"RUN", "WICKWALL", "MICRO", "DIVERGENCE", "LIVE", "MARKET_STATE"}
+_ALL_THEORIES = {
+    # Closed-candle theories
+    "RUN", "WICKWALL", "MICRO", "DIVERGENCE",
+    # Running-candle theories (Phase 1 + Phase 2)
+    "LIVE", "TICKSWEEP", "ABSORBWALL", "LATEFLIP",
+    # Main predictor
+    "MARKET_STATE",
+}
 
 # Signal-cooldown state — module-level so it persists across calls for the
 # life of the process. Keyed by "asset:period"; a repeat non-neutral signal
@@ -698,13 +712,169 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     'LIVE  Long lower wick on running candle -> CALL (x1)')
 
     # ═══════════════════════════════════════════════════════════════════════
+    # THEORY 6 — TICKSWEEP (running candle stop hunt detection)
+    #
+    # Detects a spike beyond a recent local extreme that snaps back within
+    # a few ticks — classic stop-run before reversal. OTC markets are full
+    # of retail stop clusters that get hunted. This catches the footprint
+    # in real time on the running candle.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if (ENABLE_TICKSWEEP and running_ticks
+            and len(running_ticks) >= 20):
+        _ts_rt = running_ticks
+        _ts_n = len(_ts_rt)
+        _ts_hi_idx = _ts_rt.index(max(_ts_rt))
+        _ts_lo_idx = _ts_rt.index(min(_ts_rt))
+        # Extreme must be in the middle 60% of the candle timeline (not at
+        # the open/close edge — an edge extreme is just the candle forming,
+        # not a hunt).
+        _ts_in_middle = lambda idx: _ts_n * 0.20 <= idx <= _ts_n * 0.80
+
+        # Upper sweep: high in middle, then price retraced ≥50% of the spike
+        if _ts_in_middle(_ts_hi_idx):
+            _ts_peak = _ts_rt[_ts_hi_idx]
+            _ts_after = _ts_rt[_ts_hi_idx:_ts_hi_idx + 8]
+            _ts_retrace = (_ts_peak - min(_ts_after)) if _ts_after else 0
+            _ts_excursion = _ts_peak - _ts_rt[0]
+            if (_ts_excursion > 0
+                    and _ts_retrace >= 0.50 * _ts_excursion
+                    and _ts_excursion >= (_ts_peak - _ts_rt[_ts_lo_idx]) * 0.30):
+                score -= 3
+                indep_dirs.append(('TICKSWEEP', -1))
+                reasons.append(
+                    f'TICKSWEEP  Upper stop-hunt at tick {_ts_hi_idx}'
+                    f' (retraced {_ts_retrace / _ts_excursion:.0%})'
+                    f' -> PUT (x3)')
+
+        # Lower sweep: low in middle, then price retraced ≥50% of the drop
+        if _ts_in_middle(_ts_lo_idx):
+            _ts_trough = _ts_rt[_ts_lo_idx]
+            _ts_after = _ts_rt[_ts_lo_idx:_ts_lo_idx + 8]
+            _ts_retrace = (max(_ts_after) - _ts_trough) if _ts_after else 0
+            _ts_excursion = _ts_rt[0] - _ts_trough
+            if (_ts_excursion > 0
+                    and _ts_retrace >= 0.50 * _ts_excursion
+                    and _ts_excursion >= (_ts_rt[_ts_hi_idx] - _ts_trough) * 0.30):
+                score += 3
+                indep_dirs.append(('TICKSWEEP', +1))
+                reasons.append(
+                    f'TICKSWEEP  Lower stop-hunt at tick {_ts_lo_idx}'
+                    f' (retraced {_ts_retrace / _ts_excursion:.0%})'
+                    f' -> CALL (x3)')
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # THEORY 7 — ABSORBWALL (running candle price-band absorption)
+    #
+    # Detects heavy opposing pressure absorbed at a single price band on
+    # the running candle — e.g. many sell ticks hit the upper band but
+    # price refuses to break through. Smart-money footprint. This is the
+    # localized version of RUN ABSORPTION (which is whole-candle).
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if (ENABLE_ABSORBWALL and running_ticks
+            and len(running_ticks) >= 25):
+        _aw_rt = running_ticks
+        _aw_hi = max(_aw_rt)
+        _aw_lo = min(_aw_rt)
+        _aw_range = _aw_hi - _aw_lo
+        if _aw_range > 0:
+            _aw_band_size = _aw_range * 0.10  # 10% of range = band width
+            _aw_hi_band = _aw_hi - _aw_band_size  # upper band lower edge
+            _aw_lo_band = _aw_lo + _aw_band_size  # lower band upper edge
+
+            # Count opposing ticks at upper band (sellers hitting resistance)
+            _aw_upper_sells = sum(
+                1 for i in range(1, len(_aw_rt))
+                if _aw_rt[i] > _aw_hi_band and _aw_rt[i] < _aw_rt[i-1])
+            _aw_upper_total = sum(1 for t in _aw_rt if t > _aw_hi_band)
+
+            # Count opposing ticks at lower band (buyers hitting support)
+            _aw_lower_buys = sum(
+                1 for i in range(1, len(_aw_rt))
+                if _aw_rt[i] < _aw_lo_band and _aw_rt[i] > _aw_rt[i-1])
+            _aw_lower_total = sum(1 for t in _aw_rt if t < _aw_lo_band)
+
+            _aw_threshold = 0.35  # 35% of band-ticks must be opposing
+
+            # Upper absorption wall: sellers rejected at top -> PUT (reversal)
+            if (_aw_upper_total >= 8
+                    and _aw_upper_sells / _aw_upper_total >= _aw_threshold
+                    and _aw_rt[-1] < _aw_hi_band):  # closed back below
+                score -= 3
+                indep_dirs.append(('ABSORBWALL', -1))
+                reasons.append(
+                    f'ABSORBWALL  {_aw_upper_sells} sell-ticks absorbed at'
+                    f' upper band ({_aw_upper_sells / _aw_upper_total:.0%}'
+                    f' of {_aw_upper_total} band ticks) -> PUT (x3)')
+
+            # Lower absorption wall: buyers rejected at bottom -> CALL
+            elif (_aw_lower_total >= 8
+                    and _aw_lower_buys / _aw_lower_total >= _aw_threshold
+                    and _aw_rt[-1] > _aw_lo_band):  # closed back above
+                score += 3
+                indep_dirs.append(('ABSORBWALL', +1))
+                reasons.append(
+                    f'ABSORBWALL  {_aw_lower_buys} buy-ticks absorbed at'
+                    f' lower band ({_aw_lower_buys / _aw_lower_total:.0%}'
+                    f' of {_aw_lower_total} band ticks) -> CALL (x3)')
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # THEORY 8 — LATEFLIP (running candle 70/30 control transfer)
+    #
+    # Detects a clean intrabar control transfer: first 70% of ticks
+    # dominated by one side, final 30% dominated by the opposite. This is
+    # a stricter, higher-conviction variant of LIVE INVASION (which only
+    # looks at the final 15%). Both segments must show clear dominance.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if (ENABLE_LATEFLIP and running_ticks
+            and len(running_ticks) >= 20):
+        _lf_rt = running_ticks
+        _lf_n = len(_lf_rt)
+        _lf_split = int(_lf_n * 0.70)
+        _lf_seg_a = _lf_rt[:_lf_split]
+        _lf_seg_b = _lf_rt[_lf_split:]
+
+        def _lf_bpct(seg):
+            if len(seg) < 2:
+                return 0.5
+            _u = sum(1 for i in range(1, len(seg)) if seg[i] > seg[i-1])
+            _d = sum(1 for i in range(1, len(seg)) if seg[i] < seg[i-1])
+            _t = _u + _d
+            return _u / _t if _t else 0.5
+
+        _lf_a = _lf_bpct(_lf_seg_a)
+        _lf_b = _lf_bpct(_lf_seg_b)
+        # Both segments must show clear dominance (≥65% one side)
+        _lf_a_dom = abs(_lf_a - 0.5) >= 0.15
+        _lf_b_dom = abs(_lf_b - 0.5) >= 0.15
+        # And opposite directions
+        _lf_opposite = ((_lf_a - 0.5) * (_lf_b - 0.5)) < 0
+
+        if _lf_a_dom and _lf_b_dom and _lf_opposite:
+            # Vote with segment B (the new control side — the flip direction)
+            _lf_dir = +1 if _lf_b > 0.5 else -1
+            score += _lf_dir * 3
+            indep_dirs.append(('LATEFLIP', _lf_dir))
+            _lf_a_lbl = (f'{_lf_a:.0%} buy' if _lf_a > 0.5
+                         else f'{1 - _lf_a:.0%} sell')
+            _lf_b_lbl = (f'{_lf_b:.0%} buy' if _lf_b > 0.5
+                         else f'{1 - _lf_b:.0%} sell')
+            reasons.append(
+                f'LATEFLIP  Control transfer: first 70% {_lf_a_lbl},'
+                f' last 30% {_lf_b_lbl}'
+                f' -> {"CALL" if _lf_dir > 0 else "PUT"} (x3)')
+
+    # ═══════════════════════════════════════════════════════════════════════
     # MAIN PREDICTOR — MARKET STATE deep analysis
     #
-    # This is the heart of the refactor. The 5 theories above provide
-    # confirming votes; market state provides the PRIMARY directional read.
-    # State is named from the same structural facts, organized as one
-    # coherent read instead of a pile. State's own directional bias is
-    # voted ONCE, scaled by conviction, never re-counted.
+    # This is the heart of the refactor. The 8 theories above provide
+    # confirming votes (4 closed-candle + 4 running-candle); market state
+    # provides the PRIMARY directional read. State is named from the same
+    # structural facts, organized as one coherent read instead of a pile.
+    # State's own directional bias is voted ONCE, scaled by conviction,
+    # never re-counted.
     # ═══════════════════════════════════════════════════════════════════════
 
     _st_pts: dict[str, float] = {"CONTINUATION": 0.0, "EXHAUSTION": 0.0,
