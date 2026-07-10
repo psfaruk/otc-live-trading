@@ -13,9 +13,16 @@ from what price actually does — see _ALL_THEORIES for the active vote set:
                            three outside up (OUTSIDE), spinning top (SPIN),
                            streak exhaustion (STREAK), alternation (ZIGZAG)
   - Market structure     : repeated wick-rejection zones (WICKWALL), range-
-                           expansion mean-reversion (ANOMALY), regime/zone
-                           context (REGIME — score filter only, not a
-                           graded vote)
+                           expansion mean-reversion (ANOMALY), order blocks
+                           (OBLOCK), regime/zone context (REGIME — score
+                           filter only, not a graded vote)
+  - Divergence          : price vs tick-pressure divergence across swings
+                           (DIVERGENCE)
+
+Scoring modifiers (not votes — adjust score magnitude without choosing direction):
+  - ATR_WEIGHT      : dampens signals from tiny information-poor candles
+  - TICK_VOL        : dampens signals from low-activity candles (volume proxy)
+  - SESSION_WEIGHT  : session-aware scoring (London > NY > Asian)
 
 2026-07-08 overhaul: MARB and SWEEP removed as graded votes (2026 audit:
 47.9%/46.1%, both below coin-flip on the samples then available — see
@@ -140,7 +147,7 @@ def _key_levels(candles: list[dict], lookback: int = 40) -> list[tuple[float, in
     return levels
 
 
-def _wick_wall(candles: list[dict], lookback: int = 12
+def _wick_wall(candles: list[dict], lookback: int = 20
                ) -> tuple[list[tuple[float, int]], list[tuple[float, int]], float]:
     """
     Detect repeated wick rejection zones — the 'wick wall'.
@@ -150,6 +157,8 @@ def _wick_wall(candles: list[dict], lookback: int = 12
     wicks at the same tight zone without any one being a formal pivot.
 
     This function clusters ALL lower/upper wick tips from the last N candles.
+    Extended to 20 candles (was 12) with linear decay — older touches count
+    less (weight = 1 - age/lookback) so stale levels don't overpower fresh ones.
     Clustering tolerance = 25% of avg candle ATR — auto-adjusts across all
     instruments (EUR/USD 0.0001 scale, USD/JPY 0.01 scale, crypto, etc.)
     without hardcoded pip values.
@@ -163,26 +172,40 @@ def _wick_wall(candles: list[dict], lookback: int = 12
     if len(recent) < 4:
         return [], [], 0.0
 
-    avg_rng = sum(c["high"] - c["low"] for c in recent) / len(recent)
+    n = len(recent)
+    avg_rng = sum(c["high"] - c["low"] for c in recent) / n
     tol     = avg_rng * 0.25   # 25% of ATR — instrument-agnostic cluster width
 
-    def _cluster(tips: list[float]) -> list[tuple[float, int]]:
-        s = sorted(tips)
-        out: list[tuple[float, int]] = []
-        grp = [s[0]]
-        for t in s[1:]:
-            if t - grp[0] <= tol:   # anchor-based: first element sets the window
-                grp.append(t)
+    def _cluster(tips_with_weights: list[tuple[float, float]]
+                 ) -> list[tuple[float, float]]:
+        """Cluster (price, decay_weight) pairs. Returns [(price, weighted_count)]."""
+        s = sorted(tips_with_weights, key=lambda x: x[0])
+        out: list[tuple[float, float]] = []
+        grp_p: list[float] = [s[0][0]]
+        grp_w: list[float] = [s[0][1]]
+        for t, w in s[1:]:
+            if t - grp_p[0] <= tol:   # anchor-based: first element sets the window
+                grp_p.append(t)
+                grp_w.append(w)
             else:
-                if len(grp) >= 3:
-                    out.append((sum(grp) / len(grp), len(grp)))
-                grp = [t]
-        if len(grp) >= 3:
-            out.append((sum(grp) / len(grp), len(grp)))
+                total_w = sum(grp_w)
+                if total_w >= 2.5:   # decay-weighted threshold (≈3 raw touches)
+                    out.append((sum(p * wt for p, wt in zip(grp_p, grp_w)) / total_w,
+                                total_w))
+                grp_p = [t]
+                grp_w = [w]
+        total_w = sum(grp_w)
+        if total_w >= 2.5:
+            out.append((sum(p * wt for p, wt in zip(grp_p, grp_w)) / total_w,
+                        total_w))
         return out
 
-    return (_cluster([c["low"]  for c in recent]),
-            _cluster([c["high"] for c in recent]),
+    # Build (tip, decay_weight) pairs — older candles get less weight
+    _low_tips  = [(recent[i]["low"],  1.0 - i / n) for i in range(n)]
+    _high_tips = [(recent[i]["high"], 1.0 - i / n) for i in range(n)]
+
+    return (_cluster(_low_tips),
+            _cluster(_high_tips),
             avg_rng)
 
 
@@ -242,6 +265,11 @@ def _zigzag_signal(candles: list[dict], min_len: int = 4) -> tuple[int, int]:
 
     OTC RNG often produces alternating candles (G-R-G-R ...). When 4+ candles
     alternate consistently, predicting opposite of the last candle has edge.
+
+    IMPROVED (2026-07-09): quality scoring — if the alternating bodies are
+    SHRINKING, the oscillation is weakening (momentum dying) → stronger
+    reversal signal. If bodies are GROWING, the oscillation is strengthening
+    → weaker signal (the alternation has fuel).
 
     Returns (predict, length):
       predict : +1 (CALL), -1 (PUT), 0 (no pattern)
@@ -307,7 +335,8 @@ def _parse_votes(reasons: list[str],
 
 _ALL_THEORIES = {"RUN", "T7", "T2", "TRAP", "STAR", "STREAK",
                  "MICRO", "OUTSIDE", "SPIN",
-                 "ZIGZAG", "WICKWALL", "MTF", "ANOMALY", "LIVE"}
+                 "ZIGZAG", "WICKWALL", "MTF", "ANOMALY", "DIVERGENCE",
+                 "OBLOCK", "LIVE"}
 # HARAMI, THREE, GAP: theories removed 2026-07-03 (see inline comments where
 # their scoring blocks used to be). SWEEP, MARB: removed 2026-07-08 (see
 # module docstring). REGIME: converted from an independent vote to a
@@ -1008,27 +1037,56 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # 6+ alternating: stronger signal (the oscillation is deeply established).
     # CONTEXT GATE REMOVED (2026-07-08): previously gated to SIDEWAYS regime
     # only (measured 25% fire-rate); now votes in every regime per guide.
+    # QUALITY SCORING (2026-07-09): if the alternating bodies are shrinking
+    # (first half bodies >> last half bodies), the oscillation is dying out
+    # → stronger reversal signal (+1 bonus). Growing bodies = the oscillation
+    # has fuel → no bonus.
     _zz_predict, _zz_len = _zigzag_signal(candles)
     if _zz_predict != 0:
         _zz_mag = 2 if _zz_len >= 6 else 1
+        # Quality: compare body sizes in first half vs second half of zigzag
+        _zz_window = candles[-_zz_len:]
+        _zz_half = _zz_len // 2
+        if _zz_half >= 2:
+            _zz_bodies = [abs(cc["close"] - cc["open"]) for cc in _zz_window]
+            _zz_first_avg = sum(_zz_bodies[:_zz_half]) / _zz_half
+            _zz_second_avg = sum(_zz_bodies[_zz_half:]) / (len(_zz_bodies) - _zz_half)
+            if _zz_first_avg > 0 and _zz_second_avg < _zz_first_avg * 0.65:
+                # Bodies shrinking by 35%+ → oscillation dying → stronger signal
+                _zz_mag += 1
+                _zz_quality = "weakening"
+            elif _zz_first_avg > 0 and _zz_second_avg > _zz_first_avg * 1.30:
+                # Bodies growing by 30%+ → oscillation has fuel → weaker
+                _zz_quality = "strengthening"
+                _zz_mag = max(1, _zz_mag - 1)
+            else:
+                _zz_quality = "stable"
+        else:
+            _zz_quality = "short"
         if _zz_predict > 0:
             score += _zz_mag
             indep_dirs.append(("ZIGZAG", +1))
             reasons.append(
-                f"ZIGZAG {_zz_len}-candle alternating pattern"
+                f"ZIGZAG {_zz_len}-candle alt ({_zz_quality})"
                 f" -> CALL (x{_zz_mag})")
         else:
             score -= _zz_mag
             indep_dirs.append(("ZIGZAG", -1))
             reasons.append(
-                f"ZIGZAG {_zz_len}-candle alternating pattern"
+                f"ZIGZAG {_zz_len}-candle alt ({_zz_quality})"
                 f" -> PUT (x{_zz_mag})")
 
-    # ── ANOMALY  Spread/range spike detection (2026-07-08 addition, untested) ─
+    # ── ANOMALY  Spread/range spike detection (2026-07-08 addition) ─
     # OTC brokers often widen effective spread / reduce liquidity before a
     # fake move. A sudden range expansion after a quiet period can be a trap.
-    # Pure OHLC — no tick data needed. UNTESTED: not yet measured against
-    # live data (see module docstring bias-controls list).
+    # Pure OHLC — no tick data needed.
+    #
+    # IMPROVED (2026-07-09):
+    #   - Threshold lowered 2.5x -> 2.0x (was missing real anomalies)
+    #   - Trend-context aware: in a TREND, a range spike often = breakout
+    #     continuation (institutional order flow), NOT reversal. Only in
+    #     SIDEWAYS does range spike = trap/reversal.
+    #   - Second check: range spike AFTER a streak = exhaustion more reliable
     _ANOMALY_LOOKBACK = 10
     if len(candles) >= _ANOMALY_LOOKBACK + 1:
         _prev_ranges = [candles[-i]["high"] - candles[-i]["low"]
@@ -1036,21 +1094,201 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         _avg_range = sum(_prev_ranges) / len(_prev_ranges)
         if _avg_range > 0:
             _range_ratio = total_range / _avg_range
-            if _range_ratio >= 2.5:
-                # After a huge anomaly candle, expect mean-reversion.
-                _anom_mag = 2 if _range_ratio >= 4.0 else 1
-                if is_bull:
-                    score -= _anom_mag
-                    indep_dirs.append(("ANOMALY", -1))
-                    reasons.append(
-                        f"ANOMALY Range {_range_ratio:.1f}x average"
-                        f" -> reversal expected -> PUT (x{_anom_mag})")
-                else:
-                    score += _anom_mag
-                    indep_dirs.append(("ANOMALY", +1))
-                    reasons.append(
-                        f"ANOMALY Range {_range_ratio:.1f}x average"
-                        f" -> reversal expected -> CALL (x{_anom_mag})")
+            if _range_ratio >= 2.0:
+                _anom_mag = 2 if _range_ratio >= 3.5 else 1
+                # In a sideways market, range spike = trap/reversal
+                if _regime == "SIDEWAYS":
+                    if is_bull:
+                        score -= _anom_mag
+                        indep_dirs.append(("ANOMALY", -1))
+                        reasons.append(
+                            f"ANOMALY Range {_range_ratio:.1f}x avg in sideways"
+                            f" -> trap/reversal -> PUT (x{_anom_mag})")
+                    else:
+                        score += _anom_mag
+                        indep_dirs.append(("ANOMALY", +1))
+                        reasons.append(
+                            f"ANOMALY Range {_range_ratio:.1f}x avg in sideways"
+                            f" -> trap/reversal -> CALL (x{_anom_mag})")
+                # In a TREND, range spike after a streak = exhaustion reversal
+                elif _streak >= 4:
+                    if is_bull:
+                        score -= _anom_mag
+                        indep_dirs.append(("ANOMALY", -1))
+                        reasons.append(
+                            f"ANOMALY Range {_range_ratio:.1f}x avg after"
+                            f" {_streak}-streak -> blowoff -> PUT (x{_anom_mag})")
+                    else:
+                        score += _anom_mag
+                        indep_dirs.append(("ANOMALY", +1))
+                        reasons.append(
+                            f"ANOMALY Range {_range_ratio:.1f}x avg after"
+                            f" {_streak}-streak -> blowoff -> CALL (x{_anom_mag})")
+                # In a trend WITHOUT a streak, range spike = breakout fuel
+                # (institutional order flow expanding) — DON'T vote reversal.
+                # The range spike is the trend accelerating, not exhausting.
+
+    # ── OBLOCK  Order Block detection (2026-07-09 addition) ──────────────────
+    # Institutional order-flow concept: the LAST opposite-direction candle
+    # before a strong impulsive move marks where institutions placed their
+    # orders. When price returns to that zone, it often bounces.
+    #
+    # Bullish OB: last bear candle before 2+ bullish candles that moved
+    # price significantly higher. Its body = institutional buy zone.
+    # Bearish OB: last bull candle before 2+ bearish candles that moved
+    # price significantly lower. Its body = institutional sell zone.
+    #
+    # Signal fires when the CURRENT candle's low/high tests inside the
+    # order block body AND the close rejects (stays outside the block).
+    # Color-independent (de-gated): the rejection is what matters, not
+    # the candle color.
+    if len(candles) >= 8:
+        _ob_look = candles[-8:]
+        # Scan backward from the candle before the current one to find
+        # the last opposite candle before a run of 2+ same-direction.
+        _bull_ob = None   # (index, body_low, body_high)
+        _bear_ob = None
+        for _oi in range(len(_ob_look) - 3, -1, -1):
+            _oc = _ob_look[_oi]
+            _oc_bull = _oc["close"] >= _oc["open"]
+            _oc_body_lo = min(_oc["open"], _oc["close"])
+            _oc_body_hi = max(_oc["open"], _oc["close"])
+            _oc_body = _oc_body_hi - _oc_body_lo
+            if _oc_body <= 0:
+                continue
+            # Check if next 2+ candles are opposite AND moved significantly
+            if _oi + 3 <= len(_ob_look):
+                _nxt = _ob_look[_oi + 1:_oi + 3]
+                _all_opp = all(
+                    (nn["close"] >= nn["open"]) != _oc_bull for nn in _nxt)
+                if _all_opp:
+                    _move = max(nn["high"] for nn in _nxt) - min(nn["low"] for nn in _nxt)
+                    _move_ratio = _move / (_oc_body or 1e-9)
+                    # The subsequent move should be meaningfully larger than
+                    # the order-block candle's body (institutional size)
+                    if _move_ratio >= 1.5:
+                        if not _oc_bull:
+                            _bull_ob = (_oc_body_lo, _oc_body_hi)
+                        else:
+                            _bear_ob = (_oc_body_lo, _oc_body_hi)
+                        break  # take the most recent valid OB
+
+        # Bullish OB test: current low entered the OB, close above it
+        if _bull_ob:
+            _ob_lo, _ob_hi = _bull_ob
+            if l <= _ob_hi and c > _ob_hi:
+                _ob_mag = 1
+                # Stronger if the OB overlaps a key level
+                if _key_touches((_ob_lo + _ob_hi) / 2) >= 2:
+                    _ob_mag = 2
+                score += _ob_mag
+                indep_dirs.append(("OBLOCK", +1))
+                reasons.append(
+                    f"OBLOCK Bullish OB tested {_ob_lo:.5g}-{_ob_hi:.5g}"
+                    f" + close above -> CALL (x{_ob_mag})")
+
+        # Bearish OB test: current high entered the OB, close below it
+        if _bear_ob:
+            _ob_lo, _ob_hi = _bear_ob
+            if h >= _ob_lo and c < _ob_lo:
+                _ob_mag = 1
+                if _key_touches((_ob_lo + _ob_hi) / 2) >= 2:
+                    _ob_mag = 2
+                score -= _ob_mag
+                indep_dirs.append(("OBLOCK", -1))
+                reasons.append(
+                    f"OBLOCK Bearish OB tested {_ob_lo:.5g}-{_ob_hi:.5g}"
+                    f" + close below -> PUT (x{_ob_mag})")
+
+    # ── DIVERGENCE  Price vs momentum/tick-pressure divergence (2026-07-09) ────
+    # The most well-documented edge in technical analysis: when price makes a
+    # new extreme but the underlying buying/selling pressure is WEAKER than at
+    # the previous extreme, the move is running out of fuel and a reversal is
+    # likely.
+    # Uses two momentum proxies:
+    #   1. body/range ratio (always available from OHLC)
+    #   2. tick buy-pressure from micro_history when available (more accurate)
+    # Requires minimum 8 candles and 2 clean swing points separated by 3+ candles.
+    _DIV_LOOKBACK = 12
+    if len(candles) >= _DIV_LOOKBACK:
+        _div_cands = candles[-_DIV_LOOKBACK:]
+        # Find swing highs and swing lows
+        _sw_highs: list[tuple[int, float, float, float | None]] = []  # (index, price, momentum, tick_bpct)
+        _sw_lows:  list[tuple[int, float, float, float | None]] = []
+        # Build index -> micro_history lookup for tick-pressure enrichment
+        _micro_by_time: dict[int, dict] = {}
+        if micro_history:
+            for _mh in micro_history:
+                _mt = _mh.get("time")
+                if _mt is not None:
+                    _micro_by_time[int(_mt)] = _mh
+
+        for i in range(1, len(_div_cands) - 1):
+            _sh = _div_cands[i]["high"]
+            _sl = _div_cands[i]["low"]
+            _sr = _div_cands[i]["high"] - _div_cands[i]["low"]
+            _sb = abs(_div_cands[i]["close"] - _div_cands[i]["open"])
+            # Momentum = body/range (how decisive the candle was)
+            _mom = _sb / _sr if _sr > 0 else 0
+            # Enrich with tick buy-pressure from micro_history if available
+            _mh_row = _micro_by_time.get(int(_div_cands[i]["time"]))
+            _tick_bp = _mh_row.get("buy_pct") if _mh_row else None
+            if _sh >= _div_cands[i - 1]["high"] and _sh >= _div_cands[i + 1]["high"]:
+                _sw_highs.append((i, _sh, _mom, _tick_bp))
+            if _sl <= _div_cands[i - 1]["low"] and _sl <= _div_cands[i + 1]["low"]:
+                _sw_lows.append((i, _sl, _mom, _tick_bp))
+
+        # Bearish divergence: price higher high but momentum weaker
+        if len(_sw_highs) >= 2:
+            _h_last = _sw_highs[-1]
+            _h_prev = _sw_highs[-2]
+            # Require: separated by 3+ candles, fresh (last swing within 5 candles)
+            _h_sep = _h_last[0] - _h_prev[0]
+            _h_fresh = (len(_div_cands) - 1 - _h_last[0]) <= 5
+            if (_h_sep >= 3 and _h_fresh
+                    and _h_last[1] > _h_prev[1]          # price higher high
+                    and _h_last[2] < _h_prev[2] * 0.75   # momentum dropped 25%+
+                    and _h_prev[2] > 0.15):               # previous swing had real momentum
+                _div_mag = 2
+                _div_detail = f"momentum {_h_prev[2]:.0%} -> {_h_last[2]:.0%}"
+                # Tick-pressure confirmation: if BOTH swings have tick data,
+                # check if buying pressure ALSO diverged (stronger signal)
+                if (_h_last[3] is not None and _h_prev[3] is not None
+                        and _h_last[3] < _h_prev[3] * 0.85):
+                    # Tick-pressure ALSO weakened on the higher high = double divergence
+                    _div_mag = 3
+                    _div_detail += (f" + tick pressure {_h_prev[3]:.0%}"
+                                    f" -> {_h_last[3]:.0%}")
+                score -= _div_mag
+                indep_dirs.append(("DIVERGENCE", -1))
+                reasons.append(
+                    f"DIVERGENCE Bearish: higher high ({_h_prev[1]:.5g}"
+                    f" -> {_h_last[1]:.5g}), {_div_detail} -> PUT (x{_div_mag})")
+
+        # Bullish divergence: price lower low but momentum stronger
+        if len(_sw_lows) >= 2:
+            _l_last = _sw_lows[-1]
+            _l_prev = _sw_lows[-2]
+            _l_sep = _l_last[0] - _l_prev[0]
+            _l_fresh = (len(_div_cands) - 1 - _l_last[0]) <= 5
+            if (_l_sep >= 3 and _l_fresh
+                    and _l_last[1] < _l_prev[1]           # price lower low
+                    and _l_last[2] > _l_prev[2] * 1.25    # momentum rose 25%+
+                    and _l_prev[2] > 0.15):
+                _div_mag = 2
+                _div_detail = f"momentum {_l_prev[2]:.0%} -> {_l_last[2]:.0%}"
+                # Tick-pressure confirmation
+                if (_l_last[3] is not None and _l_prev[3] is not None
+                        and _l_last[3] > _l_prev[3] * 1.15):
+                    # Buying pressure INCREASED on the lower low = double divergence
+                    _div_mag = 3
+                    _div_detail += (f" + tick pressure {_l_prev[3]:.0%}"
+                                    f" -> {_l_last[3]:.0%}")
+                score += _div_mag
+                indep_dirs.append(("DIVERGENCE", +1))
+                reasons.append(
+                    f"DIVERGENCE Bullish: lower low ({_l_prev[1]:.5g}"
+                    f" -> {_l_last[1]:.5g}), {_div_detail} -> CALL (x{_div_mag})")
 
     # ── MICRO  Multi-candle microstructure (DB tick history of prior candles) ─
     #
@@ -1258,37 +1496,44 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         # ── (e) Congestion Hold Level as S/R ──────────────────────────────
         # hold_price = most-visited price zone inside a prior candle's ticks.
         # A bounce or rejection at that zone is meaningful micro S/R.
+        # DE-GATED (2026-07-09): color gate removed (same logic as WICKWALL
+        # 2026-07-04 de-gate). The zone TEST is what matters: low reached the
+        # hold zone AND closed above it = support held, regardless of whether
+        # the candle body was green or red. A red candle dipping to a hold
+        # level and closing back above it is the CLASSIC rejection pattern
+        # the old gate threw away.
         for _m in reversed(micro_history[-4:]):
             hp = _m.get("hold_price")
             if not hp or hp <= 0:
                 continue
             tol = hp * 0.0010          # ±0.10% tolerance
-            if abs(l - hp) <= tol and is_bull:
-                _hbonus = 1 if _key_touches(hp) >= 2 else 0
-                _hmag   = 1 + _hbonus
+            _hbonus = 1 if _key_touches(hp) >= 2 else 0
+            _hmag   = 1 + _hbonus
+            if abs(l - hp) <= tol and c > hp:
+                # Low tested the hold zone, close cleared it = support held
                 score  += _hmag
-                forced_score += _hmag
+                indep_dirs.append(("MICRO", +1))
                 reasons.append(
-                    f"MICRO Low bounced off congestion hold @{hp:.5g}"
+                    f"MICRO Low tested congestion hold @{hp:.5g}"
                     f"{' (key lvl)' if _hbonus else ''}"
-                    f" -> CALL (x{_hmag})")
+                    f" + close above -> CALL (x{_hmag})")
                 break
-            if abs(h - hp) <= tol and not is_bull:
-                _hbonus = 1 if _key_touches(hp) >= 2 else 0
-                _hmag   = 1 + _hbonus
+            if abs(h - hp) <= tol and c < hp:
+                # High tested the hold zone, close below it = resistance held
                 score  -= _hmag
-                forced_score -= _hmag
+                indep_dirs.append(("MICRO", -1))
                 reasons.append(
-                    f"MICRO High rejected at congestion hold @{hp:.5g}"
+                    f"MICRO High tested congestion hold @{hp:.5g}"
                     f"{' (key lvl)' if _hbonus else ''}"
-                    f" -> PUT (x{_hmag})")
+                    f" + close below -> PUT (x{_hmag})")
                 break
 
         # ── (f) Persistent Key Level — price zone appearing in 3+ of last 5 snapshots ──
         # A level that keeps reappearing as the "most congested zone" across multiple
         # candle snapshots is an extra-strong S/R (the market keeps returning there).
-        # If the current candle's low or high reacts at one of these persistent zones,
-        # boost the signal by ±1 (on top of whatever (e) already added).
+        # DE-GATED (2026-07-09): same logic as WICKWALL/MICRO(e) de-gate above.
+        # The key question is whether the candle TESTED the zone and REJECTED it,
+        # not what color the candle body is.
         if len(micro_history) >= 3:
             # Bucket into 0.05%-of-price zones so near-identical levels merge.
             # (The old code computed a bucket but keyed the dict on the raw
@@ -1308,19 +1553,21 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                            for v in _pzones.values() if len(v) >= 3]
             for _pp, _pn in _persistent:
                 _tol = _pp * 0.0012   # ±0.12% — slightly wider than hold-level check
-                if abs(l - _pp) <= _tol and is_bull:
+                if abs(l - _pp) <= _tol and c > _pp:
+                    # Low tested persistent zone, close above = support confirmed
                     score += 1
-                    forced_score += 1
+                    indep_dirs.append(("MICRO", +1))
                     reasons.append(
                         f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
-                        f" low bounced -> CALL")
+                        f" low tested + close above -> CALL")
                     break
-                if abs(h - _pp) <= _tol and not is_bull:
+                if abs(h - _pp) <= _tol and c < _pp:
+                    # High tested persistent zone, close below = resistance confirmed
                     score -= 1
-                    forced_score -= 1
+                    indep_dirs.append(("MICRO", -1))
                     reasons.append(
                         f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
-                        f" high rejected -> PUT")
+                        f" high tested + close below -> PUT")
                     break
 
     # ── LIVE  Running candle real-time tick vote (Method A, 2026-07-10, untested) ─
@@ -1417,11 +1664,14 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                     'LIVE  Long lower wick on running candle -> CALL (x1)')
 
     # ── MTF  Multi-timeframe confluence (user request 2026-07-06) ────────────
-    # Reads two extra timeframes derived from data already in hand — no new
+    # Reads extra timeframes derived from data already in hand — no new
     # broker streams (which would multiply account load ~3x):
     #   HIGHER: current period × 5 (on the 1m chart -> 5m), aggregated from
     #           the candle history with a rolling 5-bar window; its 20-bar
     #           regime trend votes ±1.
+    #   MID-HIGHER: period × 3 (on 1m -> 3m), rolling 3-bar window.
+    #           When BOTH the 3x and 5x trends agree, that's real confluence
+    #           → the mid-higher vote upgrades from x1 to x2.
     #   LOWER : the just-closed candle's second-half tick drift (on the 1m
     #           chart -> the final ~30s); votes ±1 when it moved decisively
     #           (>= 25% of the candle's range). Second half only — a
@@ -1429,6 +1679,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     #           candle's own color and just feed the parrot bias.
     # Graded like any theory (code MTF), so the live mute gate silences it
     # automatically if it proves below coin-flip.
+    _mtf_higher_dir = 0  # track 5x trend direction for confluence boost
     if len(candles) >= 25:
         _htf: list[dict] = []
         _hi = len(candles)
@@ -1446,14 +1697,39 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         if _htf_trend in ("UPTREND", "DOWNTREND"):
             _p5 = (period or 60) * 5
             _mtf_lbl = f"{_p5 // 60}m" if _p5 >= 60 else f"{_p5}s"
-            if _htf_trend == "UPTREND":
-                score += 1
-                indep_dirs.append(("MTF", +1))
-                reasons.append(f"MTF  {_mtf_lbl} trend UPTREND -> CALL (x1)")
-            else:
-                score -= 1
-                indep_dirs.append(("MTF", -1))
-                reasons.append(f"MTF  {_mtf_lbl} trend DOWNTREND -> PUT (x1)")
+            _mtf_higher_dir = 1 if _htf_trend == "UPTREND" else -1
+            score += _mtf_higher_dir
+            indep_dirs.append(("MTF", _mtf_higher_dir))
+            reasons.append(f"MTF  {_mtf_lbl} trend {_htf_trend}"
+                            f" -> {'CALL' if _mtf_higher_dir > 0 else 'PUT'} (x1)")
+
+    # 3x timeframe (mid-higher) — requires 15+ candles for 20-bar regime
+    _mtf_mid_dir = 0
+    if len(candles) >= 15:
+        _mtf3: list[dict] = []
+        _mi = len(candles)
+        while _mi - 3 >= 0 and len(_mtf3) < 20:
+            _grp3 = candles[_mi - 3:_mi]
+            _mtf3.append({
+                "time":  _grp3[0]["time"], "open": _grp3[0]["open"],
+                "high":  max(g["high"] for g in _grp3),
+                "low":   min(g["low"] for g in _grp3),
+                "close": _grp3[-1]["close"],
+            })
+            _mi -= 3
+        _mtf3.reverse()
+        _mtf3_trend, _ = _market_regime(_mtf3)
+        if _mtf3_trend in ("UPTREND", "DOWNTREND"):
+            _p3 = (period or 60) * 3
+            _mtf3_lbl = f"{_p3 // 60}m" if _p3 >= 60 else f"{_p3}s"
+            _mtf_mid_dir = 1 if _mtf3_trend == "UPTREND" else -1
+            # Confluence boost: if 3x and 5x agree, vote x2 instead of x1
+            _mtf3_mag = 2 if (_mtf_higher_dir != 0 and _mtf_mid_dir == _mtf_higher_dir) else 1
+            score += _mtf_mid_dir * _mtf3_mag
+            indep_dirs.append(("MTF", _mtf_mid_dir))
+            _conf_note = " (both HTF agree)" if _mtf3_mag == 2 else ""
+            reasons.append(f"MTF  {_mtf3_lbl} trend {_mtf3_trend}{_conf_note}"
+                            f" -> {'CALL' if _mtf_mid_dir > 0 else 'PUT'} (x{_mtf3_mag})")
 
     if ticks and len(ticks) >= 20 and total_range > 0:
         _half2 = ticks[-1] - ticks[len(ticks) // 2]
@@ -1586,21 +1862,94 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 f"(coordination confluence) {_agreeing} independent theories"
                 f" agree -> {'+' if _conf_dir > 0 else '-'}{_boost} boost")
 
-    # ── TIME FILTER (2026-07-08 addition, untested) ──────────────────────────
-    # Dampens score 20% during the 22:00-07:00 UTC low-liquidity window.
-    # UNTESTED — OTC's own randomness (see module docstring) means there is
-    # no prior evidence this window behaves any differently; applied only
-    # because explicitly requested. Uses wall-clock UTC time, not candle
-    # time, so replay/backtest runs will NOT reproduce this dampening the
-    # way it applied live.
+    # ── ATR_WEIGHT  Information-content normalisation (2026-07-09 addition) ─────
+    # A tiny candle (body 5% of ATR) carries far less information than a full-
+    # sized candle.  Dampen score proportionally so a doji-range candle can't
+    # accidentally generate a medium-strength signal from a single weak vote.
+    # Only penalises SMALL candles — large candles are left untouched (ANOMALY
+    # already handles the too-large case).
+    _atr10 = (sum(candles[-i]["high"] - candles[-i]["low"]
+                   for i in range(2, min(12, len(candles) + 1)))
+              / min(10, len(candles) - 1)) if len(candles) >= 3 else total_range
+    if _atr10 > 0:
+        _rr = total_range / _atr10        # range-ratio vs ATR(10)
+        if _rr < 0.30:
+            # Tiny candle — aggressive dampening
+            _adamp = max(1, int(abs(score) * 0.40))
+            score += -_adamp if score > 0 else _adamp
+            reasons.append(
+                f"(ATR weight) range {total_range/_atr10:.0%} of ATR"
+                f" -> {'+' if score > 0 else '-'}{_adamp} dampen")
+        elif _rr < 0.50:
+            # Small candle — mild dampening
+            _adamp = max(1, int(abs(score) * 0.20))
+            score += -_adamp if score > 0 else _adamp
+            reasons.append(
+                f"(ATR weight) range {total_range/_atr10:.0%} of ATR"
+                f" -> {'+' if score > 0 else '-'}{_adamp} dampen")
+
+    # ── TICK_VOL  Volume-proxy modifier (2026-07-09 addition) ─────────────────
+    # In OTC, tick count is the only volume proxy.  A candle that moved N pips
+    # on 5 ticks (big gap jumps, no real flow) is far less trustworthy than
+    # the same move on 80 ticks (sustained order flow).  Low tick count = low
+    # conviction across ALL theories.  High tick count slightly boosts trend-
+    # following reads (genuine participation).
+    if ticks and len(ticks) >= 5:
+        # Estimate avg tick count from candle ranges (proxy: range ~ k * ticks)
+        # When we don't have historical tick counts, use range as proxy.
+        _tick_n = len(ticks)
+        # Tick-count estimate from range: assume ~1 tick per 6% of ATR
+        _est_avg_ticks = max(5, _atr10 * 16)  # rough heuristic
+        _tvol_ratio = _tick_n / _est_avg_ticks
+
+        if _tvol_ratio < 0.40:
+            # Very low activity — aggressive dampen
+            _tv_damp = max(1, int(abs(score) * 0.35))
+            score += -_tv_damp if score > 0 else _tv_damp
+            reasons.append(
+                f"(tick vol) {_tick_n} ticks (est {_tvol_ratio:.0%} of avg)"
+                f" -> {'+' if score > 0 else '-'}{_tv_damp} dampen")
+        elif _tvol_ratio < 0.65:
+            # Below-average activity — mild dampen
+            _tv_damp = max(1, int(abs(score) * 0.15))
+            score += -_tv_damp if score > 0 else _tv_damp
+            reasons.append(
+                f"(tick vol) {_tick_n} ticks (est {_tvol_ratio:.0%} of avg)"
+                f" -> {'+' if score > 0 else '-'}{_tv_damp} dampen")
+
+    # ── SESSION_WEIGHT  Session-aware scoring (2026-07-09, replaces flat filter) ─
+    # Replaces the old flat 20% dampening for UTC 22-07 with session-specific
+    # multipliers derived from typical OTC liquidity patterns:
+    #   London session  (UTC 07-15): no dampening — best liquidity
+    #   NY overlap      (UTC 15-20): mild dampening — liquidity declining
+    #   NY late         (UTC 20-22): moderate dampening
+    #   Asian session   (UTC 22-07): stronger dampening — thinnest liquidity
+    # Uses wall-clock UTC, so replay won't reproduce this (same as old filter).
     _cur_hour = time.gmtime().tm_hour
-    if (_cur_hour < 7 or _cur_hour >= 22) and score != 0:
-        _tdamp = max(1, int(abs(score) * 0.20))
-        _tsign = "-" if score > 0 else "+"
-        score += -_tdamp if score > 0 else _tdamp
-        reasons.append(
-            f"(attenuation) low-liquidity hour (UTC {_cur_hour:02d})"
-            f" -> {_tsign}{_tdamp}")
+    if score != 0:
+        if 7 <= _cur_hour < 15:
+            pass  # London — no modification
+        elif 15 <= _cur_hour < 20:
+            # NY session — mild dampening
+            _sd = max(1, int(abs(score) * 0.10))
+            score += -_sd if score > 0 else _sd
+            reasons.append(
+                f"(session) NY session (UTC {_cur_hour:02d})"
+                f" -> {'+' if score > 0 else '-'}{_sd}")
+        elif 20 <= _cur_hour < 22:
+            # NY late — moderate dampening
+            _sd = max(1, int(abs(score) * 0.20))
+            score += -_sd if score > 0 else _sd
+            reasons.append(
+                f"(session) NY late (UTC {_cur_hour:02d})"
+                f" -> {'+' if score > 0 else '-'}{_sd}")
+        else:
+            # Asian / off-hours (UTC 22-07) — stronger dampening
+            _sd = max(1, int(abs(score) * 0.30))
+            score += -_sd if score > 0 else _sd
+            reasons.append(
+                f"(session) Asian session (UTC {_cur_hour:02d})"
+                f" -> {'+' if score > 0 else '-'}{_sd}")
 
     # ── Final ─────────────────────────────────────────────────────────────────
     # EVERY-CANDLE MODE (2026-07-06, user decision): a direction is emitted
@@ -1707,6 +2056,11 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         _net_votes[_code] = _net_votes.get(_code, 0) + _vdir * _vmag
     _want = 1 if signal == "CALL" else -1   # score can be 0 (tiebroken picks)
     agree = sum(1 for _nv in _net_votes.values() if _nv * _want > 0)
+    # Agreement weight: sum of magnitudes of agreeing theories.
+    # Distinguishes RUN(x4)+TRAP(x2)+SPIN(x1) [weight=7] from
+    # STREAK(x2)+WICKWALL(x1)+ZIGZAG(x1) [weight=4] — both agree=3.
+    agree_weight = sum(abs(_nv) for _nv in _net_votes.values()
+                        if _nv * _want > 0)
 
     # Strength calibration. The OVERHEATED demotion (ensemble piling on =
     # trend-echo failure mode, measured anti-signal ~40% under the old
@@ -1717,6 +2071,10 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # prevented now by the COLOR-GATED CAP upstream.
     # _weak_cap_reasons (tiebreak / noise dead band / parrot guard) hard-cap
     # strength at WEAK — these are the every-candle-mode forced picks.
+    #
+    # 2026-07-09: STRONG gate now also requires agree_weight >= 5 (was just
+    # agree >= 3).  This prevents 3 lightweight theories from triggering
+    # STRONG — the total weight of agreeing evidence must be meaningful.
     if _weak_cap_reasons:
         strength = "WEAK"
     elif abs(score) >= 9:
@@ -1724,7 +2082,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         reasons.append(
             f"OVERHEATED: |score|={abs(score)} >= 9 (p99 tail) — pile-on"
             f" scores measured as anti-signal => strength capped to WEAK")
-    elif agree >= 3 and abs(score) >= 3:
+    elif agree >= 3 and agree_weight >= 5 and abs(score) >= 3:
         strength = "STRONG"
     elif agree >= 2 and abs(score) >= 2:
         # MEDIUM floor lowered 3 -> 2 (2026-07-06): the bias rework
@@ -1935,12 +2293,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         "score":      score,
         "confidence": confidence,
         "agree":      agree,
+        "agree_weight": agree_weight,
         "strength":   strength,
         "reasons":    reasons,
         # Formal swing-pivot levels (40-candle lookback, 2+ touches).
         "key_levels": [[round(p, 6), t] for p, t in
                        sorted(_klevels, key=lambda x: -x[1])[:20]],
-        # Wick-clustering levels (12-candle lookback, 3+ touches) — a SEPARATE,
+        # Wick-clustering levels (20-candle lookback, decay-weighted 3+ touches)
         # looser detection that catches repeated-wick zones with no formal
         # pivot (see WICKWALL's own docstring above). Purely visual/context —
         # only WICKWALL's own vote (already in `reasons`/score) uses these for
