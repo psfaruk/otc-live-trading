@@ -1005,6 +1005,20 @@ function updateSignalUI(pred) {
     }
   }
 
+  // RUNCONF badge (Method B strength gate, 2026-07-10, untested)
+  const runconfBadge = document.getElementById('runconf-badge');
+  if (runconfBadge) {
+    if (pred._runconf_tag) {
+      runconfBadge.textContent = pred._runconf_tag === 'RUNCONF_UP'
+        ? '↑ Strength upgraded' : '↓ Strength demoted';
+      runconfBadge.className = 'runconf-badge ' +
+        (pred._runconf_tag === 'RUNCONF_UP' ? 'up' : 'down');
+      runconfBadge.classList.remove('hidden');
+    } else {
+      runconfBadge.classList.add('hidden');
+    }
+  }
+
   // Zigzag detection display (in micro panel)
   const zzEl = document.getElementById('micro-zigzag');
   if (zzEl) {

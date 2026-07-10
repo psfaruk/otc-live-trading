@@ -56,8 +56,11 @@ Note: Academic research (and this account's own logged history) confirms
       is what separates evidence from forced picks.
 """
 import math
+import os
 import re
 import time
+
+ENABLE_LIVE_THEORY = os.environ.get('ENABLE_LIVE_THEORY', '1') == '1'
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -304,7 +307,7 @@ def _parse_votes(reasons: list[str],
 
 _ALL_THEORIES = {"RUN", "T7", "T2", "TRAP", "STAR", "STREAK",
                  "MICRO", "OUTSIDE", "SPIN",
-                 "ZIGZAG", "WICKWALL", "MTF", "ANOMALY"}
+                 "ZIGZAG", "WICKWALL", "MTF", "ANOMALY", "LIVE"}
 # HARAMI, THREE, GAP: theories removed 2026-07-03 (see inline comments where
 # their scoring blocks used to be). SWEEP, MARB: removed 2026-07-08 (see
 # module docstring). REGIME: converted from an independent vote to a
@@ -327,7 +330,8 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 micro_history: list[dict] | None = None,
                 period: int | None = None,
                 muted: dict[str, str] | None = None,
-                asset: str | None = None) -> dict:
+                asset: str | None = None,
+                running_ticks: list[float] | None = None) -> dict:
     """
     Predict next candle direction from the just-closed candle.
 
@@ -352,6 +356,9 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     asset         : asset symbol, e.g. "EURUSD_otc" — only used to key the
                     signal-cooldown check (needs period too). Optional;
                     cooldown is skipped entirely when omitted.
+    running_ticks : tick values from the CURRENTLY OPEN (not yet closed)
+                    candle, if available — feeds the LIVE theory. Optional;
+                    LIVE is skipped when omitted or too short.
     Returns : {signal, score, confidence, agree, strength, reasons}
     """
     # MAX_SCORE calibrates the confidence% shown to the user (confidence =
@@ -1315,6 +1322,99 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                         f"MICRO Persistent S/R @{_pp:.5g} (seen {_pn}x)"
                         f" high rejected -> PUT")
                     break
+
+    # ── LIVE  Running candle real-time tick vote (Method A, 2026-07-10, untested) ─
+    # Uses the SAME logic as RUN theory but on the RUNNING candle that
+    # started AFTER the just-closed one. Returns its OWN votes — they add
+    # to the score just like any other theory.
+    if running_ticks and len(running_ticks) >= 15 and ENABLE_LIVE_THEORY:
+        _rt = running_ticks
+        _r_up = sum(1 for i in range(1, len(_rt)) if _rt[i] > _rt[i-1])
+        _r_dn = sum(1 for i in range(1, len(_rt)) if _rt[i] < _rt[i-1])
+        _r_tot = _r_up + _r_dn
+        _r_bpct = (_r_up / _r_tot) if _r_tot else 0.5
+
+        _r_open = _rt[0]
+        _r_close = _rt[-1]
+        _r_hi = max(_rt)
+        _r_lo = min(_rt)
+        _r_range = _r_hi - _r_lo
+        _r_close_pos = ((_r_close - _r_lo) / _r_range) if _r_range > 0 else 0.5
+        _r_bull_closed = _r_close >= _r_open
+
+        # (1) LIVE ABSORPTION — strongest signal (mirrors RUN x4 logic)
+        _r_eff_buyer  = _r_bpct >= 0.60
+        _r_eff_seller = _r_bpct <= 0.40
+        _r_res_buyer  = _r_close_pos >= 0.72
+        _r_res_seller = _r_close_pos <= 0.20
+
+        if _r_res_buyer and _r_eff_seller:
+            # Closed UP but sellers pushed — reversal -> PUT
+            score -= 3
+            indep_dirs.append(('LIVE', -1))
+            reasons.append(
+                f'LIVE  ABSORPTION on running candle: closed up but '
+                f'sellers pushed ({(1-_r_bpct):.0%}) -> PUT (x3)')
+        elif _r_res_seller and _r_eff_buyer:
+            # Closed DOWN but buyers pushed — reversal -> CALL
+            score += 3
+            indep_dirs.append(('LIVE', +1))
+            reasons.append(
+                f'LIVE  ABSORPTION on running candle: closed down but '
+                f'buyers pushed ({_r_bpct:.0%}) -> CALL (x3)')
+
+        # (2) LIVE MOMENTUM — three phases all same direction = continuation
+        _n = len(_rt)
+        _t3 = max(_n // 3, 1)
+        _r_early = _rt[_t3] - _rt[0]
+        _r_mid   = _rt[2*_t3] - _rt[_t3]
+        _r_late  = _rt[-1] - _rt[2*_t3]
+        if _r_early > 0 and _r_mid > 0 and _r_late > 0:
+            # All 3 phases UP — strong continuation
+            score += 1
+            forced_score += 1
+            reasons.append('LIVE  3-phase UP momentum -> CALL (x1)')
+        elif _r_early < 0 and _r_mid < 0 and _r_late < 0:
+            # All 3 phases DOWN — strong continuation
+            score -= 1
+            forced_score -= 1
+            reasons.append('LIVE  3-phase DOWN momentum -> PUT (x1)')
+
+        # (3) LIVE INVASION — final ~1/6 ticks moving opposite to close
+        _fn = max(_n // 6, 6)
+        _fin = _rt[-_fn:]
+        _fu = sum(1 for i in range(1, len(_fin)) if _fin[i] > _fin[i-1])
+        _fd = sum(1 for i in range(1, len(_fin)) if _fin[i] < _fin[i-1])
+        _ftot = _fu + _fd
+        if _ftot >= 3:
+            _fbp = _fu / _ftot
+            if _r_bull_closed and _fbp <= 0.30:
+                score -= 2
+                indep_dirs.append(('LIVE', -1))
+                reasons.append(
+                    f'LIVE  Sellers invaded final {_fn} ticks ({1-_fbp:.0%})'
+                    f' of a green running candle -> PUT (x2)')
+            elif (not _r_bull_closed) and _fbp >= 0.70:
+                score += 2
+                indep_dirs.append(('LIVE', +1))
+                reasons.append(
+                    f'LIVE  Buyers invaded final {_fn} ticks ({_fbp:.0%})'
+                    f' of a red running candle -> CALL (x2)')
+
+        # (4) LIVE WICK REJECTION — running candle's long wick
+        if _r_range > 0:
+            _r_upper_wick = _r_hi - max(_r_open, _r_close)
+            _r_lower_wick = min(_r_open, _r_close) - _r_lo
+            if _r_upper_wick > _r_range * 0.45:
+                score -= 1
+                indep_dirs.append(('LIVE', -1))
+                reasons.append(
+                    'LIVE  Long upper wick on running candle -> PUT (x1)')
+            if _r_lower_wick > _r_range * 0.45:
+                score += 1
+                indep_dirs.append(('LIVE', +1))
+                reasons.append(
+                    'LIVE  Long lower wick on running candle -> CALL (x1)')
 
     # ── MTF  Multi-timeframe confluence (user request 2026-07-06) ────────────
     # Reads two extra timeframes derived from data already in hand — no new

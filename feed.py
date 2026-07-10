@@ -38,6 +38,12 @@ import db as _db
 # vary by broker account/region.
 PAYOUT_FLOOR = int(os.environ.get("QX_PAYOUT_FLOOR", "81"))
 
+# Method A (LIVE running-candle theory) / Method B (strength gating) rollout
+# flags — both untested, added 2026-07-10. Zero-redeploy killswitch: set
+# either to "0" via the platform's env var UI to fall back to prior behavior.
+ENABLE_LIVE_THEORY   = os.environ.get("ENABLE_LIVE_THEORY",   "1") == "1"
+ENABLE_STRENGTH_GATE = os.environ.get("ENABLE_STRENGTH_GATE", "1") == "1"
+
 # ── Fallback display-name helper ─────────────────────────────────────────────
 def _api_to_display(api_name: str) -> str:
     """Convert a Quotex forex asset code to a readable display string, e.g.
@@ -224,6 +230,13 @@ class _AssetStream:
     interested_cids: set = field(default_factory=set)   # viewer client-ids watching
     idle_since: float | None = None
     created_at: float = field(default_factory=time.time)
+    # Snapshot of the (closed candles, just-closed-candle ticks) that fed the
+    # LAST _run_eoc call — reused by the LIVE-theory periodic re-eval so it
+    # can re-score with fresh running_ticks without re-deriving stale state
+    # from stream.ticks, which has since been cleared for the new candle.
+    base_candles: list = field(default_factory=list)
+    base_ticks: list = field(default_factory=list)
+    _live_reeval_ticks: int = 0   # last tick-count LIVE re-eval fired at
 
 
 # ── Feed ──────────────────────────────────────────────────────────────────────
@@ -685,7 +698,9 @@ class QuotexFeed:
     # ── EOC helpers ──────────────────────────────────────────────────────────
 
     def _analyze_core(self, asset: str, period: int, candles: list[dict],
-                      ticks: list[float]) -> tuple[dict | None, list]:
+                      ticks: list[float],
+                      running_ticks: list[float] | None = None
+                      ) -> tuple[dict | None, list]:
         """
         Shared EOC analysis: pure analyze_eoc theory blend, nothing else.
         Used by the watched asset (via _run_eoc) AND background trackers, so
@@ -709,16 +724,26 @@ class QuotexFeed:
                              micro_history=micro_hist,
                              period=period,
                              muted=self._muted_theories,
-                             asset=asset)
+                             asset=asset,
+                             running_ticks=running_ticks if ENABLE_LIVE_THEORY else None)
         return result, micro_hist
 
     def _run_eoc(self, stream: _AssetStream,
                 actual_open: float | None = None) -> dict | None:
         closed = stream.candles
+        base_ticks = list(stream.ticks)
+        # running_ticks=None here: the NEW candle's ticks are empty at this
+        # exact moment (they accumulate after this call). LIVE theory picks
+        # up once ticks come in, via the periodic re-eval in the stream loop.
         result, micro_hist = self._analyze_core(
-            stream.asset, stream.period, closed, list(stream.ticks))
+            stream.asset, stream.period, closed, base_ticks,
+            running_ticks=None)
         if result is None:
             return None
+        # Snapshot for the periodic LIVE-theory re-eval (see stream loop).
+        stream.base_candles = closed
+        stream.base_ticks   = base_ticks
+        stream._live_reeval_ticks = 0
 
         # Chop guard: this exact (regime, zone) has been wrong ZONE_LOSS_GUARD+
         # times in a row — a spot that's proven itself unreadable. Under
@@ -860,6 +885,23 @@ class QuotexFeed:
                     tags.append("STBIAS_" + (
                         "RIGHT" if (_ms["bias"] == "CALL") == actual_up
                         else "WRONG"))
+
+            # Method B (2026-07-10, untested): log whether the running-candle
+            # strength gate fired on this prediction, and whether the gate's
+            # implied call (confirming = same direction, opposing = flip)
+            # matched the actual outcome — the only honest way to learn if
+            # RUNCONF gating tracks real accuracy before trusting it further.
+            _runconf_tag = (prediction or {}).get("_runconf_tag")
+            if _runconf_tag:
+                tags.append(_runconf_tag)   # RUNCONF_UP or RUNCONF_DOWN
+                if not is_draw:
+                    _gate_correct = (
+                        (_runconf_tag == "RUNCONF_UP"   and actual_up ==
+                         (sig == "CALL")) or
+                        (_runconf_tag == "RUNCONF_DOWN" and actual_up !=
+                         (sig == "CALL"))
+                    )
+                    tags.append("RUNCONF_" + ("RIGHT" if _gate_correct else "WRONG"))
 
             _atr_note = (f" ({abs(move) / atr * 100:.0f}% of ATR)"
                          if atr > 0 else "")
@@ -1139,6 +1181,59 @@ class QuotexFeed:
            (pred == "PUT"  and running_dir == "DOWN"):
             return "CONFIRMING"
         return "OPPOSING"
+
+    def _apply_strength_gate(self, stream: _AssetStream,
+                             prediction: dict) -> dict:
+        """
+        Method B (2026-07-10, untested) — gate prediction strength using the
+        running candle's tick confirmation. Returns a NEW prediction dict
+        (does not mutate the input).
+
+        Decision matrix:
+          WEAK   + CONFIRMING + 10+ ticks -> MEDIUM
+          MEDIUM + OPPOSING   + 10+ ticks -> WEAK
+          STRONG + OPPOSING   + 10+ ticks -> MEDIUM
+        All other cases: strength unchanged.
+        """
+        if not prediction or prediction.get("signal") not in ("CALL", "PUT"):
+            return prediction
+
+        conf = self._running_confirmation(stream)
+        if conf is None:
+            return prediction
+
+        tick_count = len(stream.ticks)
+        if tick_count < 10:
+            return prediction  # not enough live evidence yet
+
+        current = prediction.get("strength", "WEAK")
+        new_strength = current
+        gate_tag = None
+        gate_reason = None
+
+        if current == "WEAK" and conf == "CONFIRMING":
+            new_strength = "MEDIUM"
+            gate_tag = "RUNCONF_UP"
+            gate_reason = (f"RUNCONF: WEAK + 10+ confirming ticks "
+                          f"({tick_count}) -> upgraded to MEDIUM")
+        elif current == "MEDIUM" and conf == "OPPOSING":
+            new_strength = "WEAK"
+            gate_tag = "RUNCONF_DOWN"
+            gate_reason = (f"RUNCONF: MEDIUM + 10+ opposing ticks "
+                          f"({tick_count}) -> demoted to WEAK")
+        elif current == "STRONG" and conf == "OPPOSING":
+            new_strength = "MEDIUM"
+            gate_tag = "RUNCONF_DOWN"
+            gate_reason = (f"RUNCONF: STRONG + 10+ opposing ticks "
+                          f"({tick_count}) -> demoted to MEDIUM")
+        else:
+            return prediction  # no change
+
+        new_pred = dict(prediction)
+        new_pred["strength"] = new_strength
+        new_pred["reasons"] = [*prediction.get("reasons", []), gate_reason]
+        new_pred["_runconf_tag"] = gate_tag
+        return new_pred
 
     def _running_candle(self, stream: _AssetStream) -> dict:
         op = stream.candle_open_price
@@ -1529,6 +1624,38 @@ class QuotexFeed:
                     # rendered from tick updates and does not need to overwrite
                     # the last completed bar in history.
 
+                    # ── LIVE theory periodic re-eval (Method A, 2026-07-10, untested) ──
+                    # Re-run analyze_eoc with the running candle's own ticks
+                    # every ~30 ticks so the LIVE vote can update mid-candle.
+                    # Reuses the (closed candles, just-closed ticks) snapshot
+                    # taken by _run_eoc at candle-open — stream.ticks now
+                    # holds the NEW (still-open) candle's ticks instead.
+                    pred_changed = False
+                    if (ENABLE_LIVE_THEORY and stream.base_candles
+                            and len(stream.ticks) >= 15
+                            and len(stream.ticks) - stream._live_reeval_ticks >= 30):
+                        try:
+                            fresh, _ = self._analyze_core(
+                                stream.asset, stream.period,
+                                stream.base_candles, stream.base_ticks,
+                                running_ticks=list(stream.ticks))
+                            stream._live_reeval_ticks = len(stream.ticks)
+                            if fresh and fresh.get("signal") in ("CALL", "PUT"):
+                                stream.prediction = {
+                                    **(stream.prediction or {}), **fresh}
+                                pred_changed = True
+                        except Exception as exc:
+                            print(f"[feed] LIVE re-eval error "
+                                  f"({stream.asset}@{stream.period}s): {exc}")
+
+                    # ── Strength gate (Method B, 2026-07-10, untested) ──────────
+                    if (ENABLE_STRENGTH_GATE and stream.prediction
+                            and stream.prediction.get("signal") != "NEUTRAL"):
+                        gated = self._apply_strength_gate(stream, stream.prediction)
+                        if gated is not stream.prediction:
+                            stream.prediction = gated
+                            pred_changed = True
+
                     # Skip broadcast if open price is still 0 (no valid tick yet)
                     # — prevents LightweightCharts "Value is null" on the client
                     if stream.candle_open_price > 0:
@@ -1541,9 +1668,9 @@ class QuotexFeed:
                             "micro":         self._analyze_microstructure(
                                                  stream.ticks, stream.candle_open_price),
                         }
-                        # Carry the re-anchored prediction so the client redraws
-                        # it from the true open on this first real tick.
-                        if reanchored:
+                        # Carry the re-anchored/re-evaluated/gated prediction
+                        # so the client redraws its signal panel from it.
+                        if reanchored or pred_changed:
                             msg["prediction"] = stream.prediction
                         await self._broadcast(msg)
 
