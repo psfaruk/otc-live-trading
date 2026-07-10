@@ -1975,6 +1975,26 @@ img { max-width: 100%; display: block; }
   line-height: 1.8;
 }
 
+/* This codebase has no global .hidden rule — every JS-toggled element needs
+   its own (see project history: the same gap bit #upgrade-placeholder once
+   before). #upgrade-placeholder/#side-panel-detail/#signals-mstate-wrap
+   toggle .hidden by account tier in chart.js's _loadMe() but had no CSS
+   backing it, so the tier gate was a permanent no-op — normal AND
+   admin/premium accounts saw the same locked "Premium analysis" card. */
+#upgrade-placeholder.hidden,
+#side-panel-detail.hidden,
+#signals-mstate-wrap.hidden,
+#accuracy-wrap.hidden,
+#admin-card.hidden,
+#chart-loading.hidden,
+#home-promos.hidden,
+#notif-badge.hidden,
+#signal-bar.hidden,
+#signals-last.hidden,
+.micro-tag.hidden {
+  display: none;
+}
+
 .home-footer {
   margin-top: 20px;
   padding-top: 16px;
@@ -2382,7 +2402,16 @@ img { max-width: 100%; display: block; }
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 10px;
+  border: 1px solid transparent;
 }
+.regime-badge.hidden { display: none; }
+/* Trend/zone color-coding — set via chart.js's updateSignalUI, dropped by
+   the UI redesign rewrite that consolidated this block; restored here. */
+.regime-badge.uptrend   { color: var(--green); background: rgba(0,230,118,0.10); border-color: rgba(0,230,118,0.28); }
+.regime-badge.downtrend { color: var(--red);   background: rgba(255,23,68,0.10); border-color: rgba(255,23,68,0.28); }
+.regime-badge.sideways  { color: var(--blue);  background: rgba(68,138,255,0.10); border-color: rgba(68,138,255,0.28); }
+.regime-badge.zone-sup { box-shadow: 0 0 0 1px rgba(0,230,118,0.35) inset; }
+.regime-badge.zone-res { box-shadow: 0 0 0 1px rgba(255,23,68,0.35) inset; }
 
 /* ── 32. Tier Badges ────────────────────────────────────────────────────────── */
 
