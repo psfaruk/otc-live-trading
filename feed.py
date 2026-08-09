@@ -69,48 +69,48 @@ def _clean_display(raw_display: str) -> str:
     return _OTC_SUFFIX_RE.sub("", raw_display.replace("\n", "")).strip()
 
 
-# ── Pair catalog, split by category ──────────────────────────────────────────
-# The app now only ever streams/lists forex pairs (see _load_pairs) — the
-# other categories are kept here only as documentation of what's excluded,
-# and so re-adding a category later is a one-line change.
-_FOREX_OTC = [
-    # Forex majors OTC
-    "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "USDCHF_otc",
-    "AUDUSD_otc", "NZDUSD_otc", "USDCAD_otc",
-    # Forex minors OTC
-    "EURGBP_otc", "EURJPY_otc", "EURAUD_otc", "EURCHF_otc", "EURCAD_otc",
-    "GBPJPY_otc", "GBPAUD_otc", "GBPCAD_otc", "GBPCHF_otc", "GBPNZD_otc",
-    "AUDJPY_otc", "AUDCAD_otc", "AUDNZD_otc", "AUDCHF_otc",
-    "CADJPY_otc", "CADCHF_otc",
-    "NZDJPY_otc", "NZDCAD_otc", "NZDCHF_otc",
-    "CHFJPY_otc", "EURNZD_otc",
-    # Forex exotics OTC
-    "USDMXN_otc", "USDTRY_otc", "USDPKR_otc", "USDCOP_otc",
-    "USDBDT_otc", "INRUSD_otc", "EURSGD_otc",
-    "BRLUSD_otc", "USDARS_otc", "USDDZD_otc",
-]
-_STOCKS_OTC = [
-    "MSFT_otc", "INTC_otc", "JNJ_otc", "AXP_otc",
-    "BA_otc",   "META_otc", "MCD_otc", "PFE_otc",
-]
-_CRYPTO_OTC = ["BTCUSD_otc", "ETHUSD_otc"]
-_COMMODITIES_OTC = ["XAUUSD_otc", "XAGUSD_otc", "USOIL_otc", "UKBRENT_otc"]
+# ── Pair catalog ─────────────────────────────────────────────────────────────
+# Curated whitelist: only these pairs ever appear in the app. Each entry is
+# base symbol → which variant ("otc" or "real") the user wants shown for
+# that base. _load_pairs filters the live Quotex instrument list against
+# this dict — anything not listed here is dropped before it reaches the UI.
+_WANTED_PAIRS = {
+    # OTC pairs (asset code ends in _otc)
+    "BRLUSD":  "otc",
+    "USDINR":  "otc",
+    "USDIDR":  "otc",
+    "USDCOP":  "otc",
+    "USDBDT":  "otc",
+    "USDMXN":  "otc",
+    "NZDUSD":  "otc",
+    "USDDZD":  "otc",
+    "USDPHP":  "otc",
+    "USDPKR":  "otc",
+    "USDZAR":  "otc",
+    # Real pairs (no _otc suffix — real market only, not OTC)
+    "USDJPY":  "real",
+    "EURUSD":  "real",
+    "GBPUSD":  "real",
+    "AUDUSD":  "real",
+}
 
-# Logical base symbols (no _otc suffix) that count as forex — used to filter
-# the REAL Quotex instrument list in _load_pairs, not just this fallback. A
-# curated whitelist rather than a "3-letter currency code" regex deliberately:
-# XAU/XAG are real ISO-4217 codes too, so a currency-code heuristic would
-# misclassify gold/silver (XAUUSD/XAGUSD) as forex.
-_FOREX_BASES = {a[:-4] if a.endswith("_otc") else a for a in _FOREX_OTC}
+# Derived: set of base symbols this app ever streams. Used by _load_pairs to
+# filter the live Quotex instrument list (kept as a set for O(1) lookup).
+_FOREX_BASES = set(_WANTED_PAIRS.keys())
 
-# Fallback pair list (shown while Quotex instruments load) — forex only, to
-# match what _load_pairs serves once connected.
-_FALLBACK_ASSETS = _FOREX_OTC
-
+# Fallback pair list (shown while Quotex instruments load) — built from the
+# same whitelist so the dropdown matches what _load_pairs serves once
+# connected. Status is the variant the user wants ("otc"/"real"); Quotex
+# will refine it to "live"/"otc"/"closed" once it returns actual open state.
 _DEFAULT_PAIRS: list[dict] = [
-    {"asset": a, "display": _api_to_display(a), "status": "otc",
-     "payout": None, "locked": False}
-    for a in _FALLBACK_ASSETS
+    {
+        "asset":   base + ("_otc" if variant == "otc" else ""),
+        "display": _api_to_display(base + ("_otc" if variant == "otc" else "")),
+        "status":  "otc" if variant == "otc" else "live",
+        "payout":  None,
+        "locked":  False,
+    }
+    for base, variant in _WANTED_PAIRS.items()
 ]
 
 
@@ -346,6 +346,15 @@ class QuotexFeed:
                 is_otc = name.endswith("_otc")
                 base   = name[:-4] if is_otc else name
                 if base not in _FOREX_BASES:
+                    continue
+                # Variant filter: only keep the variant the user asked for
+                # (e.g. wants "NZDUSD_otc" → drop real "NZDUSD"; wants real
+                # "AUDUSD" → drop "AUDUSD_otc"). Without this, _load_pairs
+                # would pick whichever variant is open, ignoring the user's
+                # OTC-vs-real choice.
+                wanted = _WANTED_PAIRS[base]
+                variant = "otc" if is_otc else "real"
+                if variant != wanted:
                     continue
 
                 is_open = bool(i[14])
