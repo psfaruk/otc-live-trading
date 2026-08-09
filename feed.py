@@ -269,6 +269,10 @@ class QuotexFeed:
         self._client              = None
         self._connected           = False
         self._reconnect_attempts  = 0        # for exponential backoff
+        # Set when the last _connect() died on an HTTP 403 — that's Quotex's
+        # WAF refusing the IP outright, not a transient failure, so the
+        # manager loop backs off far harder (see run()).
+        self._last_connect_forbidden = False
         self._broadcast           = None     # set once in run()
 
         # ── Multi-asset stream management (replaces the old singleton
@@ -590,6 +594,7 @@ class QuotexFeed:
                 return
 
     async def _connect(self) -> bool:
+        self._last_connect_forbidden = False
         try:
             from pyquotex.types import ReconnectPolicy  # noqa: ensure importable
             # Cross-platform default (was a hardcoded Windows path — broke
@@ -658,6 +663,9 @@ class QuotexFeed:
             return False
         except Exception as exc:
             print(f"[feed] connect error: {exc}")
+            text = str(exc).lower()
+            if "403" in text or "forbidden" in text:
+                self._last_connect_forbidden = True
             return False
 
     async def _load_history(self, asset: str, period: int) -> list[dict]:
@@ -1899,8 +1907,15 @@ class QuotexFeed:
                     if not self._connected:
                         # Exponential backoff (10→20→40→60s, capped) so repeated
                         # failures don't hammer Quotex into a 429 rate-limit.
+                        #
+                        # An HTTP 403 is different in kind: Quotex's WAF has
+                        # blocked this IP, and retrying every 60s (~1440
+                        # logins/day) keeps the block alive rather than
+                        # waiting it out. Cap those at 15 min instead — still
+                        # frequent enough to notice the moment it lifts.
                         self._reconnect_attempts += 1
-                        delay = min(10 * (2 ** (self._reconnect_attempts - 1)), 60)
+                        cap = 900 if self._last_connect_forbidden else 60
+                        delay = min(10 * (2 ** (self._reconnect_attempts - 1)), cap)
                         print(f"[feed] reconnect attempt {self._reconnect_attempts} "
                               f"failed — retrying in {delay}s")
                         self._record_stream_error()
