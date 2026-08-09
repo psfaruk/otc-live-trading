@@ -269,6 +269,10 @@ class QuotexFeed:
         self._client              = None
         self._connected           = False
         self._reconnect_attempts  = 0        # for exponential backoff
+        # Set when the last _connect() died on an HTTP 403 — that's
+        # Cloudflare refusing the sign-in page, not a transient failure, so
+        # the manager loop backs off far harder (see run()).
+        self._last_connect_forbidden = False
         self._broadcast           = None     # set once in run()
 
         # ── Multi-asset stream management (replaces the old singleton
@@ -599,6 +603,7 @@ class QuotexFeed:
                 return
 
     async def _connect(self) -> bool:
+        self._last_connect_forbidden = False
         try:
             from pyquotex.types import ReconnectPolicy  # noqa: ensure importable
             # Cross-platform default (was a hardcoded Windows path — broke
@@ -668,6 +673,7 @@ class QuotexFeed:
             # the JS challenge. The only fix is to bypass the HTTP login
             # entirely with a pre-extracted SSID token (QX_TOKEN env var).
             if "Forbidden" in str(reason) or "403" in str(reason):
+                self._last_connect_forbidden = True
                 print("[feed] HTTP 403 from Cloudflare on the sign-in page — "
                       "the login form is bot-protected and can't be fetched "
                       "by an HTTP client. Set QX_TOKEN to a pre-extracted "
@@ -698,8 +704,11 @@ class QuotexFeed:
             print(f"[feed] connect error: {exc}")
             # Cloudflare 403 on the login page — the most common cause of
             # "Waiting..." in production. Surface a clear actionable hint
-            # instead of just the bare exception.
+            # instead of just the bare exception, and flag it so the manager
+            # loop backs off on the long (WAF) schedule rather than retrying
+            # a bot-blocked page every 60s.
             if "Forbidden" in err or "403" in err:
+                self._last_connect_forbidden = True
                 print("[feed] >>> Cloudflare blocked the HTTP login page. "
                       "Set QX_TOKEN (SSID cookie from a logged-in browser "
                       "session) to bypass the login form entirely. See "
@@ -1945,8 +1954,17 @@ class QuotexFeed:
                     if not self._connected:
                         # Exponential backoff (10→20→40→60s, capped) so repeated
                         # failures don't hammer Quotex into a 429 rate-limit.
+                        #
+                        # An HTTP 403 is different in kind: Cloudflare is
+                        # refusing the sign-in page outright, and no amount
+                        # of retrying solves that — it needs QX_TOKEN set.
+                        # Hammering it every 60s (~1440 requests/day) only
+                        # deepens the bot score. Cap those at 15 min — still
+                        # frequent enough to recover on its own if the
+                        # challenge stops firing.
                         self._reconnect_attempts += 1
-                        delay = min(10 * (2 ** (self._reconnect_attempts - 1)), 60)
+                        cap = 900 if self._last_connect_forbidden else 60
+                        delay = min(10 * (2 ** (self._reconnect_attempts - 1)), cap)
                         print(f"[feed] reconnect attempt {self._reconnect_attempts} "
                               f"failed — retrying in {delay}s")
                         self._record_stream_error()
