@@ -323,18 +323,33 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     # is set so the typical MEDIUM signal (|score| 3-5) shows ~40-60%.
     MAX_SCORE = 10
 
-    if len(candles) < 2:
-        return {"signal": "NEUTRAL", "score": 0,
-                "confidence": 0.0, "reasons": ["insufficient candles"]}
+    # ── "Signal on every candle" guarantee ────────────────────────────────
+    # The caller (feed._run_eoc) needs a CALL/PUT for every closed candle so
+    # a ghost prediction candle is always drawn. Previously this returned
+    # NEUTRAL on <2 candles or zero-range candles — both now fall through to
+    # the normal pipeline + the NEUTRAL tiebreak at the bottom, which always
+    # emits a forced CALL/PUT pick (WEAK strength, coin-flip honesty).
+    if len(candles) < 1:
+        # Truly empty history — give a deterministic default rather than crash.
+        return {"signal": "CALL", "score": 0,
+                "confidence": 0.0, "strength": "WEAK",
+                "reasons": ["TIEBREAK: no history -> CALL (default pick)"],
+                "agree": 0, "agree_weight": 0,
+                "key_levels": [], "wick_walls": {"support": [], "resistance": []},
+                "regime": {"trend": "SIDEWAYS", "zone": "NEUTRAL"},
+                "market_state": {"state": "UNCLEAR", "bias": "NEUTRAL",
+                                 "conviction": 0}}
 
     cur  = candles[-1]
-    prev = candles[-2]
+    prev = candles[-2] if len(candles) >= 2 else cur
     o, h, l, c = cur["open"], cur["high"], cur["low"], cur["close"]
-    total_range = h - l
+    # Floor total_range so the many body/wick ratios below never divide by
+    # zero on a zero-range (doji) candle. The tiebreak at the end still
+    # produces a CALL/PUT pick — just WEAK strength.
+    total_range = (h - l) or 1e-9
 
-    if total_range == 0:
-        return {"signal": "NEUTRAL", "score": 0,
-                "confidence": 0.0, "reasons": ["zero-range candle"]}
+    # Zero-range candles no longer early-return NEUTRAL — they fall through
+    # to the tiebreak (is_bull = True for c == o → CALL by coin-flip rule).
 
     body       = abs(c - o)
     upper_wick = h - max(o, c)

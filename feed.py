@@ -776,8 +776,16 @@ class QuotexFeed:
 
         # Neutral signals should remain neutral; do not force a fake CALL/PUT
         # just to keep a ghost candle on screen.
+        # ── 2026-08-10: NEUTRAL path removed. analyze_eoc now guarantees a
+        # CALL/PUT on every candle (zero-range + score=0 both fall through
+        # to its coin-flip tiebreak), so this branch is dead code kept only
+        # as a defensive fallback — if it ever fires, force CALL so a ghost
+        # candle still draws on screen.
         if result["signal"] == "NEUTRAL":
-            return {**result, "candle": None, "payout": stream.payout}
+            result["signal"] = "CALL"
+            result.setdefault("reasons", []).append(
+                "DEFENSIVE: NEUTRAL forced to CALL — every candle must show a signal")
+            result["strength"] = "WEAK"
         return {**result, "candle": _pred_candle(closed, result["signal"], stream.period, actual_open),
                 "payout": stream.payout}
 

@@ -1,5 +1,8 @@
 """
-SQLite store for closed-candle microstructure data.
+SQLite store for closed-candle microstructure data + signal log.
+
+Auth/user/promo/notice tables fully removed — the app is now a single-tenant
+public dashboard with no per-user state.
 
 Each row = one closed candle's summary:
   OHLC + buy/sell pressure + last-tick reaction + phase pattern + hold zone
@@ -7,9 +10,7 @@ Each row = one closed candle's summary:
 This lets EOC analysis see what the *previous* candle's internal pressure
 looked like — information that would otherwise be discarded when ticks.clear().
 """
-import hashlib
 import os
-import secrets
 import sqlite3
 import threading
 import time
@@ -126,53 +127,6 @@ CREATE TABLE IF NOT EXISTS candle_running (
 );
 CREATE INDEX IF NOT EXISTS idx_running_asset_ctime
     ON candle_running (asset, period, ctime DESC, snap_time DESC);
-
--- Per-user accounts. category gates analysis depth (see server.py's
--- _tier_payload) and admin dashboard access — 'normal'/'premium'/'admin',
--- enforced app-side, not a DB CHECK constraint (keeps category updates a
--- plain UPDATE, no migration surprises if a 4th tier is added later).
--- token_version exists purely as a revocation lever: bumping it (nothing
--- does yet — see server.py's session cookie) invalidates every
--- already-issued cookie for that user at once, without a sessions table.
-CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    email         TEXT    NOT NULL UNIQUE,   -- always stored lowercased/stripped
-    password_hash TEXT    NOT NULL,          -- "salt_hex:hash_hex", see hash_password()
-    category      TEXT    NOT NULL DEFAULT 'normal',
-    token_version INTEGER NOT NULL DEFAULT 0,
-    created_at    INTEGER NOT NULL
-);
-
--- Admin-published promo cards (redesign Phase 4 CMS). target: which tier
--- sees the card — 'all' or a specific category. App-side filtering, same
--- convention as users.category (no CHECK constraint).
-CREATE TABLE IF NOT EXISTS promos (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT    NOT NULL,
-    body       TEXT    NOT NULL DEFAULT '',
-    code       TEXT    DEFAULT NULL,        -- optional coupon/promo code
-    target     TEXT    NOT NULL DEFAULT 'all',
-    active     INTEGER NOT NULL DEFAULT 1,
-    ends_at    INTEGER DEFAULT NULL,        -- NULL = no expiry
-    created_at INTEGER NOT NULL
-);
-
--- Admin broadcast notifications + per-user read marks. Reads are a
--- separate table (not a column) so one notice fans out to any number of
--- users without a write per user at publish time.
-CREATE TABLE IF NOT EXISTS notices (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT    NOT NULL,
-    body       TEXT    NOT NULL DEFAULT '',
-    target     TEXT    NOT NULL DEFAULT 'all',
-    created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS notice_reads (
-    user_id   INTEGER NOT NULL,
-    notice_id INTEGER NOT NULL,
-    read_at   INTEGER NOT NULL,
-    PRIMARY KEY (user_id, notice_id)
-);
 """
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -215,320 +169,6 @@ def init() -> None:
                 ON signal_log (setup_id, ctime DESC)
             """)
             con.commit()
-        finally:
-            con.close()
-
-
-# ── Accounts ──────────────────────────────────────────────────────────────────
-
-_PBKDF2_ITERATIONS = 200_000
-
-
-def _normalize_email(email: str) -> str:
-    return email.strip().lower()
-
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt,
-                                 _PBKDF2_ITERATIONS)
-    return f"{salt.hex()}:{digest.hex()}"
-
-
-def _check_password(password: str, stored: str) -> bool:
-    try:
-        salt_hex, digest_hex = stored.split(":", 1)
-    except ValueError:
-        return False
-    salt = bytes.fromhex(salt_hex)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt,
-                                 _PBKDF2_ITERATIONS)
-    return secrets.compare_digest(digest.hex(), digest_hex)
-
-
-def _admin_emails() -> set[str]:
-    raw = os.environ.get("ADMIN_EMAILS", "")
-    return {_normalize_email(e) for e in raw.split(",") if e.strip()}
-
-
-def _row_to_user(row) -> dict:
-    return {"id": row[0], "email": row[1], "category": row[2],
-            "token_version": row[3], "created_at": row[4]}
-
-
-def create_user(email: str, password: str) -> dict | None:
-    """Create a normal (or auto-promoted admin) user. None if the email is
-    already taken."""
-    email = _normalize_email(email)
-    category = "admin" if email in _admin_emails() else "normal"
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            try:
-                cur = con.execute(
-                    """INSERT INTO users (email, password_hash, category, created_at)
-                       VALUES (?,?,?,?)""",
-                    (email, hash_password(password), category, int(time.time())))
-            except sqlite3.IntegrityError:
-                return None
-            con.commit()
-            row = con.execute(
-                "SELECT id, email, category, token_version, created_at"
-                " FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
-            return _row_to_user(row)
-        finally:
-            con.close()
-
-
-def verify_login(email: str, password: str) -> dict | None:
-    """Check credentials; re-syncs admin status from ADMIN_EMAILS on every
-    successful login (auto-promote only — see the users table comment for
-    why demotion is never automatic). Returns the user row or None."""
-    email = _normalize_email(email)
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            row = con.execute(
-                "SELECT id, email, password_hash, category, token_version,"
-                " created_at FROM users WHERE email=?", (email,)).fetchone()
-            if not row or not _check_password(password, row[2]):
-                return None
-            user_id, category = row[0], row[3]
-            if category != "admin" and email in _admin_emails():
-                con.execute("UPDATE users SET category='admin' WHERE id=?",
-                           (user_id,))
-                con.commit()
-                category = "admin"
-            return _row_to_user((user_id, row[1], category, row[4], row[5]))
-        finally:
-            con.close()
-
-
-def get_user_for_session(user_id: int, token_version: int) -> dict | None:
-    """The auth-middleware check: None means the account was deleted OR
-    this cookie's token_version was revoked (e.g. a future password-change
-    feature bumping it) — both correctly read as 'not logged in'."""
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            row = con.execute(
-                "SELECT id, email, category, token_version, created_at"
-                " FROM users WHERE id=? AND token_version=?",
-                (user_id, token_version)).fetchone()
-            return _row_to_user(row) if row else None
-        finally:
-            con.close()
-
-
-def change_password(user_id: int, old_password: str,
-                    new_password: str) -> dict | None:
-    """Verify the old password, store the new hash and bump token_version —
-    the bump is what get_user_for_session's revocation check anticipates:
-    every OTHER device's cookie dies instantly. The caller re-issues THIS
-    session's cookie from the returned (fresh token_version) user dict.
-    Returns None if the old password is wrong."""
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            row = con.execute("SELECT password_hash FROM users WHERE id=?",
-                              (user_id,)).fetchone()
-            if not row or not _check_password(old_password, row[0]):
-                return None
-            con.execute(
-                "UPDATE users SET password_hash=?,"
-                " token_version=token_version+1 WHERE id=?",
-                (hash_password(new_password), user_id))
-            con.commit()
-            urow = con.execute(
-                "SELECT id, email, category, token_version, created_at"
-                " FROM users WHERE id=?", (user_id,)).fetchone()
-            return _row_to_user(urow)
-        finally:
-            con.close()
-
-
-def set_user_category(user_id: int, category: str) -> bool:
-    if category not in ("normal", "premium", "admin"):
-        return False
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            cur = con.execute("UPDATE users SET category=? WHERE id=?",
-                             (category, user_id))
-            con.commit()
-            return cur.rowcount > 0
-        finally:
-            con.close()
-
-
-def list_users() -> list[dict]:
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            rows = con.execute(
-                "SELECT id, email, category, token_version, created_at"
-                " FROM users ORDER BY created_at DESC").fetchall()
-            return [_row_to_user(r) for r in rows]
-        finally:
-            con.close()
-
-
-# ── Promos + notices (admin CMS, redesign Phase 4) ───────────────────────────
-
-def _tier_clause(category: str) -> tuple[str, tuple]:
-    """WHERE fragment matching rows targeted at 'all' or this user's tier."""
-    return "target IN ('all', ?)", (category,)
-
-
-def create_promo(title: str, body: str = "", code: str | None = None,
-                 target: str = "all", ends_at: int | None = None) -> int:
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            cur = con.execute(
-                """INSERT INTO promos (title, body, code, target, ends_at,
-                                       created_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (title, body, code or None, target, ends_at,
-                 int(time.time())))
-            con.commit()
-            return cur.lastrowid
-        finally:
-            con.close()
-
-
-def list_promos_admin() -> list[dict]:
-    """Every promo, newest first — the admin management view."""
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            rows = con.execute(
-                "SELECT id, title, body, code, target, active, ends_at,"
-                " created_at FROM promos ORDER BY id DESC").fetchall()
-            return [{"id": r[0], "title": r[1], "body": r[2], "code": r[3],
-                     "target": r[4], "active": bool(r[5]), "ends_at": r[6],
-                     "created_at": r[7]} for r in rows]
-        finally:
-            con.close()
-
-
-def list_promos_for(category: str) -> list[dict]:
-    """Active, unexpired promos visible to this tier (the Home cards)."""
-    clause, params = _tier_clause(category)
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            rows = con.execute(
-                f"""SELECT id, title, body, code FROM promos
-                    WHERE active=1 AND {clause}
-                      AND (ends_at IS NULL OR ends_at > ?)
-                    ORDER BY id DESC LIMIT 10""",
-                (*params, int(time.time()))).fetchall()
-            return [{"id": r[0], "title": r[1], "body": r[2], "code": r[3]}
-                    for r in rows]
-        finally:
-            con.close()
-
-
-def set_promo_active(promo_id: int, active: bool) -> bool:
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            cur = con.execute("UPDATE promos SET active=? WHERE id=?",
-                              (1 if active else 0, promo_id))
-            con.commit()
-            return cur.rowcount > 0
-        finally:
-            con.close()
-
-
-def delete_promo(promo_id: int) -> bool:
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            cur = con.execute("DELETE FROM promos WHERE id=?", (promo_id,))
-            con.commit()
-            return cur.rowcount > 0
-        finally:
-            con.close()
-
-
-def create_notice(title: str, body: str = "", target: str = "all") -> int:
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            cur = con.execute(
-                "INSERT INTO notices (title, body, target, created_at)"
-                " VALUES (?,?,?,?)",
-                (title, body, target, int(time.time())))
-            con.commit()
-            return cur.lastrowid
-        finally:
-            con.close()
-
-
-def list_notices_admin() -> list[dict]:
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            rows = con.execute(
-                "SELECT id, title, body, target, created_at FROM notices"
-                " ORDER BY id DESC LIMIT 100").fetchall()
-            return [{"id": r[0], "title": r[1], "body": r[2],
-                     "target": r[3], "created_at": r[4]} for r in rows]
-        finally:
-            con.close()
-
-
-def list_notices_for(user_id: int, category: str,
-                     limit: int = 30) -> tuple[list[dict], int]:
-    """(notices newest-first with per-user read flag, unread count)."""
-    clause, params = _tier_clause(category)
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            rows = con.execute(
-                f"""SELECT n.id, n.title, n.body, n.created_at,
-                           r.notice_id IS NOT NULL AS is_read
-                    FROM notices n
-                    LEFT JOIN notice_reads r
-                      ON r.notice_id = n.id AND r.user_id = ?
-                    WHERE {clause}
-                    ORDER BY n.id DESC LIMIT ?""",
-                (user_id, *params, limit)).fetchall()
-            items = [{"id": r[0], "title": r[1], "body": r[2],
-                      "created_at": r[3], "read": bool(r[4])} for r in rows]
-            unread = sum(1 for i in items if not i["read"])
-            return items, unread
-        finally:
-            con.close()
-
-
-def mark_notices_read(user_id: int, category: str) -> None:
-    """Mark every notice this user can currently see as read."""
-    clause, params = _tier_clause(category)
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            con.execute(
-                f"""INSERT OR IGNORE INTO notice_reads (user_id, notice_id,
-                                                        read_at)
-                    SELECT ?, id, ? FROM notices WHERE {clause}""",
-                (user_id, int(time.time()), *params))
-            con.commit()
-        finally:
-            con.close()
-
-
-def delete_notice(notice_id: int) -> bool:
-    with _lock:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            con.execute("DELETE FROM notice_reads WHERE notice_id=?",
-                        (notice_id,))
-            cur = con.execute("DELETE FROM notices WHERE id=?", (notice_id,))
-            con.commit()
-            return cur.rowcount > 0
         finally:
             con.close()
 
@@ -640,7 +280,6 @@ def get_micro_history(asset: str, period: int, n: int = 6,
 
 def cleanup(keep_days: int = 7) -> None:
     """Delete rows older than keep_days to prevent unbounded growth."""
-    import time
     cutoff = int(time.time()) - keep_days * 86400
     with _lock:
         con = sqlite3.connect(DB_PATH)
@@ -655,7 +294,6 @@ def cleanup(keep_days: int = 7) -> None:
             con.execute("DELETE FROM signal_log WHERE ctime < ?",
                         (int(time.time()) - 30 * 86400,))
             # theory_votes mirrors signal_log rows — same 30-day retention
-            # (was never pruned before: unbounded growth).
             con.execute("DELETE FROM theory_votes WHERE ctime < ?",
                         (int(time.time()) - 30 * 86400,))
             con.commit()
@@ -728,13 +366,6 @@ def log_theory_votes(asset: str, period: int, ctime: int,
                      votes: list[tuple[str, str, int, str]]) -> None:
     """
     Shadow-grade a prediction's per-theory votes WITHOUT a signal_log row.
-
-    Used for NEUTRAL finals (dead band / parrot guard / chop guard): the
-    ensemble made no tradeable call, but each theory still voted and its
-    vote still resolved right or wrong — dropping those (the old behavior,
-    when NEUTRAL was never logged at all) would starve theory_perf's window
-    exactly when the mute gate needs it, and a muted theory would stop
-    accumulating the very track record that could un-mute it.
     """
     if not votes:
         return
@@ -757,16 +388,8 @@ def theory_perf(asset: str | None = None, period: int | None = None,
     """
     Recent per-theory accuracy — the feedback loop consumed by analyze_eoc's
     theory mute gate (via feed.py's cached snapshot) and /api/theory-perf.
-
-    Reads the normalized theory_votes table (one NET vote per theory per
-    candle, including shadow-graded NEUTRAL predictions) over the last
-    `days` days; draws are excluded. Only theories with at least `min_n`
-    resolved votes are returned, so tiny samples can never flip a theory's
-    live weighting.
-    Returns {theory: {"n": int, "rate": float}}.
     """
-    import time as _time
-    cutoff = int(_time.time()) - days * 86400
+    cutoff = int(time.time()) - days * 86400
     where, params = ["ctime >= ?", "outcome IN ('right','wrong')"], [cutoff]
     if asset:
         where.append("asset=?");  params.append(asset)
@@ -852,14 +475,11 @@ def get_stats(asset: str | None = None, period: int | None = None) -> dict:
         finally:
             con.close()
 
-    # Measured accuracy per strength label — the UI shows this next to the
-    # badge so "STRONG" can't imply an edge the data doesn't support.
     by_strength = {
         s: {"n": n, "rate": round(w / n * 100, 1) if n else 0.0}
         for s, w, n in strength_rows if n
     }
 
-    # Draws are broker refunds — excluded from every win-rate denominator.
     theory: dict[str, list[int]] = {}
     for codes, result in rows:
         if result == "draw":

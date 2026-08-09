@@ -104,11 +104,6 @@
             </button>
           </div>
 
-          <!-- Notification bell -->
-          <button type="button" id="notif-btn" class="notif-btn" title="Notifications">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
-            <span id="notif-badge" class="notif-badge hidden">0</span>
-          </button>
         </div>
       </header>
 
@@ -142,8 +137,6 @@
             </div>
 
             <!-- Promo cards -->
-            <div id="home-promos" class="home-promos hidden"></div>
-
             <!-- Quick nav grid -->
             <div class="home-grid">
               <button type="button" class="home-card" data-goto="signals">
@@ -213,10 +206,9 @@
                 trading decision you make. Accounts may be suspended for abuse.
               </div>
               <div id="legal-privacy" class="home-legal-body hidden">
-                We store your email, password hash, account tier and signal
-                history needed to run the service. Data is never sold or shared
-                with third parties. Ask an admin to delete your account and its
-                data at any time.
+                This is a public dashboard — no signup, no login, no personal
+                data collected. Anonymous signal history is kept for analytics
+                only.
               </div>
               <div id="legal-risk" class="home-legal-body hidden">
                 Binary options trading carries a high risk of losing your entire
@@ -250,7 +242,7 @@
             </div>
 
             <!-- Deep market-state read — mobile mirror of Advance tab -->
-            <div id="signals-mstate-wrap" class="hidden">
+            <div id="signals-mstate-wrap">
               <div class="panel-title panel-title-gap">Deep Analysis</div>
               <div id="signals-mstate-card" class="mstate-card">
                 <div class="mstate-head">
@@ -304,15 +296,6 @@
               </div>
             </div>
             <aside id="side-panel">
-
-              <div id="upgrade-placeholder" class="info-card hidden">
-                <h2>🔒 Premium analysis</h2>
-                <p>Deep market-state analysis (continuation / exhaustion /
-                  reversal / trap), theory accuracy, key levels, live tick flow,
-                  and the full why-this-signal reasons list are available on
-                  Premium and Admin accounts. Ask an admin to upgrade your
-                  account.</p>
-              </div>
 
               <div id="side-panel-detail">
                 <div class="panel-title">Deep Analysis</div>
@@ -390,47 +373,11 @@
             <button type="button" id="settings-modal-close" class="settings-modal-close-btn">✕</button>
 
             <div class="info-card">
-              <h2>Profile</h2>
-              <div class="settings-row"><span>Email</span><span id="profile-email">–</span></div>
-              <div class="settings-row"><span>Plan</span><span id="profile-tier" class="tier-badge">–</span></div>
-              <div class="settings-row"><span>Joined</span><span id="profile-joined">–</span></div>
-              <button type="button" id="logout-btn" class="logout-btn">Log out</button>
-            </div>
-
-            <div class="info-card">
               <h2>Performance</h2>
               <div class="settings-row">
                 <span>Win rate (this pair / timeframe)</span>
                 <span id="winrate">--</span>
               </div>
-            </div>
-
-            <div class="info-card" id="plan-card">
-              <h2>Plan</h2>
-              <ul class="plan-list">
-                <li data-tier="normal"><b>Normal</b> — live chart + CALL/PUT signals</li>
-                <li data-tier="premium"><b>Premium</b> — deep market-state analysis,
-                  why-this-signal reasons, key levels, live tick flow</li>
-                <li data-tier="admin"><b>Admin</b> — everything + user management
-                  dashboard</li>
-              </ul>
-              <p class="plan-note">Upgrades are handled by an admin.</p>
-            </div>
-
-            <div class="info-card">
-              <h2>Security</h2>
-              <form id="pw-form" autocomplete="off">
-                <input type="password" id="pw-current" class="settings-input"
-                       placeholder="Current password" autocomplete="current-password" />
-                <input type="password" id="pw-new" class="settings-input"
-                       placeholder="New password (min 8 characters)" autocomplete="new-password" />
-                <input type="password" id="pw-confirm" class="settings-input"
-                       placeholder="Repeat new password" autocomplete="new-password" />
-                <button type="submit" class="history-btn pw-submit">Change password</button>
-                <div id="pw-msg" class="pw-msg"></div>
-              </form>
-              <p class="plan-note">Changing your password signs out every other
-                device (this one stays logged in).</p>
             </div>
 
             <div class="info-card">
@@ -453,67 +400,6 @@
               </label>
             </div>
 
-            <div id="admin-card" class="info-card hidden">
-              <h2>Admin Dashboard</h2>
-              <div class="admin-analytics" id="admin-analytics">
-                <div class="admin-stat"><span id="admin-viewers">–</span><label>Live viewers</label></div>
-                <div class="admin-stat"><span id="admin-active-pairs">–</span><label>Active streams</label></div>
-                <div class="admin-stat"><span id="admin-winrate">–</span><label>Overall win rate</label></div>
-              </div>
-              <div class="panel-title panel-title-gap">Users</div>
-              <div class="admin-users-wrap">
-                <table id="admin-users-table" class="admin-users-table">
-                  <thead>
-                    <tr><th>Email</th><th>Category</th><th>Joined</th></tr>
-                  </thead>
-                  <tbody id="admin-users-rows">
-                    <tr><td colspan="3" class="history-empty">Loading…</td></tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div class="panel-title panel-title-gap">Promotions</div>
-              <form id="promo-form" class="cms-form" autocomplete="off">
-                <input type="text" id="promo-title" class="settings-input" placeholder="Title" maxlength="80" />
-                <input type="text" id="promo-body" class="settings-input" placeholder="Text (optional)" maxlength="240" />
-                <div class="cms-form-row">
-                  <input type="text" id="promo-code" class="settings-input" placeholder="Code" maxlength="24" />
-                  <select id="promo-target" class="ctrl-select">
-                    <option value="all">Everyone</option>
-                    <option value="normal">Normal</option>
-                    <option value="premium">Premium</option>
-                    <option value="admin">Admins</option>
-                  </select>
-                  <select id="promo-days" class="ctrl-select" title="How long the card stays live">
-                    <option value="0">No expiry</option>
-                    <option value="1">1 day</option>
-                    <option value="7">7 days</option>
-                    <option value="30">30 days</option>
-                  </select>
-                </div>
-                <button type="submit" class="history-btn">Publish promo</button>
-                <div id="promo-msg" class="pw-msg"></div>
-              </form>
-              <ul id="admin-promo-list" class="cms-list"><li class="notif-empty">Loading…</li></ul>
-
-              <div class="panel-title panel-title-gap">Notifications</div>
-              <form id="notice-form" class="cms-form" autocomplete="off">
-                <input type="text" id="notice-title" class="settings-input" placeholder="Title" maxlength="80" />
-                <input type="text" id="notice-body" class="settings-input" placeholder="Message (optional)" maxlength="240" />
-                <div class="cms-form-row">
-                  <select id="notice-target" class="ctrl-select">
-                    <option value="all">Everyone</option>
-                    <option value="normal">Normal</option>
-                    <option value="premium">Premium</option>
-                    <option value="admin">Admins</option>
-                  </select>
-                  <button type="submit" class="history-btn">Send</button>
-                </div>
-                <div id="notice-msg" class="pw-msg"></div>
-              </form>
-              <ul id="admin-notice-list" class="cms-list"><li class="notif-empty">Loading…</li></ul>
-            </div>
-
             <div class="info-card">
               <h2>Legal</h2>
               <details class="legal-details">
@@ -521,14 +407,13 @@
                 <p>Plybit AI provides educational market analysis only. Nothing in
                   this app is financial advice, an inducement to trade, or a
                   guarantee of any outcome. You are solely responsible for any
-                  trading decision you make. Accounts may be suspended for abuse.</p>
+                  trading decision you make.</p>
               </details>
               <details class="legal-details">
                 <summary>Privacy</summary>
-                <p>We store your email, password hash, account tier and signal
-                  history needed to run the service. Data is never sold or shared
-                  with third parties. Ask an admin to delete your account and its
-                  data at any time.</p>
+                <p>This is a public dashboard — no signup, no login, no personal
+                  data collected. Anonymous signal history is kept for analytics
+                  only.</p>
               </details>
               <details class="legal-details">
                 <summary>Risk Disclaimer</summary>
@@ -580,17 +465,6 @@
         <input type="text" id="pair-search" placeholder="Search pair…" autocomplete="off" spellcheck="false" />
       </div>
       <ul id="pair-list" class="pair-list"></ul>
-    </div>
-
-    <!-- Notification panel -->
-    <div id="notif-panel" class="notif-panel hidden">
-      <div class="notif-panel-head">
-        <span>Notifications</span>
-        <button type="button" id="notif-close" class="history-btn">✕</button>
-      </div>
-      <ul id="notif-list" class="notif-list">
-        <li class="notif-empty">No notifications yet</li>
-      </ul>
     </div>
 
     <!-- Signal popup -->

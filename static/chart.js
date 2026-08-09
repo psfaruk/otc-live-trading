@@ -47,13 +47,8 @@ try {
   if (_savedTab) _activeTab = _savedTab;
 } catch (_) {}
 
-// Current account — fetched once from /api/me at boot (see _loadMe).
-// 'normal' accounts genuinely don't RECEIVE reasons/key_levels/wick_walls
-// (server.py's _tier_payload strips them before they ever reach the
-// browser), so myCategory drives which UI state to show, not just what to
-// hide — see the upgrade-placeholder toggle in updateSignalUI/_setKLLines.
-let myEmail    = null;
-let myCategory = 'normal';
+// Auth/account system fully removed — every visitor gets the full chart
+// and the full prediction/microstructure payload. No tier gating.
 
 // ── User preferences — client-side only (localStorage), applied live.
 // Rendered as the Preferences card in Settings; consumed by
@@ -67,44 +62,6 @@ try {
 function _savePrefs() {
   try { localStorage.setItem('plybit_prefs', JSON.stringify(userPrefs)); }
   catch (_) {}
-}
-
-async function _loadMe() {
-  let createdAt = null;
-  try {
-    const r = await fetch('/api/me');
-    if (!r.ok) return;
-    const data = await r.json();
-    myEmail    = data.email;
-    myCategory = data.category || 'normal';
-    createdAt  = data.created_at || null;
-  } catch (_) {}
-
-  const tierLabel = myCategory === 'admin' ? 'Admin'
-                   : myCategory === 'premium' ? 'Premium' : 'Normal';
-  const pe = document.getElementById('profile-email');
-  const pt = document.getElementById('profile-tier');
-  const pj = document.getElementById('profile-joined');
-  if (pe) pe.textContent = myEmail || '–';
-  if (pt) {
-    pt.textContent = tierLabel;
-    pt.className   = `tier-badge tier-${myCategory}`;
-  }
-  if (pj && createdAt) {
-    pj.textContent = new Date(createdAt * 1000).toLocaleDateString(
-      [], { month: 'short', day: 'numeric', year: 'numeric' });
-  }
-  // Highlight the current tier's row in the Plan card
-  document.querySelectorAll('#plan-card [data-tier]').forEach((li) => {
-    li.classList.toggle('active', li.dataset.tier === myCategory);
-  });
-  const placeholder = document.getElementById('upgrade-placeholder');
-  if (placeholder) placeholder.classList.toggle('hidden', myCategory !== 'normal');
-  const detail = document.getElementById('side-panel-detail');
-  if (detail) detail.classList.toggle('hidden', myCategory === 'normal');
-  // Mobile Signals tab's Deep Analysis mirror — same tier gate as above
-  const signalsMstateWrap = document.getElementById('signals-mstate-wrap');
-  if (signalsMstateWrap) signalsMstateWrap.classList.toggle('hidden', myCategory === 'normal');
 }
 
 // True once the user has actually zoomed/panned the chart (wheel or a
@@ -662,12 +619,6 @@ function handleMsg(msg, perfNow) {
       if (msg.micro) {
         renderMicro(msg.micro);
       }
-      break;
-
-    case 'notice':
-      // Admin published a notification — content-free nudge; the fetch
-      // applies this user's tier/read filtering server-side.
-      _loadNotices();
       break;
   }
 }
@@ -1468,269 +1419,6 @@ function _setActiveTab(tab) {
     _hideSignalPopup();
     if (lastPrediction) _updateSignalsLast(lastPrediction);
   }
-
-  if (tab === 'settings' && myCategory === 'admin') _loadAdminDashboard();
-}
-
-// ── Admin dashboard (Settings tab, admin-only — see myCategory) ──────────
-async function _loadAdminDashboard() {
-  const card = document.getElementById('admin-card');
-  if (!card) return;
-  card.classList.remove('hidden');
-  try {
-    const [usersRes, statsRes, promoRes, noticeRes] = await Promise.all([
-      fetch('/api/admin/users'),
-      fetch('/api/admin/analytics'),
-      fetch('/api/admin/promos'),
-      fetch('/api/admin/notices'),
-    ]);
-    if (usersRes.ok)  _renderAdminUsers((await usersRes.json()).users || []);
-    if (statsRes.ok)  _renderAdminAnalytics(await statsRes.json());
-    if (promoRes.ok)  _renderAdminPromos((await promoRes.json()).promos || []);
-    if (noticeRes.ok) _renderAdminNotices((await noticeRes.json()).notices || []);
-  } catch (_) {}
-}
-
-// ── Admin CMS: promotions ──────────────────────────────────────────────────
-function _renderAdminPromos(promos) {
-  const list = document.getElementById('admin-promo-list');
-  if (!list) return;
-  list.innerHTML = '';
-  if (!promos.length) {
-    list.innerHTML = '<li class="notif-empty">No promos yet</li>';
-    return;
-  }
-  for (const p of promos) {
-    const li = document.createElement('li');
-    li.className = 'cms-item' + (p.active ? '' : ' inactive');
-    const info = document.createElement('div');
-    info.className = 'cms-item-info';
-    const t = document.createElement('div');
-    t.className = 'cms-item-title';
-    t.textContent = p.title + (p.code ? ` · ${p.code}` : '');
-    const m = document.createElement('div');
-    m.className = 'cms-item-meta';
-    m.textContent = `${p.target}${p.active ? '' : ' · paused'}` +
-      (p.ends_at ? ` · until ${new Date(p.ends_at * 1000)
-        .toLocaleDateString([], { month: 'short', day: 'numeric' })}` : '');
-    info.appendChild(t); info.appendChild(m);
-    li.appendChild(info);
-
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'history-btn cms-btn';
-    toggle.textContent = p.active ? 'Pause' : 'Resume';
-    toggle.addEventListener('click', async () => {
-      toggle.disabled = true;
-      try {
-        await fetch(`/api/admin/promos/${p.id}/active`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ active: !p.active }),
-        });
-      } catch (_) {}
-      _loadAdminDashboard();
-      _loadPromos();          // own Home reflects the change too
-    });
-    li.appendChild(toggle);
-
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'history-btn cms-btn cms-del';
-    del.textContent = '✕';
-    del.title = 'Delete promo';
-    del.addEventListener('click', async () => {
-      del.disabled = true;
-      try { await fetch(`/api/admin/promos/${p.id}`, { method: 'DELETE' }); }
-      catch (_) {}
-      _loadAdminDashboard();
-      _loadPromos();
-    });
-    li.appendChild(del);
-    list.appendChild(li);
-  }
-}
-
-const promoForm = document.getElementById('promo-form');
-if (promoForm) promoForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const msg = document.getElementById('promo-msg');
-  msg.className = 'pw-msg';
-  const title = document.getElementById('promo-title').value.trim();
-  if (!title) {
-    msg.textContent = 'Title is required';
-    msg.classList.add('err');
-    return;
-  }
-  msg.textContent = 'Publishing…';
-  try {
-    const r = await fetch('/api/admin/promos', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        body:   document.getElementById('promo-body').value.trim(),
-        code:   document.getElementById('promo-code').value.trim(),
-        target: document.getElementById('promo-target').value,
-        days:   parseInt(document.getElementById('promo-days').value, 10) || 0,
-      }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok && d.ok) {
-      msg.textContent = 'Published';
-      msg.classList.add('ok');
-      promoForm.reset();
-      _loadAdminDashboard();
-      _loadPromos();
-    } else {
-      msg.textContent = d.error || 'Could not publish';
-      msg.classList.add('err');
-    }
-  } catch (_) {
-    msg.textContent = 'Network error — try again';
-    msg.classList.add('err');
-  }
-});
-
-// ── Admin CMS: notifications ───────────────────────────────────────────────
-function _renderAdminNotices(notices) {
-  const list = document.getElementById('admin-notice-list');
-  if (!list) return;
-  list.innerHTML = '';
-  if (!notices.length) {
-    list.innerHTML = '<li class="notif-empty">Nothing sent yet</li>';
-    return;
-  }
-  for (const n of notices) {
-    const li = document.createElement('li');
-    li.className = 'cms-item';
-    const info = document.createElement('div');
-    info.className = 'cms-item-info';
-    const t = document.createElement('div');
-    t.className = 'cms-item-title';
-    t.textContent = n.title;
-    const m = document.createElement('div');
-    m.className = 'cms-item-meta';
-    m.textContent = `${n.target} · ${new Date(n.created_at * 1000)
-      .toLocaleString([], { month: 'short', day: 'numeric',
-                            hour: '2-digit', minute: '2-digit' })}`;
-    info.appendChild(t); info.appendChild(m);
-    li.appendChild(info);
-
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'history-btn cms-btn cms-del';
-    del.textContent = '✕';
-    del.title = 'Delete notification';
-    del.addEventListener('click', async () => {
-      del.disabled = true;
-      try { await fetch(`/api/admin/notices/${n.id}`, { method: 'DELETE' }); }
-      catch (_) {}
-      _loadAdminDashboard();
-      _loadNotices();
-    });
-    li.appendChild(del);
-    list.appendChild(li);
-  }
-}
-
-const noticeForm = document.getElementById('notice-form');
-if (noticeForm) noticeForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const msg = document.getElementById('notice-msg');
-  msg.className = 'pw-msg';
-  const title = document.getElementById('notice-title').value.trim();
-  if (!title) {
-    msg.textContent = 'Title is required';
-    msg.classList.add('err');
-    return;
-  }
-  msg.textContent = 'Sending…';
-  try {
-    const r = await fetch('/api/admin/notices', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        body:   document.getElementById('notice-body').value.trim(),
-        target: document.getElementById('notice-target').value,
-      }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok && d.ok) {
-      msg.textContent = 'Sent to every connected client';
-      msg.classList.add('ok');
-      noticeForm.reset();
-      _loadAdminDashboard();
-      // Own bell updates via the WS nudge; fetch anyway in case this
-      // admin's WS is reconnecting right now.
-      _loadNotices();
-    } else {
-      msg.textContent = d.error || 'Could not send';
-      msg.classList.add('err');
-    }
-  } catch (_) {
-    msg.textContent = 'Network error — try again';
-    msg.classList.add('err');
-  }
-});
-
-function _renderAdminAnalytics(data) {
-  const viewers = document.getElementById('admin-viewers');
-  const active  = document.getElementById('admin-active-pairs');
-  const winrate = document.getElementById('admin-winrate');
-  if (viewers) viewers.textContent = data.live_viewers ?? '–';
-  if (active)  active.textContent  = data.streams?.count ?? '–';
-  if (winrate) {
-    const s = data.stats || {};
-    winrate.textContent = s.total ? `${s.rate}% (${s.correct}/${s.total})` : '–';
-  }
-}
-
-function _renderAdminUsers(users) {
-  const tbody = document.getElementById('admin-users-rows');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="3" class="history-empty">No users yet</td></tr>';
-    return;
-  }
-  for (const u of users) {
-    const tr = document.createElement('tr');
-    const joined = new Date(u.created_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-    tr.innerHTML =
-      `<td>${u.email}</td>` +
-      `<td></td>` +
-      `<td>${joined}</td>`;
-    const sel = document.createElement('select');
-    sel.className = 'ctrl-select admin-cat-select';
-    for (const cat of ['normal', 'premium', 'admin']) {
-      const opt = document.createElement('option');
-      opt.value = cat;
-      opt.textContent = cat[0].toUpperCase() + cat.slice(1);
-      if (cat === u.category) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    sel.addEventListener('change', async () => {
-      const prev = sel.dataset.prev || u.category;
-      sel.disabled = true;
-      try {
-        const r = await fetch(`/api/admin/users/${u.id}/category`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ category: sel.value }),
-        });
-        if (!r.ok) { sel.value = prev; }
-        else sel.dataset.prev = sel.value;
-      } catch (_) {
-        sel.value = prev;
-      }
-      sel.disabled = false;
-    });
-    sel.dataset.prev = u.category;
-    tr.children[1].appendChild(sel);
-    tbody.appendChild(tr);
-  }
 }
 
 document.querySelectorAll('.tab-btn').forEach((b) => {
@@ -1780,57 +1468,8 @@ for (const [id, key] of [['pref-popup', 'popup'], ['pref-klines', 'klines'],
   });
 }
 
-// ── Settings: change-password form ───────────────────────────────────────
-const pwForm = document.getElementById('pw-form');
-if (pwForm) pwForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const msg = document.getElementById('pw-msg');
-  const cur = document.getElementById('pw-current').value;
-  const nw  = document.getElementById('pw-new').value;
-  const cf  = document.getElementById('pw-confirm').value;
-  msg.className = 'pw-msg';
-  if (nw.length < 8) {
-    msg.textContent = 'New password must be at least 8 characters';
-    msg.classList.add('err');
-    return;
-  }
-  if (nw !== cf) {
-    msg.textContent = 'New passwords do not match';
-    msg.classList.add('err');
-    return;
-  }
-  msg.textContent = 'Saving…';
-  try {
-    const r = await fetch('/api/account/password', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ current: cur, new: nw }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok && d.ok) {
-      msg.textContent = 'Password changed — other devices are signed out.';
-      msg.classList.add('ok');
-      pwForm.reset();
-    } else {
-      msg.textContent = d.error || 'Could not change password';
-      msg.classList.add('err');
-    }
-  } catch (_) {
-    msg.textContent = 'Network error — try again';
-    msg.classList.add('err');
-  }
-});
-
 const signalPopupClose = document.getElementById('signal-popup-close');
 if (signalPopupClose) signalPopupClose.addEventListener('click', _hideSignalPopup);
-
-const logoutBtn = document.getElementById('logout-btn');
-if (logoutBtn) {
-  logoutBtn.addEventListener('click', async () => {
-    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) {}
-    location.href = '/login';
-  });
-}
 
 document.getElementById('tf-select').addEventListener('change', (e) => {
   currentPeriod = parseInt(e.target.value, 10);
@@ -2011,137 +1650,14 @@ function bootChart(attempt) {
     setTimeout(() => location.reload(), 2500);
     return;
   }
-  _loadMe();
   loadPairs().then(() => connect()).catch(() => {
     showFatalError('Failed to start', 'Reloading…');
     setTimeout(() => location.reload(), 2500);
   });
   loadStats();
   setInterval(loadStats, 30000);
-  _loadPromos();
-  _loadNotices();
-  setInterval(_loadNotices, 120000);   // poll fallback — WS 'notice' nudge
-                                       // is the fast path (see handleMsg)
 }
 bootChart();
-
-// ── Promo cards (Home tab) — published by admins via the CMS ──────────────
-async function _loadPromos() {
-  const wrap = document.getElementById('home-promos');
-  if (!wrap) return;
-  let promos = [];
-  try {
-    const r = await fetch('/api/promos');
-    if (r.ok) promos = (await r.json()).promos || [];
-  } catch (_) {}
-  wrap.innerHTML = '';
-  wrap.classList.toggle('hidden', !promos.length);
-  for (const p of promos) {
-    const card = document.createElement('div');
-    card.className = 'promo-card';
-    const h = document.createElement('div');
-    h.className = 'promo-title';
-    h.textContent = p.title;
-    card.appendChild(h);
-    if (p.body) {
-      const b = document.createElement('div');
-      b.className = 'promo-body';
-      b.textContent = p.body;
-      card.appendChild(b);
-    }
-    if (p.code) {
-      const c = document.createElement('span');
-      c.className = 'promo-code';
-      c.textContent = p.code;
-      c.title = 'Tap to copy';
-      c.addEventListener('click', () => {
-        try { navigator.clipboard.writeText(p.code); } catch (_) {}
-        c.classList.add('copied');
-        setTimeout(() => c.classList.remove('copied'), 800);
-      });
-      card.appendChild(c);
-    }
-    wrap.appendChild(card);
-  }
-}
-
-// ── Notification bell ──────────────────────────────────────────────────────
-let _notices = [];
-
-async function _loadNotices() {
-  try {
-    const r = await fetch('/api/notices');
-    if (!r.ok) return;
-    const data = await r.json();
-    _notices = data.notices || [];
-    _renderNotifBadge(data.unread || 0);
-    // Panel already open → keep its list current (rare, but the WS nudge
-    // can land while the user is reading).
-    if (!document.getElementById('notif-panel').classList.contains('hidden')) {
-      _renderNotifList();
-    }
-  } catch (_) {}
-}
-
-function _renderNotifBadge(unread) {
-  const badge = document.getElementById('notif-badge');
-  const btn   = document.getElementById('notif-btn');
-  if (!badge || !btn) return;
-  badge.classList.toggle('hidden', unread <= 0);
-  badge.textContent = unread > 9 ? '9+' : String(unread);
-  btn.classList.toggle('has-unread', unread > 0);   // soft pulse only when unread
-}
-
-function _renderNotifList() {
-  const list = document.getElementById('notif-list');
-  if (!list) return;
-  list.innerHTML = '';
-  if (!_notices.length) {
-    const li = document.createElement('li');
-    li.className = 'notif-empty';
-    li.textContent = 'No notifications yet';
-    list.appendChild(li);
-    return;
-  }
-  for (const n of _notices) {
-    const li = document.createElement('li');
-    li.className = 'notif-item' + (n.read ? '' : ' unread');
-    const t = document.createElement('div');
-    t.className = 'notif-title';
-    t.textContent = n.title;
-    li.appendChild(t);
-    if (n.body) {
-      const b = document.createElement('div');
-      b.className = 'notif-body';
-      b.textContent = n.body;
-      li.appendChild(b);
-    }
-    const d = document.createElement('div');
-    d.className = 'notif-time';
-    d.textContent = new Date(n.created_at * 1000).toLocaleString(
-      [], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    li.appendChild(d);
-    list.appendChild(li);
-  }
-}
-
-const notifBtn = document.getElementById('notif-btn');
-if (notifBtn) notifBtn.addEventListener('click', async () => {
-  const panel = document.getElementById('notif-panel');
-  const opening = panel.classList.contains('hidden');
-  panel.classList.toggle('hidden');
-  if (!opening) return;
-  _renderNotifList();
-  // Opening the panel reads everything — badge clears immediately, the
-  // server-side marks land in the background.
-  _renderNotifBadge(0);
-  try { await fetch('/api/notices/read', { method: 'POST' }); } catch (_) {}
-  _notices = _notices.map((n) => ({ ...n, read: true }));
-});
-const notifClose = document.getElementById('notif-close');
-if (notifClose) notifClose.addEventListener('click', () => {
-  document.getElementById('notif-panel').classList.add('hidden');
-});
 
 // ── History modal — browse past resolved signals from the DB ──────────────
 function _fmtHistTime(ctime) {
