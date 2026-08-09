@@ -564,12 +564,15 @@ class QuotexFeed:
     def _make_client(self, ua: str, root: str):
         from pyquotex.stable_api import Quotex
         from pyquotex.types import ReconnectPolicy
-        # Host: qxbroker.com (the upstream default) is currently blocked from
-        # this network — it returns HTTP 403 on every login-page request. The
-        # qxbroker.co mirror responds 200 and accepts the same auth flow, so
-        # it's the new default. Override with the QX_HOST env var if Quotex
-        # changes this again (or for local dev against a different mirror).
-        host = os.environ.get("QX_HOST", "qxbroker.co")
+        # Host: defaults to qxbroker.com — the official Quotex host that
+        # also serves the WebSocket endpoint at wss://ws2.qxbroker.com.
+        # The earlier switch to qxbroker.co was a workaround for a 403 on
+        # the sign-in page, but the real cause turned out to be
+        # Cloudflare's bot check flagging the Firefox-default UA paired
+        # with Chrome Sec-Ch-Ua-* headers — fixed properly in navigator.py
+        # by pinning the whole header family to consistent Chrome values.
+        # Override via QX_HOST only if Quotex changes its primary host.
+        host = os.environ.get("QX_HOST", "qxbroker.com")
         return Quotex(
             email    = os.environ.get("QX_EMAIL",    ""),
             password = os.environ.get("QX_PASSWORD", ""),
@@ -609,6 +612,11 @@ class QuotexFeed:
                 "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
             # ── Attempt 1: TOKEN (fast path, skipped if no token) ─────────────
+            # Recommended for production: a pre-extracted SSID token bypasses
+            # the Cloudflare-protected login form entirely (no HTTP GET to
+            # /en/sign-in) and just opens the WS connection directly. This
+            # is the ONLY reliable auth path on hosts where Cloudflare
+            # returns a JS challenge to non-browser TLS clients.
             env_token = os.environ.get("QX_TOKEN", "").strip()
             if env_token:
                 self._client = self._make_client(ua, root)
@@ -639,7 +647,7 @@ class QuotexFeed:
                       "and redeploy. Until then, no live data will stream.")
                 return False
             print(f"[feed] connecting via email/password "
-                  f"(user={email}, host={os.environ.get('QX_HOST','qxbroker.co')})...")
+                  f"(user={email}, host={os.environ.get('QX_HOST','qxbroker.com')})...")
             self._client = self._make_client(ua, root)
             ok, reason = await asyncio.wait_for(
                 self._client.connect(), timeout=45)
@@ -656,6 +664,15 @@ class QuotexFeed:
                 print("[feed] login failed — verify QX_EMAIL/QX_PASSWORD are "
                       "correct Quotex credentials. If the account uses 2FA, "
                       "pass a session token via QX_TOKEN instead.")
+            # Cloudflare challenge on the sign-in page — httpx can't solve
+            # the JS challenge. The only fix is to bypass the HTTP login
+            # entirely with a pre-extracted SSID token (QX_TOKEN env var).
+            if "Forbidden" in str(reason) or "403" in str(reason):
+                print("[feed] HTTP 403 from Cloudflare on the sign-in page — "
+                      "the login form is bot-protected and can't be fetched "
+                      "by an HTTP client. Set QX_TOKEN to a pre-extracted "
+                      "SSID cookie (see README) to bypass the login form "
+                      "entirely and connect directly over WebSocket.")
 
             # ── Attempt 3: auth may have succeeded internally but connect()
             #    returned False (pyquotex race condition). If session_data now
@@ -677,7 +694,16 @@ class QuotexFeed:
 
             return False
         except Exception as exc:
+            err = str(exc)
             print(f"[feed] connect error: {exc}")
+            # Cloudflare 403 on the login page — the most common cause of
+            # "Waiting..." in production. Surface a clear actionable hint
+            # instead of just the bare exception.
+            if "Forbidden" in err or "403" in err:
+                print("[feed] >>> Cloudflare blocked the HTTP login page. "
+                      "Set QX_TOKEN (SSID cookie from a logged-in browser "
+                      "session) to bypass the login form entirely. See "
+                      "README.md for step-by-step instructions. <<<")
             return False
 
     async def _load_history(self, asset: str, period: int) -> list[dict]:

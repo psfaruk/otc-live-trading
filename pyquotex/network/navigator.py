@@ -15,10 +15,35 @@ logger.addHandler(handler)
 
 from pyquotex.network.ssl_utils import (
     create_ssl_context,
-    CIPHER_SUITE_FIREFOX
+    CIPHER_SUITE_CHROME
 )
 
-USER_AGENT_DEFAULT = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"
+USER_AGENT_DEFAULT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+# Chrome-consistent browser hint headers. Cloudflare's bot check on
+# qxbroker.com looks at the *consistency* between the User-Agent and the
+# Sec-Ch-Ua / Sec-Fetch-* family — a Firefox UA paired with Sec-Ch-Ua-*
+# headers (the upstream default) gets flagged as a non-browser and
+# rejected with HTTP 403 before the login form is even served. Pinning
+# the whole header family to Chrome 124 makes the request look like a
+# real Chrome fetch and lets the sign-in page through.
+BROWSER_HINT_HEADERS_DEFAULT = {
+    "Sec-Ch-Ua":         '"Chromium";v="124", "Not-A.Brand";v="99", "Google Chrome";v="124"',
+    "Sec-Ch-Ua-Mobile":  "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest":    "document",
+    "Sec-Fetch-Mode":    "navigate",
+    "Sec-Fetch-Site":    "none",
+    "Sec-Fetch-User":    "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Accept":            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language":   "en-US,en;q=0.5",
+    "Accept-Encoding":   "gzip, deflate, br",
+}
 
 
 class Browser:
@@ -33,8 +58,15 @@ class Browser:
         self.proxies: dict[str, str] | str | None = kwargs.pop('proxies', None)
         self.debug: bool = kwargs.pop('debug', False)
 
-        # Build SSL context with specified cipher suite and ECDH curve
-        self._ssl_context = create_ssl_context(cipher_suite=CIPHER_SUITE_FIREFOX)
+        # Build SSL context with Chrome cipher suite and ECDH curve.
+        # Was CIPHER_SUITE_FIREFOX + Firefox UA upstream — Cloudflare's bot
+        # check on qxbroker.com flags the Firefox TLS fingerprint paired
+        # with Chrome Sec-Ch-Ua headers and returns a 403 "Just a moment"
+        # challenge that the httpx client can't solve. Switching the cipher
+        # suite to Chrome (matching the Chrome UA + Chrome Sec-Ch-Ua family)
+        # makes the whole fingerprint internally consistent and lets the
+        # sign-in page through.
+        self._ssl_context = create_ssl_context(cipher_suite=CIPHER_SUITE_CHROME)
 
         if self.server_hostname:
             self._ssl_context.check_hostname = False
@@ -76,6 +108,7 @@ class Browser:
     def get_headers(self) -> dict[str, str] | None:
         self.default_headers = {
             "User-Agent": USER_AGENT_DEFAULT,
+            **BROWSER_HINT_HEADERS_DEFAULT,
         }
         return self.default_headers
 

@@ -4,9 +4,10 @@ python-dotenv>=1.0.0
 
 # pyquotex itself is NOT installed from PyPI/GitHub — the ./pyquotex folder in
 # this repo is a vendored copy with local bug fixes (cookie-jar handling,
-# token parsing, reconnect policy) that aren't in the upstream package.
-# Installing pyquotex from pip/git here would silently reintroduce those bugs.
-# These are pyquotex's own runtime dependencies (from `pip show pyquotex`):
+# token parsing, reconnect policy, Cloudflare-bypass headers) that aren't in
+# the upstream package. Installing pyquotex from pip/git here would silently
+# reintroduce those bugs. These are pyquotex's own runtime dependencies (from
+# `pip show pyquotex`):
 beautifulsoup4>=4.12.0
 certifi>=2024.0.0
 fake-useragent>=1.5.0

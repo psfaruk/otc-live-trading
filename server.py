@@ -116,6 +116,52 @@ async def stream_status():
     return feed.stream_status()
 
 
+@app.get("/api/debug")
+async def debug():
+    """Public diagnostic endpoint — shows exactly why the feed isn't
+    connecting. Returns the env-var state (without leaking secrets), the
+    Quotex client connection state, and the last connect error if any.
+    Use this when the dashboard is stuck on 'Waiting'."""
+    import os
+    return {
+        # Show presence (not value) of each auth env var so the user can
+        # tell at a glance which auth path the feed is trying.
+        "env": {
+            "QX_EMAIL_set":    bool(os.environ.get("QX_EMAIL", "").strip()),
+            "QX_PASSWORD_set": bool(os.environ.get("QX_PASSWORD", "").strip()),
+            "QX_TOKEN_set":    bool(os.environ.get("QX_TOKEN", "").strip()),
+            "QX_HOST":         os.environ.get("QX_HOST", "qxbroker.com (default)"),
+        },
+        "feed": {
+            "connected":          feed._connected,
+            "reconnect_attempts": feed._reconnect_attempts,
+            "client_created":     feed._client is not None,
+            "active_streams":     len(feed._streams),
+            "pairs_loaded":       len(feed._pairs_list),
+        },
+        # The single most useful piece — tells the user exactly which auth
+        # path to set up next.
+        "hint": _debug_hint(feed),
+    }
+
+
+def _debug_hint(feed) -> str:
+    import os
+    if feed._connected:
+        return "Feed is connected — live data should be streaming."
+    if not (os.environ.get("QX_TOKEN", "").strip()
+            or (os.environ.get("QX_EMAIL", "").strip()
+                and os.environ.get("QX_PASSWORD", "").strip())):
+        return ("No Quotex credentials set. Set either QX_TOKEN (recommended) "
+                "or both QX_EMAIL+QX_PASSWORD as Railway env vars, then redeploy.")
+    if os.environ.get("QX_TOKEN", "").strip():
+        return ("QX_TOKEN is set but the WebSocket rejected it. The token may "
+                "be expired — re-extract it from a fresh browser session.")
+    return ("QX_EMAIL/QX_PASSWORD are set but login is failing — this is "
+            "almost always Cloudflare blocking the login page. Switch to "
+            "QX_TOKEN (extract SSID cookie from a logged-in browser session).")
+
+
 # NOTE: these four are deliberately plain `def`, not `async def` — they do
 # synchronous sqlite work (db.py), and an async endpoint would run that ON
 # the event loop, stalling every live stream's tick processing while a
