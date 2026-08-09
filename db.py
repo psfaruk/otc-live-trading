@@ -22,6 +22,16 @@ DB_PATH = os.environ.get("QX_DB_PATH") or os.path.join(
     os.path.dirname(__file__), "candle_micro.db")
 _lock   = threading.Lock()
 
+# If QX_DB_PATH points at a directory that doesn't exist yet (e.g. a Railway
+# Volume mount path configured before the volume itself is attached),
+# sqlite3.connect raises "unable to open database file" on every request
+# instead of just creating the file. Create the parent dir up front so a
+# misconfigured/missing volume degrades to a non-persistent local file
+# instead of a 500 on every stats endpoint.
+_db_dir = os.path.dirname(DB_PATH)
+if _db_dir:
+    os.makedirs(_db_dir, exist_ok=True)
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _DDL = """
