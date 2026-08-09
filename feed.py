@@ -564,10 +564,16 @@ class QuotexFeed:
     def _make_client(self, ua: str, root: str):
         from pyquotex.stable_api import Quotex
         from pyquotex.types import ReconnectPolicy
+        # Host: qxbroker.com (the upstream default) is currently blocked from
+        # this network — it returns HTTP 403 on every login-page request. The
+        # qxbroker.co mirror responds 200 and accepts the same auth flow, so
+        # it's the new default. Override with the QX_HOST env var if Quotex
+        # changes this again (or for local dev against a different mirror).
+        host = os.environ.get("QX_HOST", "qxbroker.co")
         return Quotex(
             email    = os.environ.get("QX_EMAIL",    ""),
             password = os.environ.get("QX_PASSWORD", ""),
-            host     = "market-qx.trade",
+            host     = host,
             lang     = "en",
             root_path= root,
             reconnect_policy=ReconnectPolicy(
@@ -626,7 +632,14 @@ class QuotexFeed:
             # ── Attempt 2: FRESH client, email/password only ──────────────────
             # A brand-new Quotex instance has no leftover WebSocket state from
             # the failed token attempt, so pyquotex does a clean HTTP login.
-            print("[feed] connecting via email/password (fresh client)...")
+            email = os.environ.get("QX_EMAIL", "")
+            if not email or not os.environ.get("QX_PASSWORD", ""):
+                print("[feed] FATAL: QX_EMAIL / QX_PASSWORD not set in env — "
+                      "cannot log in to Quotex. Set them as Railway env vars "
+                      "and redeploy. Until then, no live data will stream.")
+                return False
+            print(f"[feed] connecting via email/password "
+                  f"(user={email}, host={os.environ.get('QX_HOST','qxbroker.co')})...")
             self._client = self._make_client(ua, root)
             ok, reason = await asyncio.wait_for(
                 self._client.connect(), timeout=45)
@@ -636,6 +649,13 @@ class QuotexFeed:
                 return True
             if reason and "reject" in str(reason).lower():
                 self._clear_stale_token()
+            # If the login itself failed (vs. a WS reject), surface a clear
+            # hint — the most common cause is wrong/missing creds, and the
+            # default "Websocket connection rejected" message is misleading.
+            if "Login failed" in str(reason):
+                print("[feed] login failed — verify QX_EMAIL/QX_PASSWORD are "
+                      "correct Quotex credentials. If the account uses 2FA, "
+                      "pass a session token via QX_TOKEN instead.")
 
             # ── Attempt 3: auth may have succeeded internally but connect()
             #    returned False (pyquotex race condition). If session_data now
