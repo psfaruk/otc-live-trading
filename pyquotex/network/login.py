@@ -40,20 +40,26 @@ class Login(Browser):
         self.full_url: str = f"{self.https_base_url}/{api.lang}"
 
     async def get_sign_page(self):
-        headers = {}
+        # Start from the Chrome-consistent browser hint headers defined in
+        # navigator.py — Cloudflare's bot check on qxbroker.com rejects
+        # any request whose User-Agent / Sec-Ch-Ua-* family is internally
+        # inconsistent (e.g. Firefox UA + Sec-Ch-Ua headers, or Chrome UA
+        # without Sec-Ch-Ua at all). The previous dict here only set
+        # Sec-Ch-Ua-Mobile and Sec-Ch-Ua-Platform=Linux, missing the
+        # critical Sec-Ch-Ua header entirely -> 403 Forbidden.
+        from pyquotex.network.navigator import (
+            USER_AGENT_DEFAULT, BROWSER_HINT_HEADERS_DEFAULT,
+        )
+        headers = dict(BROWSER_HINT_HEADERS_DEFAULT)
+        headers["User-Agent"] = USER_AGENT_DEFAULT
+        # Page-specific overrides (these match the original intent, just
+        # built on top of a consistent base instead of replacing it).
         headers["Connection"] = "keep-alive"
-        headers["Accept-Encoding"] = "gzip, deflate, br"
-        headers["Accept-Language"] = "pt-BR,pt;q=0.8,en-US;q=0.5,en;q=0.3"
-        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         headers["Referer"] = self.api.https_url
-        headers["Upgrade-Insecure-Requests"] = "1"
-        headers["Sec-Ch-Ua-Mobile"] = "?0"
-        headers["Sec-Ch-Ua-Platform"] = '"Linux"'
         headers["Sec-Fetch-Site"] = "same-origin"
-        headers["Sec-Fetch-User"] = "?1"
-        headers["Sec-Fetch-Dest"] = "document"
-        headers["Sec-Fetch-Mode"] = "navigate"
         headers["Dnt"] = "1"
+        # Override Accept-Language for the localized sign-in page (was pt-BR).
+        headers["Accept-Language"] = "en-US,en;q=0.9"
         response = await self.send_request(
             method="GET",
             url=self.full_url,

@@ -269,9 +269,9 @@ class QuotexFeed:
         self._client              = None
         self._connected           = False
         self._reconnect_attempts  = 0        # for exponential backoff
-        # Set when the last _connect() died on an HTTP 403 — that's Quotex's
-        # WAF refusing the IP outright, not a transient failure, so the
-        # manager loop backs off far harder (see run()).
+        # Set when the last _connect() died on an HTTP 403 — that's
+        # Cloudflare refusing the sign-in page, not a transient failure, so
+        # the manager loop backs off far harder (see run()).
         self._last_connect_forbidden = False
         self._broadcast           = None     # set once in run()
 
@@ -568,10 +568,19 @@ class QuotexFeed:
     def _make_client(self, ua: str, root: str):
         from pyquotex.stable_api import Quotex
         from pyquotex.types import ReconnectPolicy
+        # Host: defaults to qxbroker.com — the official Quotex host that
+        # also serves the WebSocket endpoint at wss://ws2.qxbroker.com.
+        # The earlier switch to qxbroker.co was a workaround for a 403 on
+        # the sign-in page, but the real cause turned out to be
+        # Cloudflare's bot check flagging the Firefox-default UA paired
+        # with Chrome Sec-Ch-Ua-* headers — fixed properly in navigator.py
+        # by pinning the whole header family to consistent Chrome values.
+        # Override via QX_HOST only if Quotex changes its primary host.
+        host = os.environ.get("QX_HOST", "qxbroker.com")
         return Quotex(
             email    = os.environ.get("QX_EMAIL",    ""),
             password = os.environ.get("QX_PASSWORD", ""),
-            host     = "market-qx.trade",
+            host     = host,
             lang     = "en",
             root_path= root,
             reconnect_policy=ReconnectPolicy(
@@ -608,6 +617,11 @@ class QuotexFeed:
                 "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
             # ── Attempt 1: TOKEN (fast path, skipped if no token) ─────────────
+            # Recommended for production: a pre-extracted SSID token bypasses
+            # the Cloudflare-protected login form entirely (no HTTP GET to
+            # /en/sign-in) and just opens the WS connection directly. This
+            # is the ONLY reliable auth path on hosts where Cloudflare
+            # returns a JS challenge to non-browser TLS clients.
             env_token = os.environ.get("QX_TOKEN", "").strip()
             if env_token:
                 self._client = self._make_client(ua, root)
@@ -631,7 +645,14 @@ class QuotexFeed:
             # ── Attempt 2: FRESH client, email/password only ──────────────────
             # A brand-new Quotex instance has no leftover WebSocket state from
             # the failed token attempt, so pyquotex does a clean HTTP login.
-            print("[feed] connecting via email/password (fresh client)...")
+            email = os.environ.get("QX_EMAIL", "")
+            if not email or not os.environ.get("QX_PASSWORD", ""):
+                print("[feed] FATAL: QX_EMAIL / QX_PASSWORD not set in env — "
+                      "cannot log in to Quotex. Set them as Railway env vars "
+                      "and redeploy. Until then, no live data will stream.")
+                return False
+            print(f"[feed] connecting via email/password "
+                  f"(user={email}, host={os.environ.get('QX_HOST','qxbroker.com')})...")
             self._client = self._make_client(ua, root)
             ok, reason = await asyncio.wait_for(
                 self._client.connect(), timeout=45)
@@ -641,6 +662,23 @@ class QuotexFeed:
                 return True
             if reason and "reject" in str(reason).lower():
                 self._clear_stale_token()
+            # If the login itself failed (vs. a WS reject), surface a clear
+            # hint — the most common cause is wrong/missing creds, and the
+            # default "Websocket connection rejected" message is misleading.
+            if "Login failed" in str(reason):
+                print("[feed] login failed — verify QX_EMAIL/QX_PASSWORD are "
+                      "correct Quotex credentials. If the account uses 2FA, "
+                      "pass a session token via QX_TOKEN instead.")
+            # Cloudflare challenge on the sign-in page — httpx can't solve
+            # the JS challenge. The only fix is to bypass the HTTP login
+            # entirely with a pre-extracted SSID token (QX_TOKEN env var).
+            if "Forbidden" in str(reason) or "403" in str(reason):
+                self._last_connect_forbidden = True
+                print("[feed] HTTP 403 from Cloudflare on the sign-in page — "
+                      "the login form is bot-protected and can't be fetched "
+                      "by an HTTP client. Set QX_TOKEN to a pre-extracted "
+                      "SSID cookie (see README) to bypass the login form "
+                      "entirely and connect directly over WebSocket.")
 
             # ── Attempt 3: auth may have succeeded internally but connect()
             #    returned False (pyquotex race condition). If session_data now
@@ -662,10 +700,19 @@ class QuotexFeed:
 
             return False
         except Exception as exc:
+            err = str(exc)
             print(f"[feed] connect error: {exc}")
-            text = str(exc).lower()
-            if "403" in text or "forbidden" in text:
+            # Cloudflare 403 on the login page — the most common cause of
+            # "Waiting..." in production. Surface a clear actionable hint
+            # instead of just the bare exception, and flag it so the manager
+            # loop backs off on the long (WAF) schedule rather than retrying
+            # a bot-blocked page every 60s.
+            if "Forbidden" in err or "403" in err:
                 self._last_connect_forbidden = True
+                print("[feed] >>> Cloudflare blocked the HTTP login page. "
+                      "Set QX_TOKEN (SSID cookie from a logged-in browser "
+                      "session) to bypass the login form entirely. See "
+                      "README.md for step-by-step instructions. <<<")
             return False
 
     async def _load_history(self, asset: str, period: int) -> list[dict]:
@@ -1908,11 +1955,13 @@ class QuotexFeed:
                         # Exponential backoff (10→20→40→60s, capped) so repeated
                         # failures don't hammer Quotex into a 429 rate-limit.
                         #
-                        # An HTTP 403 is different in kind: Quotex's WAF has
-                        # blocked this IP, and retrying every 60s (~1440
-                        # logins/day) keeps the block alive rather than
-                        # waiting it out. Cap those at 15 min instead — still
-                        # frequent enough to notice the moment it lifts.
+                        # An HTTP 403 is different in kind: Cloudflare is
+                        # refusing the sign-in page outright, and no amount
+                        # of retrying solves that — it needs QX_TOKEN set.
+                        # Hammering it every 60s (~1440 requests/day) only
+                        # deepens the bot score. Cap those at 15 min — still
+                        # frequent enough to recover on its own if the
+                        # challenge stops firing.
                         self._reconnect_attempts += 1
                         cap = 900 if self._last_connect_forbidden else 60
                         delay = min(10 * (2 ** (self._reconnect_attempts - 1)), cap)
