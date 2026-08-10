@@ -116,6 +116,58 @@ async def stream_status():
     return feed.stream_status()
 
 
+# ── Session token management (frontend → backend) ───────────────────────────
+# Lets the operator paste an SSID cookie directly into the Settings page
+# instead of redeploying on Railway every time the token expires. The token
+# is stored in-memory only (feed._user_token) — never written to disk or
+# env vars, and cleared on process restart.
+
+class TokenReq(BaseModel):
+    token: str = ""
+
+
+@app.post("/api/token")
+def set_token(req: TokenReq):
+    """Store a user-supplied SSID token. Takes priority over QX_TOKEN env
+    var on the next connect attempt. Pass an empty string to clear."""
+    token = (req.token or "").strip()
+    if not token:
+        return {"ok": False, "error": "Token is empty"}
+    # Basic sanity check — Quotex SSID tokens are long JWT-like strings.
+    # Reject obviously wrong inputs (too short, contains spaces, etc.)
+    # without being so strict that a valid token gets rejected.
+    if len(token) < 20:
+        return {"ok": False, "error": "Token looks too short — a valid Quotex SSID is typically 100+ characters"}
+    if " " in token or "\n" in token:
+        return {"ok": False, "error": "Token contains whitespace — copy just the cookie value, no spaces or line breaks"}
+    feed.set_token(token)
+    return {
+        "ok": True,
+        "message": "Token stored — reconnecting now. Check status in a few seconds.",
+        "token_preview": token[:8] + "...",
+    }
+
+
+@app.get("/api/token-status")
+def token_status():
+    """Returns the current token state without exposing the token value.
+    Polled by the frontend Settings page to show connect/disconnect status."""
+    return feed.token_status()
+
+
+@app.delete("/api/token")
+def clear_token():
+    """Clear a previously-set user token. The feed will fall back to
+    QX_TOKEN env var (if set) or disconnect entirely."""
+    had_token = feed.has_token()
+    feed.set_token("")  # empty string clears it
+    return {
+        "ok": True,
+        "cleared": had_token,
+        "message": "Token cleared." if had_token else "No user token was set.",
+    }
+
+
 @app.get("/api/debug")
 async def debug():
     """Public diagnostic endpoint — shows exactly why the feed isn't
@@ -139,6 +191,7 @@ async def debug():
             "active_streams":     len(feed._streams),
             "pairs_loaded":       len(feed._pairs_list),
         },
+        "token": feed.token_status(),
         # The single most useful piece — tells the user exactly which auth
         # path to set up next.
         "hint": _debug_hint(feed),
@@ -149,17 +202,23 @@ def _debug_hint(feed) -> str:
     import os
     if feed._connected:
         return "Feed is connected — live data should be streaming."
+    # User-supplied token (from frontend) takes priority over env vars
+    if feed.has_token():
+        return ("User token is set but the WebSocket rejected it. The token "
+                "may be expired — re-extract it from a fresh browser session "
+                "and paste it into the Settings page.")
     if not (os.environ.get("QX_TOKEN", "").strip()
             or (os.environ.get("QX_EMAIL", "").strip()
                 and os.environ.get("QX_PASSWORD", "").strip())):
-        return ("No Quotex credentials set. Set either QX_TOKEN (recommended) "
-                "or both QX_EMAIL+QX_PASSWORD as Railway env vars, then redeploy.")
+        return ("No Quotex credentials set. Open the Settings page and paste "
+                "your SSID token, OR set QX_TOKEN as a Railway env var.")
     if os.environ.get("QX_TOKEN", "").strip():
         return ("QX_TOKEN is set but the WebSocket rejected it. The token may "
                 "be expired — re-extract it from a fresh browser session.")
     return ("QX_EMAIL/QX_PASSWORD are set but login is failing — this is "
             "almost always Cloudflare blocking the login page. Switch to "
             "QX_TOKEN (extract SSID cookie from a logged-in browser session).")
+
 
 
 # NOTE: these four are deliberately plain `def`, not `async def` — they do

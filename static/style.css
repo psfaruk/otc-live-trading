@@ -3074,3 +3074,247 @@ input:focus-visible {
   outline: 2px solid rgba(68, 138, 255, 0.5);
   outline-offset: 2px;
 }
+/* ── 51. Quotex Connection Card (Session Token) ──────────────────────────────
+   Settings page card for pasting an SSID cookie directly into the UI.
+   Bypasses the need to redeploy on Railway every time the token expires. */
+
+.token-card {
+  border: 1px solid rgba(68, 138, 255, 0.15);
+  background: linear-gradient(135deg, rgba(13, 17, 23, 0.95), rgba(22, 27, 34, 0.9));
+}
+
+.token-card h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.token-card h2::before {
+  content: "🔗";
+  font-size: 16px;
+}
+
+.token-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.token-status-label {
+  color: var(--text2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.token-status-badge {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.token-status-badge.connected {
+  color: var(--green);
+  background: rgba(0, 230, 118, 0.1);
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.token-status-badge.connecting {
+  color: var(--yellow);
+  background: rgba(255, 215, 64, 0.1);
+  border: 1px solid rgba(255, 215, 64, 0.3);
+  animation: tokenPulse 1.2s ease-in-out infinite;
+}
+
+.token-status-badge.disconnected {
+  color: var(--red);
+  background: rgba(255, 23, 68, 0.1);
+  border: 1px solid rgba(255, 23, 68, 0.3);
+}
+
+@keyframes tokenPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.token-source-label {
+  color: var(--text3);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.token-input-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text2);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.token-input {
+  width: 100%;
+  min-height: 72px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color var(--duration-fast) var(--ease-out-expo),
+              box-shadow var(--duration-fast) var(--ease-out-expo);
+}
+
+.token-input:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(68, 138, 255, 0.15);
+}
+
+.token-input::placeholder {
+  color: var(--text3);
+  font-style: italic;
+}
+
+.token-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.token-submit-btn {
+  flex: 1;
+  background: linear-gradient(135deg, var(--blue), #2a5fd0);
+  color: #fff;
+  border: none;
+  font-weight: 600;
+}
+
+.token-submit-btn:hover {
+  background: linear-gradient(135deg, #5a9eff, var(--blue));
+  box-shadow: 0 2px 8px rgba(68, 138, 255, 0.3);
+}
+
+.token-clear-btn {
+  background: var(--bg3);
+  color: var(--text2);
+  border: 1px solid var(--border);
+}
+
+.token-clear-btn:hover {
+  background: var(--bg4);
+  color: var(--text);
+  border-color: var(--border-hover);
+}
+
+.token-help {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.token-help summary {
+  cursor: pointer;
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 0;
+  user-select: none;
+  transition: color var(--duration-fast) var(--ease-out-expo);
+}
+
+.token-help summary:hover {
+  color: var(--text);
+}
+
+.token-help ol {
+  margin: 12px 0 8px 0;
+  padding-left: 20px;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.token-help ol li {
+  margin-bottom: 4px;
+}
+
+.token-help ol li a {
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.token-help ol li a:hover {
+  text-decoration: underline;
+}
+
+.token-help code,
+.token-help kbd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'SF Mono', 'Monaco', Consolas, monospace;
+  font-size: 11px;
+  color: var(--green);
+}
+
+.token-help kbd {
+  color: var(--text);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+.token-help .plan-note {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text3);
+  font-style: italic;
+}
+
+/* ── Token message (success/error feedback) ───────────────────────────────── */
+
+.pw-msg {
+  margin-top: 8px;
+  font-size: 12px;
+  min-height: 16px;
+  padding: 0;
+}
+
+.pw-msg.ok {
+  color: var(--green);
+}
+
+.pw-msg.err {
+  color: var(--red);
+}
+
+/* ── Mobile responsive for token card ──────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .token-input {
+    font-size: 11px;
+    min-height: 64px;
+  }
+  .token-actions {
+    flex-direction: column;
+  }
+  .token-submit-btn,
+  .token-clear-btn {
+    width: 100%;
+  }
+  .token-source-label {
+    display: none;
+  }
+}

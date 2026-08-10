@@ -1447,7 +1447,10 @@ function _closePairPanel() {
 })();
 
 // ── Tab navigation — 3-tab layout (Chart / History / Settings) ─────────────
-function _setActiveTab(tab) {
+// Declared as `let` (not `function`) so the token-status polling wrapper
+// below can reassign it to add Settings-tab polling without throwing in
+// strict mode.
+let _setActiveTab = function(tab) {
   _activeTab = tab;
   try { localStorage.setItem('plybit_tab', tab); } catch (_) {}
 
@@ -1494,6 +1497,140 @@ for (const [id, key] of [['pref-popup', 'popup'], ['pref-klines', 'klines'],
     if (lastPrediction) applyPrediction(lastPrediction);
   });
 }
+
+// ── Settings: Quotex Connection card (session token) ─────────────────────
+// Lets the operator paste an SSID cookie directly into the UI instead of
+// redeploying on Railway every time the token expires. The token is sent
+// to POST /api/token (stored in-memory server-side) and the connection
+// status is polled from /api/token-status every 5s while on the Settings tab.
+const tokenForm   = document.getElementById('token-form');
+const tokenInput  = document.getElementById('token-input');
+const tokenMsg    = document.getElementById('token-msg');
+const tokenClear  = document.getElementById('token-clear-btn');
+const tokenBadge  = document.getElementById('token-status-badge');
+const tokenSource = document.getElementById('token-source-label');
+
+if (tokenForm) {
+  tokenForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const token = (tokenInput.value || '').trim();
+    if (!tokenMsg) return;
+    tokenMsg.className = 'pw-msg';
+    if (!token) {
+      tokenMsg.textContent = 'Paste a token first';
+      tokenMsg.classList.add('err');
+      return;
+    }
+    tokenMsg.textContent = 'Sending token…';
+    try {
+      const r = await fetch('/api/token', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ token }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) {
+        tokenMsg.textContent = d.message || 'Token stored — reconnecting…';
+        tokenMsg.classList.add('ok');
+        tokenInput.value = '';  // clear the textarea for security
+        // Start polling for connection status
+        _pollTokenStatus();
+      } else {
+        tokenMsg.textContent = d.error || 'Could not store token';
+        tokenMsg.classList.add('err');
+      }
+    } catch (_) {
+      tokenMsg.textContent = 'Network error — try again';
+      tokenMsg.classList.add('err');
+    }
+  });
+}
+
+if (tokenClear) {
+  tokenClear.addEventListener('click', async () => {
+    if (tokenMsg) {
+      tokenMsg.className = 'pw-msg';
+      tokenMsg.textContent = 'Clearing…';
+    }
+    try {
+      const r = await fetch('/api/token', { method: 'DELETE' });
+      const d = await r.json().catch(() => ({}));
+      if (tokenInput) tokenInput.value = '';
+      if (tokenMsg) {
+        tokenMsg.textContent = d.message || 'Token cleared.';
+        tokenMsg.classList.add(d.cleared ? 'ok' : 'err');
+      }
+      _pollTokenStatus();  // refresh the status badge
+    } catch (_) {
+      if (tokenMsg) {
+        tokenMsg.textContent = 'Network error — try again';
+        tokenMsg.classList.add('err');
+      }
+    }
+  });
+}
+
+// ── Token status polling ──────────────────────────────────────────────────
+// Polls /api/token-status every 5s while the Settings tab is active, and
+// updates the status badge. Stops polling when the user leaves the tab to
+// avoid unnecessary requests. Hooked into _setActiveTab by wrapping the
+// original function — we save a reference, redefine it, and call through.
+let _tokenPollTimer = null;
+
+async function _pollTokenStatus() {
+  try {
+    const r = await fetch('/api/token-status');
+    if (!r.ok) return;
+    const d = await r.json();
+    _renderTokenStatus(d);
+  } catch (_) {}
+}
+
+function _renderTokenStatus(d) {
+  if (!tokenBadge) return;
+  const connected = d.connected;
+  const hasToken = d.has_user_token || d.has_env_token;
+  if (connected) {
+    tokenBadge.textContent = '● Connected';
+    tokenBadge.className = 'token-status-badge connected';
+  } else if (hasToken) {
+    tokenBadge.textContent = '● Connecting…';
+    tokenBadge.className = 'token-status-badge connecting';
+  } else {
+    tokenBadge.textContent = '● Disconnected';
+    tokenBadge.className = 'token-status-badge disconnected';
+  }
+  if (tokenSource) {
+    if (d.token_source === 'user') {
+      tokenSource.textContent = '(token from Settings page)';
+    } else if (d.token_source === 'env') {
+      tokenSource.textContent = '(token from Railway env var)';
+    } else {
+      tokenSource.textContent = '(no token set)';
+    }
+  }
+}
+
+// Wrap _setActiveTab to start/stop token-status polling when entering/
+// leaving the Settings tab. _setActiveTab is a `let` (see above) so it
+// can be reassigned. We save the original, then replace it with a wrapper
+// that calls through and manages the polling timer.
+const _origSetActiveTab = _setActiveTab;
+_setActiveTab = function(tab) {
+  _origSetActiveTab(tab);
+  if (tab === 'settings') {
+    _pollTokenStatus();
+    if (_tokenPollTimer) clearInterval(_tokenPollTimer);
+    _tokenPollTimer = setInterval(_pollTokenStatus, 5000);
+  } else {
+    if (_tokenPollTimer) {
+      clearInterval(_tokenPollTimer);
+      _tokenPollTimer = null;
+    }
+  }
+};
+// Re-apply the active tab so the wrapper picks up the current state
+_setActiveTab(_activeTab);
 
 const signalPopupClose = document.getElementById('signal-popup-close');
 if (signalPopupClose) signalPopupClose.addEventListener('click', _hideSignalPopup);

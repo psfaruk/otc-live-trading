@@ -257,6 +257,47 @@
         <!-- ═══ SETTINGS PAGE ══════════════════════════════════════════════ -->
         <div id="tab-settings" class="page hidden">
           <div class="page-scroll">
+
+            <!-- Quotex Connection — paste SSID token here -->
+            <div class="info-card token-card">
+              <h2>Quotex Connection</h2>
+              <div class="token-status-row">
+                <span class="token-status-label">Status</span>
+                <span id="token-status-badge" class="token-status-badge disconnected">● Disconnected</span>
+                <span id="token-source-label" class="token-source-label"></span>
+              </div>
+              <form id="token-form" autocomplete="off">
+                <label class="token-input-label" for="token-input">
+                  Session Token (SSID)
+                </label>
+                <textarea
+                  id="token-input"
+                  class="settings-input token-input"
+                  placeholder="Paste your Quotex SSID cookie here…"
+                  rows="3"
+                  autocomplete="off"
+                  spellcheck="false"></textarea>
+                <div class="token-actions">
+                  <button type="submit" class="history-btn token-submit-btn">Connect</button>
+                  <button type="button" id="token-clear-btn" class="history-btn token-clear-btn">Clear</button>
+                </div>
+                <div id="token-msg" class="pw-msg"></div>
+              </form>
+              <details class="token-help">
+                <summary>How to get your SSID token</summary>
+                <ol>
+                  <li>Open <a href="https://qxbroker.com/en/sign-in" target="_blank" rel="noopener">qxbroker.com/en/sign-in</a> in Chrome or Firefox</li>
+                  <li>Log in with your Quotex email + password</li>
+                  <li>Once on the trading dashboard, press <kbd>F12</kbd> to open DevTools</li>
+                  <li>Go to <b>Application</b> → <b>Storage</b> → <b>Cookies</b> → <code>https://qxbroker.com</code></li>
+                  <li>Find the cookie named <code>session</code> (or <code>ssid</code>)</li>
+                  <li>Copy its <b>Value</b> — a long string starting with <code>eyJ…</code></li>
+                  <li>Paste it above and click <b>Connect</b></li>
+                </ol>
+                <p class="plan-note">The token is stored in-memory only and cleared on server restart. It takes priority over the QX_TOKEN env var.</p>
+              </details>
+            </div>
+
             <div class="info-card">
               <h2>Performance</h2>
               <div class="settings-row">

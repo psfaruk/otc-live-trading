@@ -313,7 +313,67 @@ class QuotexFeed:
         # re-run periodically from the manager loop.
         self._last_db_cleanup: float = 0.0
 
+        # ── User-supplied session token (in-memory, NOT persisted) ────────
+        # Set via POST /api/token from the frontend Settings page. Takes
+        # priority over QX_TOKEN env var in _connect(). Cleared on process
+        # restart (deliberate — the token is sensitive and shouldn't survive
+        # a redeploy to a different machine). Empty string = no user token.
+        self._user_token: str = ""
+        self._user_token_at: float = 0.0   # when it was set (for status display)
+
     # ── Public ────────────────────────────────────────────────────────────────
+
+    def set_token(self, token: str) -> None:
+        """Store a user-supplied SSID token (from the frontend Settings page).
+
+        Takes priority over QX_TOKEN env var on the next _connect() attempt.
+        Stored in-memory only — never written to disk or env. Pass an empty
+        string to clear a previously-set token.
+        """
+        self._user_token = (token or "").strip()
+        self._user_token_at = time.time() if self._user_token else 0.0
+        if self._user_token:
+            print(f"[feed] user token set ({self._user_token[:8]}...) — "
+                  "will use on next connect")
+        else:
+            print("[feed] user token cleared")
+        # Force a reconnect on the next manager-loop iteration: mark the
+        # current connection as down and tear down the existing client so
+        # _connect() runs again with the new token. Without this, a stale
+        # (but still "connected") client would keep serving old data and
+        # the new token wouldn't take effect until the next organic drop.
+        if self._connected:
+            self._connected = False
+            self._reconnect_attempts = 0   # reset backoff
+            # Tear down the old client asynchronously — can't await here
+            # (this method is sync, called from a sync route handler), so
+            # schedule the close on the running event loop.
+            old_client = self._client
+            self._client = None
+            if old_client:
+                try:
+                    loop = asyncio.get_event_loop()
+                    loop.create_task(self._close_client(old_client))
+                except RuntimeError:
+                    pass  # no event loop yet — will be cleaned up on next connect
+
+    def has_token(self) -> bool:
+        """True if a user-supplied token is currently stored."""
+        return bool(self._user_token)
+
+    def token_status(self) -> dict:
+        """Return the current token state for the /api/token-status endpoint.
+        Never exposes the token value itself — only whether one is set,
+        when it was set, and whether the feed is currently connected."""
+        return {
+            "has_user_token": bool(self._user_token),
+            "has_env_token":  bool(os.environ.get("QX_TOKEN", "").strip()),
+            "token_source":   ("user" if self._user_token
+                               else "env" if os.environ.get("QX_TOKEN", "").strip()
+                               else "none"),
+            "set_at":         self._user_token_at if self._user_token else None,
+            "connected":      self._connected,
+        }
 
     def available_pairs(self) -> dict:
         return {"pairs": self._pairs_list, "payout_floor": PAYOUT_FLOOR}
@@ -617,11 +677,19 @@ class QuotexFeed:
             # /en/sign-in) and just opens the WS connection directly. This
             # is the ONLY reliable auth path on hosts where Cloudflare
             # returns a JS challenge to non-browser TLS clients.
-            env_token = os.environ.get("QX_TOKEN", "").strip()
-            if env_token:
+            #
+            # Token precedence: user-supplied (from frontend Settings page)
+            # takes priority over QX_TOKEN env var. The user token is set
+            # via POST /api/token and stored in self._user_token (in-memory,
+            # not persisted). This lets the operator refresh an expired
+            # token without a Railway redeploy.
+            token = self._user_token or os.environ.get("QX_TOKEN", "").strip()
+            if token:
                 self._client = self._make_client(ua, root)
-                self._client.set_session(user_agent=ua, ssid=env_token)
-                print(f"[feed] connecting with session token={env_token[:8]}...")
+                self._client.set_session(user_agent=ua, ssid=token)
+                src = "user" if self._user_token else "env"
+                print(f"[feed] connecting with session token={token[:8]}... "
+                      f"(source={src})")
                 try:
                     ok, reason = await asyncio.wait_for(
                         self._client.connect(), timeout=30)
@@ -634,8 +702,14 @@ class QuotexFeed:
                     print(f"[feed] token attempt error: {_te}")
                 # Token failed — close this client cleanly before making a new one
                 await self._close_client(self._client)
-                # Invalidate the stale token so next reconnect skips this path
-                os.environ.pop("QX_TOKEN", None)
+                # Invalidate the stale token so next reconnect skips this path.
+                # For env tokens, pop from os.environ; for user tokens, clear
+                # self._user_token (so a bad token doesn't retry forever).
+                if self._user_token:
+                    self._user_token = ""
+                    self._user_token_at = 0.0
+                else:
+                    os.environ.pop("QX_TOKEN", None)
 
             # ── Attempt 2: FRESH client, email/password only ──────────────────
             # A brand-new Quotex instance has no leftover WebSocket state from
