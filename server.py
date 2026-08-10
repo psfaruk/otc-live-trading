@@ -155,6 +155,23 @@ def token_status():
     return feed.token_status()
 
 
+@app.get("/api/server-time")
+def server_time():
+    """Returns the Quotex broker's current Unix timestamp (seconds) and the
+    local server's timestamp. The frontend uses the broker time to sync its
+    candle countdown so it matches the broker's period rollover EXACTLY —
+    no ms drift from local NTP skew. Falls back to local time when the
+    feed isn't connected yet."""
+    import time
+    broker_ts = feed._broker_time()
+    return {
+        "broker_time":  int(broker_ts),
+        "local_time":   int(time.time()),
+        "offset_ms":    int((broker_ts - time.time()) * 1000),
+        "connected":    feed._connected,
+    }
+
+
 @app.delete("/api/token")
 def clear_token():
     """Clear a previously-set user token. The feed will fall back to

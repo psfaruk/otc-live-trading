@@ -75,7 +75,7 @@ def _clean_display(raw_display: str) -> str:
 # that base. _load_pairs filters the live Quotex instrument list against
 # this dict — anything not listed here is dropped before it reaches the UI.
 _WANTED_PAIRS = {
-    # OTC pairs (asset code ends in _otc)
+    # OTC pairs (asset code ends in _otc) — 11 pairs
     "BRLUSD":  "otc",
     "USDINR":  "otc",
     "USDIDR":  "otc",
@@ -87,11 +87,12 @@ _WANTED_PAIRS = {
     "USDPHP":  "otc",
     "USDPKR":  "otc",
     "USDZAR":  "otc",
-    # Real pairs (no _otc suffix — real market only, not OTC)
+    # Real pairs (no _otc suffix — real market only, not OTC) — 5 pairs
     "USDJPY":  "real",
     "EURUSD":  "real",
     "GBPUSD":  "real",
     "AUDUSD":  "real",
+    "EURGBP":  "real",
 }
 
 # Derived: set of base symbols this app ever streams. Used by _load_pairs to
@@ -1469,11 +1470,36 @@ class QuotexFeed:
 
         return accuracy
 
+    def _broker_time(self) -> float:
+        """Return the Quotex server's current timestamp when available,
+        falling back to the local clock.
+
+        The broker timestamp is what every tick message carries (set on
+        api.timesync.server_timestamp in pyquotex/api.py:570) and is the
+        authoritative clock for candle boundaries — using the local clock
+        instead would drift on hosts with skewed NTP and cause candles to
+        close a few hundred ms early/late vs the broker's actual period
+        rollover. Returns time.time() if the client isn't connected yet
+        or timesync hasn't received its first tick.
+        """
+        try:
+            if self._client and self._client.api:
+                ts = self._client.api.timesync.server_timestamp
+                # Sanity: a valid Unix timestamp from this millennium
+                if ts and ts > 1_000_000_000:
+                    return float(ts)
+        except Exception:
+            pass
+        return time.time()
+
     async def _smart_sleep(self, stream: _AssetStream) -> None:
-        """Sleep until next tick poll, but wake up early at candle boundary."""
+        """Sleep until next tick poll, but wake up early at candle boundary.
+        Uses the broker's server timestamp (not the local clock) so the
+        sleep aligns exactly with the broker's candle period rollover —
+        no ms drift from local NTP skew."""
         if stream.candle_open_time > 0:
             close_at     = stream.candle_open_time + stream.period
-            until_close  = close_at - time.time()
+            until_close  = close_at - self._broker_time()
             sleep_dur    = max(0.01, min(0.05, until_close))
         else:
             sleep_dur = 0.05
@@ -1576,7 +1602,10 @@ class QuotexFeed:
                 # feeds — it waits a short grace past the boundary so a late
                 # final tick can still shape the true close before we grade and
                 # log the candle.
-                now = time.time()
+                # Uses the BROKER's server timestamp (self._broker_time) so the
+                # fallback aligns exactly with the broker's period rollover —
+                # no ms drift from local NTP skew vs the broker clock.
+                now = self._broker_time()
                 if (stream.candle_open_time > 0
                         and now >= stream.candle_open_time + stream.period + TIMER_GRACE):
                     expected_new = _floor_to_period(now, stream.period)

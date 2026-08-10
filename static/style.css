@@ -850,7 +850,7 @@ img { max-width: 100%; display: block; }
   top: 12px;
   left: 12px;
   z-index: 10;
-  background: rgba(6, 8, 13, 0.8);
+  background: rgba(6, 8, 13, 0.85);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--border);
@@ -867,6 +867,30 @@ img { max-width: 100%; display: block; }
   box-shadow: var(--shadow-md);
   user-select: none;
   pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+/* Seconds remaining — the big number */
+#chart-countdown .countdown-time,
+.chart-countdown .countdown-time {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Broker UTC time — small label below the countdown */
+#chart-countdown .countdown-broker,
+.chart-countdown .countdown-broker {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text2);
+  letter-spacing: 0.8px;
+  line-height: 1;
+  text-shadow: none;
+  opacity: 0.85;
 }
 
 #chart-countdown.warn,
@@ -2708,6 +2732,32 @@ img { max-width: 100%; display: block; }
   padding: 1px 4px;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+/* Per-pair countdown seconds — live-updating, color shifts as candle nears close */
+.sidebar-pair-cd {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text2);
+  min-width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+}
+
+.sidebar-pair-cd.warn {
+  color: var(--yellow);
+}
+
+.sidebar-pair-cd.danger {
+  color: var(--red);
+  animation: cdPulse 0.8s ease-in-out infinite;
+}
+
+@keyframes cdPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .sidebar-pair-lock {

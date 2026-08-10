@@ -481,10 +481,49 @@ function initChart() {
   _startRaf();
 }
 
+// ── Broker time sync ───────────────────────────────────────────────────────
+// The candle countdown MUST align with the Quotex broker's server clock, not
+// the user's local clock — otherwise candles would close a few hundred ms
+// early/late on machines with skewed NTP. We fetch /api/server-time every
+// 30s to learn the offset (broker_time - local_time) and apply it to every
+// countdown calculation. The offset is in milliseconds for sub-second
+// precision.
+let _brokerOffsetMs = 0;   // broker_time - local_time, in ms (positive = broker ahead)
+
+async function _syncBrokerTime() {
+  try {
+    const r = await fetch('/api/server-time');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (typeof d.offset_ms === 'number') {
+      _brokerOffsetMs = d.offset_ms;
+      // Log only when the offset changes significantly (>500ms) so the
+      // console isn't spammed on every sync.
+      if (Math.abs(_brokerOffsetMs) > 500) {
+        console.log(`[time] broker offset: ${_brokerOffsetMs}ms ` +
+                    `(broker ${d.broker_time} vs local ${d.local_time})`);
+      }
+    }
+  } catch (_) {}
+}
+
+// Returns the current broker time in seconds (float, sub-second precision).
+function _brokerNowSec() {
+  return (Date.now() + _brokerOffsetMs) / 1000;
+}
+
+// Initial sync + periodic refresh (every 30s — the offset rarely drifts
+// fast, but this catches any gradual NTP skew on either side).
+_syncBrokerTime();
+setInterval(_syncBrokerTime, 30000);
+
 // ── Countdown ──────────────────────────────────────────────────────────────
+// Uses the BROKER's server time (via _brokerNowSec) so the countdown aligns
+// exactly with the broker's candle period rollover — no ms drift from local
+// NTP skew. Updated every 250ms for sub-second smoothness on the big overlay.
 function tickCountdown() {
-  const now  = Math.floor(Date.now() / 1000);
-  const left = currentPeriod - (now % currentPeriod);
+  const nowSec = _brokerNowSec();
+  const left = currentPeriod - (Math.floor(nowSec) % currentPeriod);
   const cls  = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
 
   // Header countdown was removed (it lives on the chart's live price line
@@ -493,10 +532,17 @@ function tickCountdown() {
   if (el) { el.textContent = left + 's'; el.className = cls; }
 
   // Big countdown overlay on the chart — large mono digits with pulse
-  // animation when <10s remaining. Visible only while a candle is open.
+  // animation when <10s remaining. Shows seconds remaining + the broker's
+  // current HH:MM:SS so the user can verify the sync.
   const cd = document.getElementById('chart-countdown');
   if (cd) {
-    cd.textContent = left + 's';
+    const brokerDate = new Date(nowSec * 1000);
+    const hms = brokerDate.toLocaleTimeString('en-GB', {
+      hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+      timeZone: 'UTC'
+    });
+    cd.innerHTML = `<span class="countdown-time">${left}s</span>` +
+                   `<span class="countdown-broker">${hms} UTC</span>`;
     cd.className = 'chart-countdown ' + cls;
     cd.classList.toggle('hidden', left <= 0);
   }
@@ -504,9 +550,12 @@ function tickCountdown() {
   // The running candle's price line shows the countdown on the chart.
   _updateLiveLineTimer(left, cls);
 
+  // Update the per-pair countdown in the sidebar pair list
+  _updateSidebarCountdowns();
+
   updateEntryTiming();
 }
-setInterval(tickCountdown, 1000);
+setInterval(tickCountdown, 250);   // 4× per second for smooth countdown
 tickCountdown();
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -1239,10 +1288,12 @@ function _renderSidebarPairs() {
                     : 'closed';
     const lockIcon = p.locked ? '🔒' : '';
     const pay = p.payout ? `${p.payout}%` : '–';
+    // Countdown slot — updated live by _updateSidebarCountdowns()
     return `<button type="button" class="sidebar-pair-row ${isActive ? 'active' : ''}"
             data-asset="${p.asset}">
       <span class="sidebar-pair-dot ${statusDot}"></span>
       <span class="sidebar-pair-name">${p.display}</span>
+      <span class="sidebar-pair-cd" data-asset="${p.asset}">--</span>
       <span class="sidebar-pair-pay">${pay}</span>
       ${lockIcon ? `<span class="sidebar-pair-lock">${lockIcon}</span>` : ''}
     </button>`;
@@ -1261,6 +1312,22 @@ function _renderSidebarPairs() {
       _renderSidebarPairs();  // update active highlight
       resetAndSubscribe();
     });
+  });
+}
+
+// Update the per-pair countdown seconds in the sidebar list. Called from
+// tickCountdown (4×/s) so every pair's "time to next candle close" stays
+// live. All pairs share the same period (60s default), so the countdown
+// value is the same for all — but displaying it per-row lets the user see
+// at a glance when the next candle arrives for any pair.
+function _updateSidebarCountdowns() {
+  const nowSec = _brokerNowSec();
+  const left = currentPeriod - (Math.floor(nowSec) % currentPeriod);
+  const cls  = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
+  const txt  = left + 's';
+  document.querySelectorAll('.sidebar-pair-cd').forEach((el) => {
+    el.textContent = txt;
+    el.className = 'sidebar-pair-cd ' + cls;
   });
 }
 
