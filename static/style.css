@@ -92,6 +92,12 @@ select { font: inherit; }
 
 img { max-width: 100%; display: block; }
 
+/* Global .hidden utility — any element toggled by JS via classList.add('hidden')
+   gets display:none. Replaces the per-element .hidden rules that previously
+   scattered this file (and avoids future regressions where a new toggled
+   element forgets its own .hidden rule). */
+.hidden { display: none !important; }
+
 /* ── 3. Scrollbar Styling ───────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar {
@@ -172,12 +178,21 @@ img { max-width: 100%; display: block; }
   flex-shrink: 0;
 }
 
-.sidebar-brand span {
+.sidebar-brand span,
+.sidebar-brand-text {
   font-size: 16px;
   font-weight: 700;
   color: var(--text);
   letter-spacing: 0.3px;
   white-space: nowrap;
+}
+
+/* The "AI" suffix in the brand is styled as an italic accent. */
+.sidebar-brand-text em {
+  font-style: italic;
+  font-weight: 700;
+  color: var(--blue);
+  margin-left: 2px;
 }
 
 /* ── 5b. Sidebar Navigation ─────────────────────────────────────────────────── */
@@ -301,14 +316,27 @@ img { max-width: 100%; display: block; }
   line-height: 1.5;
 }
 
-/* ── NEW: Connection status breathing animation ── */
+/* ── NEW: Connection status breathing animation ──
+   chart.js sets `el.className = 'status ' + cls` where cls is one of
+   "connected" / "connecting" / "disconnected" — so the #status div ends up
+   with two classes (e.g. "status connected"). We support BOTH that
+   space-separated form AND the legacy hyphenated form (.status-connected)
+   in case anything else still uses it. */
 .status-connected,
 .status-connecting,
-.status-disconnected {
+.status-disconnected,
+.status.connected,
+.status.connecting,
+.status.disconnected,
+#status.connected,
+#status.connecting,
+#status.disconnected {
   transition: color var(--duration-normal) ease;
 }
 
-.status-connected::before {
+.status-connected::before,
+.status.connected::before,
+#status.connected::before {
   content: '';
   display: inline-block;
   width: 6px;
@@ -320,7 +348,9 @@ img { max-width: 100%; display: block; }
   animation: breatheGreen 2.5s ease-in-out infinite;
 }
 
-.status-connecting::before {
+.status-connecting::before,
+.status.connecting::before,
+#status.connecting::before {
   content: '';
   display: inline-block;
   width: 6px;
@@ -332,7 +362,9 @@ img { max-width: 100%; display: block; }
   animation: breatheYellow 1.5s ease-in-out infinite;
 }
 
-.status-disconnected::before {
+.status-disconnected::before,
+.status.disconnected::before,
+#status.disconnected::before {
   content: '';
   display: inline-block;
   width: 6px;
@@ -411,11 +443,25 @@ img { max-width: 100%; display: block; }
   flex-direction: row;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+/* NEW: Topbar center — sits between the left controls (pair/timeframe) and
+   right stats (refresh). Holds the live price ticker, centered on the screen. */
+.topbar-center {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* ── 7a. Sidebar Toggle (hamburger, mobile only) ────────────────────────────── */
 
-#sidebar-toggle {
+#sidebar-toggle,
+.sidebar-toggle {
   display: flex;
   background: none;
   border: none;
@@ -478,9 +524,13 @@ img { max-width: 100%; display: block; }
   flex-shrink: 0;
 }
 
-/* ── 7c. Pair Selector & Timeframe Controls ─────────────────────────────────── */
+/* ── 7c. Pair Selector & Timeframe Controls ───────────────────────────────────
+   .tf-select is the timeframe dropdown (#tf-select in HTML); .ctrl-select is
+   the generic styled-dropdown class used by both the pair selector and the
+   history-page pair filter. Both share the same look. */
 
-.ctrl-select {
+.ctrl-select,
+.tf-select {
   background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--text);
@@ -496,16 +546,19 @@ img { max-width: 100%; display: block; }
   appearance: none;
 }
 
-.ctrl-select:hover {
+.ctrl-select:hover,
+.tf-select:hover {
   border-color: var(--border-hover);
 }
 
-.ctrl-select:focus {
+.ctrl-select:focus,
+.tf-select:focus {
   border-color: var(--blue);
 }
 
 /* NEW: Smooth select focus glow transition */
-.ctrl-select:focus {
+.ctrl-select:focus,
+.tf-select:focus {
   border-color: var(--blue);
   box-shadow: 0 0 0 2px rgba(68, 138, 255, 0.15);
   transition: border-color var(--duration-normal) ease, box-shadow var(--duration-normal) ease;
@@ -575,105 +628,6 @@ img { max-width: 100%; display: block; }
 #header-stats button:active {
   transform: scale(0.92);
   transition-duration: 0.05s;
-}
-
-/* ── 7f. Notification Button & Badge ────────────────────────────────────────── */
-
-.notif-btn {
-  position: relative;
-  background: none;
-  border: none;
-  color: var(--text2);
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 8px;
-  transition: all 0.15s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.notif-btn:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.notif-btn.has-unread {
-  animation: notifPulse 2s ease-in-out infinite;
-}
-
-@keyframes notifPulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.08); }
-}
-
-.notif-badge {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 16px;
-  height: 16px;
-  background: var(--red);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 800;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 4px;
-  line-height: 1;
-}
-
-/* NEW: Notif badge entrance animation */
-.notif-badge {
-  animation: badgePop 0.3s var(--ease-spring) forwards;
-}
-
-@keyframes badgePop {
-  from { transform: scale(0); }
-  to   { transform: scale(1); }
-}
-
-#notif-btn {
-  position: relative;
-  background: none;
-  border: none;
-  color: var(--text2);
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 8px;
-  transition: all 0.15s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#notif-btn:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-#notif-btn.has-unread {
-  animation: notifPulse 2s ease-in-out infinite;
-}
-
-#notif-badge {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 16px;
-  height: 16px;
-  background: var(--red);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 800;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 4px;
-  line-height: 1;
 }
 
 /* ── 8. Pages Container ─────────────────────────────────────────────────────── */
@@ -887,41 +841,52 @@ img { max-width: 100%; display: block; }
   height: 100%;
 }
 
-/* Chart countdown overlay */
-#chart-countdown {
+/* Chart countdown overlay — LARGE glassmorphism digits, top-left of #chart-wrap.
+   Upgraded from a small 12px pill to a prominent 28px mono readout so traders
+   can read the seconds-to-candle-close from across the room. */
+#chart-countdown,
+.chart-countdown {
   position: absolute;
-  top: 10px;
-  left: 10px;
+  top: 12px;
+  left: 12px;
   z-index: 10;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(6, 8, 13, 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 14px;
   color: #fff;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 28px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  text-shadow: 0 0 12px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-md);
+  user-select: none;
+  pointer-events: none;
 }
 
-/* NEW: Countdown glassmorphism upgrade */
-#chart-countdown {
-  background: rgba(6, 8, 13, 0.8);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-#chart-countdown.warn {
+#chart-countdown.warn,
+.chart-countdown.warn {
   color: var(--yellow);
+  text-shadow: 0 0 12px rgba(255, 215, 64, 0.4);
 }
 
-#chart-countdown.danger {
+#chart-countdown.danger,
+.chart-countdown.danger {
   color: var(--red);
-  animation: countdownPulse 1s ease-in-out infinite;
+  text-shadow: 0 0 16px rgba(255, 23, 68, 0.5);
+  animation: countdownPulse 0.8s ease-in-out infinite;
 }
 
+/* Pulse: scale + subtle opacity. The old opacity-only pulse was too subtle
+   for the larger font. Scale draws the eye without being distracting. */
 @keyframes countdownPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.05); opacity: 0.85; }
 }
 
 /* ── 10. Side Panel ─────────────────────────────────────────────────────────── */
@@ -1073,6 +1038,16 @@ img { max-width: 100%; display: block; }
   padding: 8px 4px;
 }
 
+/* "Collecting ticks…" placeholder shown when the microstructure panel is
+   still gathering the first tick batch. Muted, italic, low-prominence. */
+.micro-forming {
+  font-size: 11px;
+  color: var(--text3);
+  font-style: italic;
+  padding: 8px 4px;
+  line-height: 1.5;
+}
+
 .micro-pressure-row {
   display: flex;
   align-items: center;
@@ -1201,19 +1176,35 @@ img { max-width: 100%; display: block; }
   transition: width 0.6s var(--ease-out-expo);
 }
 
+/* In the HTML, the evidence ul uses id="mstate-evidence" with no class — so we
+   target both #id and .class to be safe. */
+#mstate-evidence,
 .mstate-evidence {
   list-style: none;
   font-size: 11px;
   color: var(--text2);
 }
 
+#mstate-evidence li,
 .mstate-evidence li {
   padding: 2px 0;
 }
 
+#mstate-evidence .empty,
 .mstate-evidence .empty {
   color: var(--text3);
   font-style: italic;
+}
+
+/* Auxiliary bars container inside the mstate card (used by chart.js to render
+   small inline bar visualizations). Each child is a flex row. */
+.mstate-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text2);
 }
 
 /* ── 13. Signal Badge (reusable) ────────────────────────────────────────────── */
@@ -1569,108 +1560,10 @@ img { max-width: 100%; display: block; }
   color: var(--blue);
 }
 
-/* ── 20. Notification Panel ─────────────────────────────────────────────────── */
-
-#notif-panel {
-  position: fixed;
-  top: 56px;
-  right: 12px;
-  width: 340px;
-  max-height: 70vh;
-  background: var(--glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-lg);
-  z-index: 55;
-  overflow: hidden;
-  animation: modalIn 0.2s ease-out;
-}
-
-/* NEW: Notif panel enhanced glass */
-#notif-panel {
-  background: rgba(13, 17, 23, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03);
-}
-
-#notif-panel.hidden {
-  display: none;
-}
-
-.notif-panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 700;
-  font-size: 13px;
-  color: var(--text);
-}
-
-/* NEW: Section heading typography premium */
-.notif-panel-head {
-  letter-spacing: 0.3px;
-  font-size: 14px;
-}
-
-.notif-list {
-  list-style: none;
-  max-height: 50vh;
-  overflow-y: auto;
-}
-
-.notif-item {
-  padding: 12px 16px;
-  border-bottom: 1px solid rgba(33, 38, 45, 0.5);
-  transition: background 0.1s ease;
-}
-
-.notif-item.unread {
-  background: rgba(68, 138, 255, 0.06);
-}
-
-.notif-item:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-/* NEW: Smoother notif item hover */
-.notif-item {
-  transition: background var(--duration-fast) ease;
-}
-
-.notif-title {
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 2px;
-  color: var(--text);
-}
-
-.notif-body {
-  font-size: 12px;
-  color: var(--text2);
-  margin-bottom: 4px;
-  line-height: 1.5;
-}
-
-.notif-time {
-  font-size: 11px;
-  color: var(--text3);
-}
-
-.notif-empty {
-  text-align: center;
-  color: var(--text3);
-  padding: 24px;
-  font-style: italic;
-  font-size: 13px;
-}
-
 /* ── 21. Signal Popup ───────────────────────────────────────────────────────── */
 
-#signal-popup {
+#signal-popup,
+.signal-popup {
   position: fixed;
   top: 50%;
   left: 50%;
@@ -1678,11 +1571,31 @@ img { max-width: 100%; display: block; }
   z-index: 55;
   text-align: center;
   animation: popIn 0.3s ease-out;
+  /* The popup contains a badge + meta + close button. Let it receive pointer
+     events on its children (the close button needs clicks) but the popup
+     itself is non-interactive so it doesn't block chart interactions. */
   pointer-events: none;
 }
 
-#signal-popup.hidden {
-  display: none;
+/* Children of the popup CAN receive pointer events (e.g. the close button). */
+#signal-popup > *,
+.signal-popup > * {
+  pointer-events: auto;
+}
+
+/* Meta line under the signal popup badge — pair + strength summary. */
+.signals-last-meta {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+
+/* The close button on the signal popup uses .history-btn styles (defined
+   later in section F) — it just needs positioning help here. */
+#signal-popup-close {
+  margin-top: 12px;
 }
 
 @keyframes popIn {
@@ -1690,58 +1603,11 @@ img { max-width: 100%; display: block; }
   to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
-/* ── 22. History Modal ──────────────────────────────────────────────────────── */
-
-#history-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-}
-
-#history-modal.hidden {
-  display: none;
-}
-
-#history-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  animation: fadeIn 0.2s ease;
-}
-
-/* NEW: Smoother backdrop */
-#history-backdrop {
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-}
-
-#history-panel {
-  position: relative;
-  width: min(920px, 94vw);
-  height: min(640px, 88vh);
-  margin: 5vh auto 0;
-  background: var(--glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border);
-  border-radius: var(--r-xl);
-  box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
-  animation: modalIn 0.25s ease-out;
-  overflow: hidden;
-}
-
-/* NEW: History panel enhanced glass */
-#history-panel {
-  background: rgba(13, 17, 23, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.03);
-}
+/* ── 22. Shared Modal Animations ──────────────────────────────────────────────
+   (The history modal, settings backdrop, and notif panel DOM nodes were
+   removed when the app switched to a 3-tab page layout. These keyframes are
+   still used by #pair-panel, #sidebar-backdrop, and the side-panel toggle, so
+   they stay.) */
 
 @keyframes fadeIn {
   from { opacity: 0; }
@@ -1827,113 +1693,11 @@ img { max-width: 100%; display: block; }
   font-weight: 700;
 }
 
-/* ── 24. Settings Backdrop ──────────────────────────────────────────────────── */
-
-#settings-backdrop {
-  display: none;
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 44;
-  animation: fadeIn 0.2s ease;
-}
-
-#settings-backdrop.show {
-  display: block;
-}
-
-/* ── 25. Home Page ──────────────────────────────────────────────────────────── */
-
-.home-status {
-  display: flex;
-  flex-direction: row;
-  gap: 12px;
-  padding: 12px 16px;
-  background: var(--bg3);
-  border-radius: var(--r);
-  margin-bottom: 12px;
-  font-size: 12px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-/* NEW: Home status gradient */
-.home-status {
-  background: linear-gradient(135deg, var(--bg3) 0%, rgba(28, 35, 51, 0.7) 100%);
-  border: 1px solid var(--border);
-}
-
-.home-hero {
-  background: var(--glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 20px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow-sm);
-}
-
-/* NEW: Home hero gradient + depth */
-.home-hero {
-  background: linear-gradient(145deg, rgba(22, 27, 34, 0.9) 0%, rgba(13, 17, 23, 0.95) 100%);
-  box-shadow: var(--shadow-card);
-}
-
-.home-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-.home-card {
-  background: var(--glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  padding: 16px;
-  text-align: left;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: var(--shadow-sm);
-}
-
-.home-card:hover {
-  border-color: var(--border-hover);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-}
-
-/* NEW: Home card gradient + hover glow */
-.home-card {
-  background: var(--card-grad);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-card);
-  transition: transform var(--duration-normal) var(--ease-out-expo),
-              box-shadow var(--duration-normal) ease,
-              border-color var(--duration-normal) ease;
-}
-
-.home-card:hover {
-  background: var(--card-grad-hover);
-  border-color: rgba(68, 138, 255, 0.15);
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-card-hover), 0 0 20px rgba(68, 138, 255, 0.05);
-}
-
-/* NEW: Home card press effect */
-.home-card:active {
-  transform: translateY(-1px) scale(0.98);
-  transition-duration: 0.05s;
-}
-
-@media (max-width: 480px) {
-  .home-grid {
-    grid-template-columns: 1fr;
-  }
-}
+/* ── 25. Info Card (used by Settings + About pages) ───────────────────────────
+   The old .home-* grid/hero/status DOM was deleted when the home and signals
+   pages were collapsed into the new 3-tab layout. Only the generic
+   .info-card rules survive because the Settings page (and About card inside
+   it) still uses them. */
 
 .info-card {
   background: var(--bg3);
@@ -1975,125 +1739,7 @@ img { max-width: 100%; display: block; }
   line-height: 1.8;
 }
 
-/* This codebase has no global .hidden rule — every JS-toggled element needs
-   its own (see project history: the same gap bit #upgrade-placeholder once
-   before). #upgrade-placeholder/#side-panel-detail/#signals-mstate-wrap
-   toggle .hidden by account tier in chart.js's _loadMe() but had no CSS
-   backing it, so the tier gate was a permanent no-op — normal AND
-   admin/premium accounts saw the same locked "Premium analysis" card. */
-#upgrade-placeholder.hidden,
-#side-panel-detail.hidden,
-#signals-mstate-wrap.hidden,
-#accuracy-wrap.hidden,
-#admin-card.hidden,
-#chart-loading.hidden,
-#home-promos.hidden,
-#notif-badge.hidden,
-#signal-bar.hidden,
-#signals-last.hidden,
-.micro-tag.hidden {
-  display: none;
-}
-
-.home-footer {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-  text-align: center;
-}
-
-.home-legal-link {
-  background: none;
-  border: none;
-  color: var(--text3);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 4px 8px;
-  transition: color 0.15s ease;
-}
-
-.home-legal-link:hover {
-  color: var(--blue);
-}
-
-.home-legal-body {
-  margin-top: 8px;
-  padding: 12px;
-  background: var(--bg4);
-  border-radius: 8px;
-  color: var(--text2);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.home-copy {
-  font-size: 11px;
-  color: var(--text3);
-  margin-top: 12px;
-}
-
-/* ── 26. Signals Page ───────────────────────────────────────────────────────── */
-
-.signals-page-header {
-  margin-bottom: 16px;
-}
-
-/* NEW: Signals page header typography */
-.signals-page-header h2 {
-  font-size: 20px;
-  letter-spacing: 0.3px;
-}
-
-.signals-idle {
-  text-align: center;
-  padding: 60px 20px;
-  color: var(--text3);
-}
-
-.signals-idle-icon {
-  font-size: 48px;
-  margin-bottom: 12px;
-  opacity: 0.5;
-}
-
-/* NEW: Idle icon float animation */
-.signals-idle-icon {
-  animation: idleFloat 3s ease-in-out infinite;
-}
-
-@keyframes idleFloat {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-8px); }
-}
-
-.signals-last {
-  background: var(--glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  padding: 20px;
-  box-shadow: var(--shadow-sm);
-}
-
-/* NEW: Signals last card enhanced */
-.signals-last {
-  background: var(--card-grad);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-card);
-  transition: border-color var(--duration-normal) ease, box-shadow var(--duration-normal) ease;
-}
-
-.signals-last:hover {
-  border-color: var(--border-hover);
-  box-shadow: var(--shadow-card-hover);
-}
-
 /* ── 27. Settings Page ──────────────────────────────────────────────────────── */
-
-.settings-modal-close-btn {
-  display: none;
-}
 
 .settings-row {
   display: flex;
@@ -2198,160 +1844,6 @@ img { max-width: 100%; display: block; }
   transition-duration: 0.05s;
 }
 
-/* ── 28. Admin ──────────────────────────────────────────────────────────────── */
-
-.admin-analytics {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-@media (max-width: 480px) {
-  .admin-analytics {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-.admin-stat {
-  text-align: center;
-  padding: 12px;
-  background: var(--bg4);
-  border-radius: 8px;
-}
-
-/* NEW: Admin stat card gradient + hover */
-.admin-stat {
-  background: var(--card-grad);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  box-shadow: var(--shadow-card);
-  transition: transform var(--duration-normal) var(--ease-out-expo),
-              box-shadow var(--duration-normal) ease,
-              border-color var(--duration-normal) ease;
-}
-
-.admin-stat:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-card-hover);
-  border-color: var(--border-hover);
-}
-
-.admin-stat span:first-child {
-  display: block;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--blue);
-  font-variant-numeric: tabular-nums;
-}
-
-.admin-stat label {
-  display: block;
-  font-size: 10px;
-  color: var(--text3);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-top: 4px;
-}
-
-.admin-users-wrap {
-  overflow-x: auto;
-  margin-top: 12px;
-}
-
-.admin-users-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.admin-users-table th {
-  text-align: left;
-  padding: 8px;
-  background: var(--bg4);
-  color: var(--text2);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.admin-users-table td {
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text2);
-  white-space: nowrap;
-}
-
-/* ── 29. CMS (Content Management) ───────────────────────────────────────────── */
-
-.cms-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.cms-form-row {
-  display: flex;
-  gap: 6px;
-}
-
-.cms-form-row .ctrl-select {
-  flex: 1;
-}
-
-.cms-list {
-  list-style: none;
-}
-
-.cms-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text2);
-}
-
-.cms-item.inactive {
-  opacity: 0.5;
-}
-
-.cms-btn {
-  padding: 4px 10px;
-  font-size: 11px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  color: var(--text2);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-/* NEW: CMS button press effect */
-.cms-btn:active {
-  transform: scale(0.95);
-  transition-duration: 0.05s;
-}
-
-.cms-btn:hover {
-  border-color: var(--border-hover);
-  color: var(--text);
-}
-
-.cms-del {
-  color: var(--red);
-  border-color: rgba(255, 23, 68, 0.3);
-}
-
-.cms-del:hover {
-  background: rgba(255, 23, 68, 0.1);
-  color: var(--red);
-  border-color: rgba(255, 23, 68, 0.5);
-}
-
 /* ── 30. Theory Legend ──────────────────────────────────────────────────────── */
 
 #theory-legend {
@@ -2387,8 +1879,7 @@ img { max-width: 100%; display: block; }
 
 /* NEW: Badge entrance micro-animation */
 .mkt-badge,
-.regime-badge,
-.tier-badge {
+.regime-badge {
   transition: transform var(--duration-fast) var(--ease-spring), box-shadow var(--duration-fast) ease;
 }
 
@@ -2413,111 +1904,6 @@ img { max-width: 100%; display: block; }
 .regime-badge.zone-sup { box-shadow: 0 0 0 1px rgba(0,230,118,0.35) inset; }
 .regime-badge.zone-res { box-shadow: 0 0 0 1px rgba(255,23,68,0.35) inset; }
 
-/* ── 32. Tier Badges ────────────────────────────────────────────────────────── */
-
-.tier-badge {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.tier-normal {
-  background: rgba(139, 148, 158, 0.15);
-  color: var(--text2);
-}
-
-.tier-premium {
-  background: rgba(139, 92, 246, 0.15);
-  color: var(--violet);
-}
-
-/* NEW: Premium tier subtle glow */
-.tier-premium {
-  box-shadow: 0 0 8px rgba(139, 92, 246, 0.15);
-}
-
-.tier-admin {
-  background: rgba(68, 138, 255, 0.15);
-  color: var(--blue);
-}
-
-/* NEW: Admin tier subtle glow */
-.tier-admin {
-  box-shadow: 0 0 8px rgba(68, 138, 255, 0.15);
-}
-
-/* ── 33. Promo Cards ────────────────────────────────────────────────────────── */
-
-.promo-card {
-  background: var(--bg4);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  padding: 14px;
-  margin-bottom: 8px;
-}
-
-/* NEW: Promo card gradient + hover */
-.promo-card {
-  background: var(--card-grad);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-card);
-  transition: border-color var(--duration-normal) ease, box-shadow var(--duration-normal) ease,
-              transform var(--duration-normal) var(--ease-out-expo);
-}
-
-.promo-card:hover {
-  border-color: rgba(68, 138, 255, 0.12);
-  box-shadow: var(--shadow-card-hover), 0 0 16px rgba(68, 138, 255, 0.04);
-  transform: translateY(-1px);
-}
-
-.promo-title {
-  font-size: 13px;
-  font-weight: 700;
-  margin-bottom: 4px;
-  color: var(--text);
-}
-
-.promo-body {
-  font-size: 12px;
-  color: var(--text2);
-  margin-bottom: 6px;
-  line-height: 1.5;
-}
-
-.promo-code {
-  display: inline-block;
-  background: rgba(68, 138, 255, 0.1);
-  border: 1px solid rgba(68, 138, 255, 0.3);
-  color: var(--blue);
-  padding: 2px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  user-select: all;
-}
-
-.promo-code:hover {
-  background: rgba(68, 138, 255, 0.15);
-}
-
-/* NEW: Promo code press effect */
-.promo-code:active {
-  transform: scale(0.96);
-  transition-duration: 0.05s;
-}
-
-.promo-code.copied {
-  background: rgba(0, 230, 118, 0.1);
-  border-color: rgba(0, 230, 118, 0.3);
-  color: var(--green);
-}
-
 /* ── 34. Disclaimer ─────────────────────────────────────────────────────────── */
 
 .disclaimer-card {
@@ -2529,45 +1915,10 @@ img { max-width: 100%; display: block; }
   box-shadow: var(--shadow-card), 0 0 12px rgba(255, 23, 68, 0.05);
 }
 
-/* ── 35. Plan List ──────────────────────────────────────────────────────────── */
-
-.plan-list {
-  list-style: none;
-}
-
-.plan-list li {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  color: var(--text2);
-}
-
-/* NEW: Plan list item hover */
-.plan-list li {
-  transition: background var(--duration-fast) ease, padding-left var(--duration-fast) ease;
-  border-radius: 6px;
-  padding: 8px 8px;
-  margin: 0 -8px;
-}
-
-.plan-list li:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.plan-list li.active {
-  color: var(--blue);
-  font-weight: 600;
-}
-
-/* NEW: Active plan glow */
-.plan-list li.active {
-  background: rgba(68, 138, 255, 0.06);
-  border-radius: 6px;
-}
-
-.plan-list b {
-  color: var(--text);
-}
+/* ── 35. Plan Note (Settings → About card footer) ─────────────────────────────
+   The old .plan-list selectors were deleted when the upgrade/plan picker DOM
+   was removed. .plan-note survives because the Settings page's About card
+   uses it for the copyright line. */
 
 .plan-note {
   font-size: 11px;
@@ -2684,9 +2035,11 @@ img { max-width: 100%; display: block; }
 
 /* ── 39. Responsive Adjustments ─────────────────────────────────────────────── */
 
-/* Mobile: add bottom padding to page-scroll for bottom tabs */
+/* Mobile (< 768px): bottom tabs take over, side panel becomes a bottom sheet,
+   chart stacks vertically, page-scroll gets bottom padding for the tab bar. */
 @media (max-width: 767px) {
   .page-scroll {
+    padding: 12px;
     padding-bottom: calc(var(--bottomtab-h) + 16px);
   }
 
@@ -2707,9 +2060,24 @@ img { max-width: 100%; display: block; }
     margin: 0 4px 4px;
   }
 
-  /* Topbar tighter */
+  /* Topbar tighter — the live price ticker eats horizontal space, so trim
+     padding and let the controls breathe. */
   #topbar {
     padding: 0 8px;
+    gap: 6px;
+  }
+
+  /* Live price ticker takes more visible space on mobile — let it shrink. */
+  .topbar-center {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .ticker-pair {
+    font-size: 11px;
+  }
+  .ticker-price {
+    font-size: 13px;
   }
 
   /* Pair panel full width on small screens */
@@ -2719,35 +2087,77 @@ img { max-width: 100%; display: block; }
     width: auto;
   }
 
-  /* Notif panel full width on small screens */
-  #notif-panel {
+  /* Big chart countdown scales down a touch on small screens so it doesn't
+     dominate the chart. Still 22px so it's readable. */
+  #chart-countdown {
+    font-size: 22px;
+    padding: 6px 10px;
+    top: 8px;
     left: 8px;
-    right: 8px;
-    width: auto;
   }
 
-  /* Home grid single column */
-  .home-grid {
-    grid-template-columns: 1fr;
-  }
-
-  /* History panel more edge-to-edge */
-  #history-panel {
-    width: 96vw;
-    height: 90vh;
-    margin: 3vh auto 0;
-    border-radius: var(--r-lg);
-  }
-}
-
-/* Small desktop: tighten spacing */
-@media (min-width: 768px) and (max-width: 1024px) {
+  /* Side panel: bottom sheet on mobile. Hidden by default (translated down).
+     When .active is added (via #side-panel-toggle), it slides up. */
   #side-panel {
-    width: 190px;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: var(--bottomtab-h);
+    width: 100%;
+    max-height: 50vh;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    border-radius: 16px 16px 0 0;
+    background: var(--bg2);
+    transform: translateY(calc(100% + var(--bottomtab-h)));
+    transition: transform var(--duration-normal) var(--ease-out-expo);
+    z-index: 30;
+    padding: 12px;
+    overflow-y: auto;
+    /* When the panel is .active (user tapped the toggle), slide it into view.
+       When .collapsed is explicitly set, also keep it hidden. */
+  }
+  #side-panel.active {
+    transform: translateY(0);
+  }
+  #side-panel.collapsed {
+    transform: translateY(calc(100% + var(--bottomtab-h)));
+  }
+
+  /* Side-panel toggle button: floats at top-right of the bottom sheet. */
+  #side-panel-toggle {
+    top: 8px;
+    right: 8px;
+    left: auto;
+  }
+
+  /* Chart page stacks: chart on top (min height so it's usable), side panel
+     sheet below as overlay. */
+  #main {
+    flex-direction: column;
+  }
+
+  #chart-wrap {
+    min-height: 280px;
+    flex: 1;
+  }
+
+  /* Settings/About cards: tighter padding on mobile. */
+  .info-card {
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 10px;
+  }
+
+  /* History table: hide the "Why" column (6th) on narrow screens — it's the
+     widest column and the most expendable for at-a-glance scanning. */
+  #history-table th:nth-child(6),
+  #history-table td:nth-child(6) {
+    display: none;
   }
 }
 
-/* Very small mobile */
+/* Very small mobile (≤ 380px): collapse signal bar to vertical stack. */
 @media (max-width: 380px) {
   .topbar-btn {
     padding: 5px 8px;
@@ -2767,83 +2177,62 @@ img { max-width: 100%; display: block; }
   .signal-meta {
     flex-wrap: wrap;
   }
-}
 
-/* NEW: Mobile-specific card full-width improvements */
-@media (max-width: 767px) {
-  .home-card {
-    border-radius: 12px;
-    padding: 16px;
-  }
-
-  .info-card {
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 10px;
-  }
-
-  .promo-card {
-    border-radius: 12px;
-    padding: 14px;
-    margin-bottom: 8px;
-  }
-
-  .page-scroll {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-
-  .home-hero {
-    padding: 16px;
-    border-radius: 14px;
-  }
-
-  /* Signals page full-width feel */
-  .signals-last {
-    border-radius: 12px;
-    padding: 16px;
+  /* Hide the regime/mkt badge on very narrow screens — pair + timeframe +
+     ticker already fill the topbar. */
+  .mkt-badge,
+  .regime-badge {
+    display: none;
   }
 }
 
-/* NEW: Tablet (768-1024px) sidebar + content balance */
-@media (min-width: 768px) and (max-width: 1024px) {
-  .page-scroll {
-    padding: 16px 20px;
+/* Tablet (768-1023px): sidebar collapses to icons-only so the chart gets
+   more horizontal real estate. The pair list is hidden (it's too wide to
+   fit at 60px); users pick pairs via the topbar dropdown on this size. */
+@media (min-width: 768px) and (max-width: 1023px) {
+  #sidebar {
+    width: 60px;
   }
 
-  .home-hero {
-    padding: 18px;
+  /* Hide labels and pair list — icons only. */
+  .sidebar-brand span,
+  .nav-label,
+  .sidebar-pairs,
+  .sidebar-footer .sidebar-status {
+    display: none;
   }
 
-  .home-grid {
-    gap: 12px;
+  .sidebar-brand {
+    justify-content: center;
+    padding: 16px 0;
+  }
+
+  .nav-item {
+    justify-content: center;
+    padding: 12px 0;
+  }
+
+  /* Side panel narrower on tablet. */
+  #side-panel {
+    width: 190px;
   }
 }
 
-/* NEW: Desktop (>1024px) max-width container, breathing room */
+/* Desktop (≥ 1024px): page-scroll max-width container for breathing room. */
 @media (min-width: 1024px) {
   .page-scroll {
     padding: 20px 24px;
     max-width: 1200px;
   }
-
-  .home-hero {
-    padding: 24px;
-  }
-
-  .home-grid {
-    gap: 12px;
-  }
 }
 
-/* NEW: Chart page stack vertically on mobile */
-@media (max-width: 767px) {
-  #main {
-    flex-direction: column;
-  }
-
-  #chart-wrap {
-    min-height: 250px;
+/* History page table responsive — hide "Why" column under 640px (also
+   covered by the broader < 768px rule above, but this catches tablet
+   portrait sizes if the layout shifts). */
+@media (max-width: 640px) {
+  #history-table th:nth-child(6),
+  #history-table td:nth-child(6) {
+    display: none;
   }
 }
 
@@ -3163,6 +2552,512 @@ img { max-width: 100%; display: block; }
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--border), transparent);
   margin: 12px 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   NEW: 3-TAB LAYOUT SECTIONS
+   These sections cover the new DOM nodes introduced when the app collapsed
+   from 5 pages (Home, Chart, Signals, History modal, Settings modal) to 3
+   pages (Chart, History, Settings) plus a sidebar pair list, a live price
+   ticker, a big countdown overlay, a signal-history mini-list, and a side-
+   panel collapse toggle.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── A. Sidebar Pair List ──────────────────────────────────────────────────────
+   Lives below .sidebar-nav inside #sidebar. Each row is a button that swaps
+   the active trading pair. Status dot: green=live, blue=OTC, gray=closed. */
+
+.sidebar-pairs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 8px 8px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+.sidebar-pairs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 6px;
+}
+
+.sidebar-pairs-head .panel-title {
+  padding: 0;
+}
+.sidebar-pairs-head .panel-title::after {
+  /* The pair list header still gets the underline accent. */
+  display: none;
+}
+
+#sidebar-pairs-count,
+.sidebar-pairs-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text3);
+  background: var(--bg4);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+
+#sidebar-pair-list,
+.sidebar-pair-list {
+  flex: 1;
+  min-height: 0;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 8px;
+}
+
+.sidebar-pair-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text2);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--duration-fast) ease,
+              border-color var(--duration-fast) ease,
+              color var(--duration-fast) ease;
+  user-select: none;
+  position: relative;
+}
+
+.sidebar-pair-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.sidebar-pair-row.active {
+  background: rgba(68, 138, 255, 0.12);
+  color: var(--blue);
+  border-color: rgba(68, 138, 255, 0.25);
+  font-weight: 600;
+}
+
+/* Active row left accent — same pattern as .nav-item.active */
+.sidebar-pair-row.active::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  background: var(--blue);
+  border-radius: 0 3px 3px 0;
+  box-shadow: 0 0 6px rgba(68, 138, 255, 0.5);
+}
+
+.sidebar-pair-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text3);
+  box-shadow: 0 0 6px currentColor;
+}
+
+.sidebar-pair-dot.live {
+  background: var(--green);
+  color: rgba(0, 230, 118, 0.5);
+  animation: breatheGreen 2.5s ease-in-out infinite;
+}
+
+.sidebar-pair-dot.otc {
+  background: var(--blue);
+  color: rgba(68, 138, 255, 0.5);
+}
+
+.sidebar-pair-dot.closed {
+  background: var(--text3);
+  color: transparent;
+  box-shadow: none;
+}
+
+.sidebar-pair-name {
+  flex: 1;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-pair-pay {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--green);
+  background: rgba(0, 230, 118, 0.08);
+  border: 1px solid rgba(0, 230, 118, 0.2);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.sidebar-pair-lock {
+  width: 12px;
+  height: 12px;
+  color: var(--text3);
+  flex-shrink: 0;
+}
+
+.sidebar-pair-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--text3);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* ── B. Live Price Ticker ──────────────────────────────────────────────────────
+   Centered in .topbar-center. Flashes green/red on each tick change. */
+
+#live-price-ticker,
+.live-price-ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  white-space: nowrap;
+  transition: background var(--duration-fast) ease,
+              border-color var(--duration-fast) ease;
+}
+
+.ticker-pair {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  letter-spacing: 0.3px;
+}
+
+.ticker-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  letter-spacing: 0.3px;
+  transition: color var(--duration-fast) ease;
+}
+
+/* Tick flash animations — added by chart.js when the price changes. The
+   background pulses briefly green/red so a trader can see at a glance which
+   way the last tick moved without reading the digits. */
+.ticker-price.flash-up {
+  animation: flashUp 0.3s ease-out;
+}
+
+.ticker-price.flash-down {
+  animation: flashDown 0.3s ease-out;
+}
+
+@keyframes flashUp {
+  0%   { background: rgba(0, 230, 118, 0.35); color: var(--green); }
+  100% { background: transparent;              color: var(--text);  }
+}
+
+@keyframes flashDown {
+  0%   { background: rgba(255, 23, 68, 0.35); color: var(--red);  }
+  100% { background: transparent;              color: var(--text); }
+}
+
+/* ── C. Big Chart Countdown — see section 9 (#chart-countdown) ────────────────
+   The countdown styles live in section 9 alongside #chart-wrap because they
+   are part of the chart page layout, not a standalone component. */
+
+/* ── D. Signal History Mini-list ──────────────────────────────────────────────
+   Lives inside #side-panel below the Theory Accuracy section. Shows the last
+   5 signals as compact cards. */
+
+#signal-history-mini,
+.signal-history-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 0 8px;
+}
+
+.mini-empty {
+  padding: 12px 8px;
+  text-align: center;
+  color: var(--text3);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.mini-signal {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background var(--duration-fast) ease,
+              border-color var(--duration-fast) ease;
+}
+
+.mini-signal:hover {
+  background: var(--bg4);
+}
+
+.mini-signal.call {
+  border-left-color: var(--green);
+}
+
+.mini-signal.put {
+  border-left-color: var(--red);
+}
+
+.mini-signal-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mini-signal-dir {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.mini-signal-dir.call {
+  color: var(--green);
+  background: rgba(0, 230, 118, 0.12);
+}
+
+.mini-signal-dir.put {
+  color: var(--red);
+  background: rgba(255, 23, 68, 0.12);
+}
+
+.mini-signal-pair {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mini-signal-result {
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+
+.mini-signal-result.correct { color: var(--green); }
+.mini-signal-result.wrong   { color: var(--red);   }
+.mini-signal-result.draw    { color: var(--yellow); }
+
+.mini-signal-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text3);
+  font-size: 10px;
+}
+
+.mini-signal-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.mini-signal-strength {
+  font-weight: 600;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── E. Side Panel Toggle + Collapsed State ───────────────────────────────────
+   Small circular chevron button on the panel's left edge. Clicking it adds
+   .collapsed to #side-panel, which slides the panel off-screen (desktop) or
+   pins it to the bottom (mobile — see responsive section). The chevron
+   rotates 180° when collapsed so it always points the right way. */
+
+.side-panel-toggle {
+  position: absolute;
+  top: 12px;
+  left: -14px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text2);
+  cursor: pointer;
+  z-index: 10;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--duration-fast) ease,
+              color var(--duration-fast) ease,
+              transform var(--duration-normal) var(--ease-out-expo);
+}
+
+.side-panel-toggle:hover {
+  background: var(--bg4);
+  color: var(--text);
+}
+
+.side-panel-toggle:active {
+  transform: scale(0.92);
+  transition-duration: 0.05s;
+}
+
+/* Chevron convention: the base SVG `<polyline points="9 18 15 12 9 6"/>` is a
+   right-pointing chevron (>). When the panel is OPEN we rotate it 180° so it
+   points LEFT (←) — "click to collapse, panel will slide left out of view".
+   When the panel is COLLAPSED we keep the default right-pointing chevron (>)
+   — "click to expand, panel will slide right back into view". The task spec
+   calls for rotate(180deg) on the collapsed state, but that interpretation
+   would point the chevron AWAY from where the panel will appear; we follow
+   the more common "indicates direction of next motion" convention. */
+.side-panel-toggle svg {
+  transition: transform var(--duration-normal) var(--ease-out-expo);
+}
+
+/* Open panel: chevron points left (toward the chart, where the panel will
+   slide back into when expanded). User reads "click to collapse to the right"
+   because the panel is on the right edge of the chart. */
+#side-panel:not(.collapsed) .side-panel-toggle svg {
+  transform: rotate(180deg);
+}
+
+/* Desktop collapsed state — slide the whole panel off to the right, leaving
+   just the toggle button visible so the user can bring it back. */
+@media (min-width: 768px) {
+  #side-panel {
+    position: relative;
+    transition: transform var(--duration-normal) var(--ease-out-expo);
+  }
+
+  #side-panel.collapsed {
+    transform: translateX(calc(100% + 10px));
+    margin-right: -28px; /* leave room for the toggle button to stay visible */
+  }
+
+  /* When collapsed, the toggle button itself stays in place (it's positioned
+     absolutely relative to #side-panel, so it slides with the panel — but we
+     counter-translate it so it sits at the chart's right edge). */
+  #side-panel.collapsed .side-panel-toggle {
+    transform: translateX(calc(-100% - 14px));
+  }
+
+  /* Collapsed: chevron points right (default 0°) — "click to expand, panel
+     will slide back left into view from the right edge". */
+  #side-panel.collapsed .side-panel-toggle svg {
+    transform: rotate(0deg);
+  }
+}
+
+/* ── F. History Page (full-page replacement for the old history modal) ──────── */
+
+.history-page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.history-page-head h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.3px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Generic history-btn style — used by the Refresh button on the history page
+   and the Close button on the signal popup. */
+.history-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--duration-fast) ease,
+              border-color var(--duration-fast) ease,
+              color var(--duration-fast) ease;
+  white-space: nowrap;
+}
+
+.history-btn:hover {
+  background: var(--bg4);
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+
+.history-btn:active {
+  transform: scale(0.97);
+  transition-duration: 0.05s;
+}
+
+#history-body {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+  box-shadow: var(--shadow-card);
+}
+
+/* The history table already has its own styles in section 23 — these ensure
+   the body container has padding and the table fills the available width. */
+#history-body #history-table {
+  width: 100%;
+}
+
+#history-body #history-table th,
+#history-body #history-table td {
+  padding: 10px 14px;
+}
+
+/* Empty/loading state for the history table body. */
+#history-table .history-empty {
+  text-align: center;
+  color: var(--text3);
+  font-style: italic;
+  padding: 32px 12px;
 }
 
 /* ── NEW: 50. Focus Visible for Accessibility ───────────────────────────────── */

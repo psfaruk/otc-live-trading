@@ -3,16 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Plybit AI — Binary Trading</title>
+  <title>Plybit AI — Live OTC Signals</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d1117'/%3E%3Crect x='8' y='14' width='4' height='12' fill='%2300e676'/%3E%3Cline x1='10' y1='6' x2='10' y2='14' stroke='%2300e676' stroke-width='2'/%3E%3Crect x='20' y='8' width='4' height='10' fill='%23ff1744'/%3E%3Cline x1='22' y1='4' x2='22' y2='24' stroke='%23ff1744' stroke-width='2'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
 
-    <!-- ═══ SIDEBAR — Desktop navigation (>=768px) ═══════════════════════════
-         Collapsible sidebar with icon+label nav items. On mobile it's
-         hidden entirely — #bottom-tabs takes over. -->
+    <!-- ═══ SIDEBAR — Desktop navigation + pair list (≥768px) ════════════════
+         On mobile (<768px) hidden, opens as drawer via #sidebar-toggle. -->
     <aside id="sidebar">
       <div class="sidebar-brand">
         <svg width="26" height="26" viewBox="0 0 22 22" fill="none">
@@ -24,242 +23,91 @@
       </div>
 
       <nav class="sidebar-nav">
-        <button type="button" class="nav-item" data-page="home">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-          <span class="nav-label">Home</span>
-        </button>
-        <button type="button" class="nav-item" data-page="signals">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-          <span class="nav-label">Signals</span>
-        </button>
-        <button type="button" class="nav-item active" data-page="advance">
+        <button type="button" class="nav-item active" data-page="chart">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           <span class="nav-label">Chart</span>
         </button>
-        <button type="button" class="nav-item" data-page="history-nav">
+        <button type="button" class="nav-item" data-page="history">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           <span class="nav-label">History</span>
         </button>
-      </nav>
-
-      <div class="sidebar-footer">
         <button type="button" class="nav-item" data-page="settings">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           <span class="nav-label">Settings</span>
         </button>
-        <div class="sidebar-status">
-          <div id="status" class="status disconnected">● Connecting</div>
+      </nav>
+
+      <!-- Pair list — always visible in sidebar (desktop) / drawer (mobile) -->
+      <div class="sidebar-pairs">
+        <div class="sidebar-pairs-head">
+          <span class="panel-title">Pairs</span>
+          <span id="sidebar-pairs-count" class="sidebar-pairs-count">–</span>
         </div>
+        <div id="sidebar-pair-list" class="sidebar-pair-list">
+          <div class="sidebar-pair-empty">Loading…</div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div id="status" class="status disconnected">● Connecting</div>
       </div>
     </aside>
 
     <!-- ═══ SIDEBAR BACKDROP (mobile overlay) ═══════════════════════════════ -->
     <div id="sidebar-backdrop" class="hidden"></div>
 
-    <!-- ═══ MAIN WRAPPER — topbar + page content ════════════════════════════ -->
+    <!-- ═══ MAIN WRAPPER ═══════════════════════════════════════════════════ -->
     <div id="main-wrapper">
 
       <!-- ── Top Bar ──────────────────────────────────────────────────── -->
       <header id="topbar">
         <div class="topbar-left">
-          <!-- Mobile: hamburger opens sidebar drawer -->
           <button type="button" id="sidebar-toggle" class="sidebar-toggle" title="Menu">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
 
-          <!-- Pair selector + timeframe — combined into topbar -->
-          <div id="controls">
-            <button type="button" id="pair-btn" class="ctrl-select pair-btn" title="Select trading pair">
-              <span id="pair-btn-label">Loading…</span>
-              <span class="pair-caret">▾</span>
-            </button>
-            <span id="mkt-badge" class="mkt-badge hidden"></span>
-            <select id="tf-select" class="ctrl-select tf-select" title="Candle timeframe">
-              <option value="30">30s</option>
-              <option value="60" selected>1m</option>
-              <option value="300">5m</option>
-              <option value="900">15m</option>
-            </select>
-            <span id="regime-badge" class="regime-badge hidden"></span>
+          <button type="button" id="pair-btn" class="ctrl-select pair-btn" title="Select trading pair">
+            <span id="pair-btn-label">Loading…</span>
+            <span class="pair-caret">▾</span>
+          </button>
+          <span id="mkt-badge" class="mkt-badge hidden"></span>
+
+          <select id="tf-select" class="ctrl-select tf-select" title="Candle timeframe">
+            <option value="30">30s</option>
+            <option value="60" selected>1m</option>
+            <option value="300">5m</option>
+            <option value="900">15m</option>
+          </select>
+
+          <span id="regime-badge" class="regime-badge hidden"></span>
+        </div>
+
+        <div class="topbar-center">
+          <!-- Live price ticker — flashes green/red on each tick -->
+          <div id="live-price-ticker" class="live-price-ticker hidden">
+            <span id="ticker-pair" class="ticker-pair">–</span>
+            <span id="ticker-price" class="ticker-price">–</span>
           </div>
         </div>
 
         <div class="topbar-right">
-          <!-- Accuracy badge (moved from signal-bar) -->
           <div id="accuracy-wrap" class="hidden topbar-accuracy">
             <span id="accuracy-label"></span>
           </div>
-
           <div id="header-stats">
             <button type="button" id="refresh-btn" class="topbar-btn" title="Refresh">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
             </button>
-            <button type="button" id="history-btn" class="topbar-btn" title="Signal history">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <span>History</span>
-            </button>
-            <!-- Desktop-only settings entry — mobile uses bottom tab -->
-            <button type="button" id="settings-btn" class="topbar-btn" title="Settings">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1.08-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-            </button>
           </div>
-
         </div>
       </header>
 
-      <!-- ═══ PAGES CONTAINER ═══════════════════════════════════════════
-           Each .page is shown/hidden by the navigation system.
-           IDs kept as tab-xxx for chart.js compatibility. -->
-
+      <!-- ═══ PAGES CONTAINER ═══════════════════════════════════════════ -->
       <div id="pages">
 
-        <!-- ═══ HOME PAGE ════════════════════════════════════════════════ -->
-        <div id="tab-home" class="page hidden">
-
-          <div class="page-scroll">
-            <!-- Status band -->
-            <div class="home-status">
-              <span id="home-live" class="home-live off">● OFFLINE</span>
-              <span id="home-pair" class="home-pair">–</span>
-              <span id="home-payout" class="home-payout"></span>
-              <span class="home-next">Next <b id="home-countdown">–</b></span>
-            </div>
-
-            <!-- Hero signal card -->
-            <div id="home-hero" class="home-hero">
-              <div class="home-hero-top">
-                <span class="home-hero-label">Last signal</span>
-                <span id="home-hero-state" class="mstate-chip hidden">–</span>
-              </div>
-              <div id="home-hero-badge" class="signal-badge neutral">– Waiting</div>
-              <div id="home-hero-meta" class="home-hero-meta">Waiting for the next closed candle…</div>
-              <div class="conf-bar-wrap"><div id="home-hero-conf" class="conf-bar"></div></div>
-            </div>
-
-            <!-- Promo cards -->
-            <!-- Quick nav grid -->
-            <div class="home-grid">
-              <button type="button" class="home-card" data-goto="signals">
-                <span class="home-card-icon">⚡</span>
-                <span class="home-card-name">Live Signals</span>
-                <span class="home-card-sub">Real-time signal feed</span>
-              </button>
-              <button type="button" class="home-card" data-goto="advance">
-                <span class="home-card-icon">📈</span>
-                <span class="home-card-name">Advanced Chart</span>
-                <span class="home-card-sub">Candles, levels & theories</span>
-              </button>
-              <button type="button" class="home-card" id="home-card-history">
-                <span class="home-card-icon">🕘</span>
-                <span class="home-card-name">History</span>
-                <span class="home-card-sub">Past signals & results</span>
-              </button>
-              <button type="button" class="home-card home-card-premium" data-goto="settings">
-                <span class="home-card-icon">◆</span>
-                <span class="home-card-name">Premium Analysis</span>
-                <span class="home-card-sub">Deep market-state read</span>
-              </button>
-            </div>
-
-            <div class="info-card">
-              <h2>What Plybit AI does</h2>
-              <p>Streams live OTC forex candles from Quotex and runs a set of
-                price-action theories (tick pressure, wick rejection, candle
-                patterns, multi-timeframe trend) against every closed candle to
-                produce a CALL/PUT read with a STRONG/MEDIUM/WEAK strength
-                label — plus a deep market-state read (continuation, exhaustion,
-                reversal, trap).</p>
-              <ul>
-                <li>Only forex pairs at or above the live payout floor stream
-                  continuously — everything else is blocked from opening.</li>
-                <li>Each theory's real accuracy is tracked over a rolling 7-day
-                  window; any theory measured below coin-flip is automatically
-                  muted until it recovers.</li>
-                <li>Strength reflects how much independent evidence backs a
-                  signal, not a promised win rate.</li>
-              </ul>
-            </div>
-            <div class="info-card disclaimer-card">
-              <h2>⚠ Read this before trading</h2>
-              <p>This project measured the OTC feed directly — a 6,000-candle
-                statistical test and a separate 42,000-signal live production
-                record — and both agree: the feed behaves like an unbeatable
-                RNG. No theory, combination, or strength tier has shown a real
-                edge above 50%.</p>
-              <p>This app exists to analyze that feed honestly, not to promise
-                winning trades. Treat every signal as informational, never as
-                a guarantee.</p>
-            </div>
-
-            <footer class="home-footer">
-              <nav class="home-footer-links">
-                <button type="button" class="home-legal-link" data-legal="terms">Terms</button>
-                <span>·</span>
-                <button type="button" class="home-legal-link" data-legal="privacy">Privacy</button>
-                <span>·</span>
-                <button type="button" class="home-legal-link" data-legal="risk">Risk Disclaimer</button>
-              </nav>
-              <div id="legal-terms" class="home-legal-body hidden">
-                Plybit AI provides educational market analysis only. Nothing in
-                this app is financial advice, an inducement to trade, or a
-                guarantee of any outcome. You are solely responsible for any
-                trading decision you make. Accounts may be suspended for abuse.
-              </div>
-              <div id="legal-privacy" class="home-legal-body hidden">
-                This is a public dashboard — no signup, no login, no personal
-                data collected. Anonymous signal history is kept for analytics
-                only.
-              </div>
-              <div id="legal-risk" class="home-legal-body hidden">
-                Binary options trading carries a high risk of losing your entire
-                stake. This app's own measurements show no strategy achieves a
-                reliable edge on OTC feeds. Regulators (e.g. the US CFTC) warn
-                that binary platforms can overstate returns. Never trade money
-                you cannot afford to lose.
-              </div>
-              <div class="home-copy">© 2026 Plybit AI. All rights reserved.</div>
-            </footer>
-          </div>
-        </div>
-
-        <!-- ═══ SIGNALS PAGE ══════════════════════════════════════════════ -->
-        <div id="tab-signals" class="page hidden">
-          <div class="page-scroll">
-            <div class="signals-page-header">
-              <button type="button" id="signals-pair-btn" class="ctrl-select pair-btn signals-pair-btn" title="Select trading pair">
-                <span id="signals-pair-btn-label">Loading…</span>
-                <span class="pair-caret">▾</span>
-              </button>
-            </div>
-            <div id="signals-idle" class="signals-idle">
-              <div class="signals-idle-icon">◷</div>
-              <div>Waiting for the next signal…</div>
-            </div>
-            <div id="signals-last" class="signals-last hidden">
-              <div class="signals-last-label">Last signal</div>
-              <div id="signals-last-badge" class="signal-badge neutral">–</div>
-              <div id="signals-last-meta" class="signals-last-meta">–</div>
-            </div>
-
-            <!-- Deep market-state read — mobile mirror of Advance tab -->
-            <div id="signals-mstate-wrap">
-              <div class="panel-title panel-title-gap">Deep Analysis</div>
-              <div id="signals-mstate-card" class="mstate-card">
-                <div class="mstate-head">
-                  <span id="signals-mstate-chip" class="mstate-chip">–</span>
-                  <span id="signals-mstate-bias" class="mstate-bias"></span>
-                </div>
-                <div class="mstate-meter-track"><div id="signals-mstate-meter" class="mstate-meter"></div></div>
-                <ul id="signals-mstate-evidence" class="mstate-evidence"><li class="empty">Waiting for the next closed candle…</li></ul>
-                <div id="signals-mstate-bars" class="mstate-bars"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ═══ CHART PAGE (Advance) ════════════════════════════════════════ -->
+        <!-- ═══ CHART PAGE (default) ═════════════════════════════════════ -->
         <div id="tab-advance" class="page">
-          <!-- Signal Bar -->
+          <!-- Signal Bar — prominent top-center -->
           <div id="signal-bar" class="hidden">
             <div id="signal-badge" class="signal-badge neutral">–</div>
             <span id="runconf-badge" class="runconf-badge hidden"></span>
@@ -272,12 +120,12 @@
             <div id="running-conf" class="running-conf hidden"></div>
           </div>
 
-          <!-- Accuracy history strip -->
           <div id="accuracy-strip" class="hidden"></div>
 
           <!-- Main area: chart + side panel -->
           <div id="main">
             <div id="chart-wrap">
+              <!-- Big countdown — large mono digits, top-left overlay -->
               <div id="chart-countdown" class="chart-countdown hidden">–</div>
               <div id="chart"></div>
               <div id="chart-loading" class="hidden">
@@ -295,83 +143,120 @@
                 <div class="no-data-sub" id="fatal-error-sub">Retrying…</div>
               </div>
             </div>
+
+            <!-- Side panel — floating glass card on desktop, bottom sheet on mobile -->
             <aside id="side-panel">
-
-              <div id="side-panel-detail">
-                <div class="panel-title">Deep Analysis</div>
-                <div id="mstate-card" class="mstate-card">
-                  <div class="mstate-head">
-                    <span id="mstate-chip" class="mstate-chip">–</span>
-                    <span id="mstate-bias" class="mstate-bias"></span>
-                  </div>
-                  <div class="mstate-meter-track"><div id="mstate-meter" class="mstate-meter"></div></div>
-                  <ul id="mstate-evidence"><li class="empty">Waiting for the next closed candle…</li></ul>
-                  <div id="mstate-bars" class="mstate-bars"></div>
-                </div>
-
-                <div class="panel-title panel-title-gap">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
-                <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
-
-                <div class="panel-title panel-title-gap">Key Levels</div>
-                <ul id="key-levels-list"><li class="empty">–</li></ul>
-
-                <div class="panel-title panel-title-gap">Live Flow</div>
-                <div id="micro-wrap" class="micro-wrap hidden">
-                  <div class="micro-pressure-row">
-                    <span id="micro-buy-pct" class="micro-buy">B 50%</span>
-                    <div class="micro-bar-track">
-                      <div id="micro-bar-fill" class="micro-bar-fill micro-bar-init"></div>
-                    </div>
-                    <span id="micro-sell-pct" class="micro-sell">S 50%</span>
-                  </div>
-                  <div id="micro-pressure" class="micro-tag">–</div>
-                  <div id="micro-fight"    class="micro-tag hidden">⚡ Fight Zone</div>
-                  <div id="micro-trap"     class="micro-tag hidden"></div>
-                  <div id="micro-zigzag"   class="micro-tag hidden"></div>
-                  <div id="micro-last-react" class="micro-tag hidden">–</div>
-                  <div id="micro-round"     class="micro-tag hidden">–</div>
-                  <div id="micro-reaction"  class="micro-tag hidden">–</div>
-                  <div class="micro-phases-row">
-                    <span class="micro-phase-lbl">Early</span>
-                    <span id="micro-phase-0" class="micro-phase">–</span>
-                    <span class="micro-phase-lbl">Mid</span>
-                    <span id="micro-phase-1" class="micro-phase">–</span>
-                    <span class="micro-phase-lbl">Late</span>
-                    <span id="micro-phase-2" class="micro-phase">–</span>
-                  </div>
-                  <div class="micro-hold-row">
-                    <span class="micro-hold-lbl">Hold zone</span>
-                    <span id="micro-hold-price">–</span>
-                  </div>
-                </div>
-                <div id="micro-forming" class="micro-forming">Collecting ticks…</div>
-
-                <div class="panel-title panel-title-gap">EOC Analysis</div>
-                <div id="eoc-summary" class="eoc-summary">–</div>
-                <ul id="reasons-list"></ul>
-
-                <div class="panel-title panel-title-gap">Theories</div>
-                <ul id="theory-legend">
-                  <li><span class="t-num">RUN</span> Tick pressure (effort vs result)</li>
-                  <li><span class="t-num">WICKWALL</span> Repeated wick rejection zone</li>
-                  <li><span class="t-num">MICRO</span> Tick microstructure signals</li>
-                  <li><span class="t-num">DIVERGENCE</span> Price vs momentum divergence</li>
-                  <li><span class="t-num">LIVE</span> Running candle tick vote</li>
-                  <li><span class="t-num">TICKSWEEP</span> Running candle stop hunt</li>
-                  <li><span class="t-num">ABSORBWALL</span> Running candle price-band absorption</li>
-                  <li><span class="t-num">LATEFLIP</span> Running candle 70/30 control transfer</li>
-                  <li><span class="t-num">MARKET_STATE</span> Deep analysis (main predictor)</li>
-                </ul>
+              <div id="side-panel-toggle" class="side-panel-toggle" title="Toggle panel">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
+
+              <div class="panel-title">Deep Analysis</div>
+              <div id="mstate-card" class="mstate-card">
+                <div class="mstate-head">
+                  <span id="mstate-chip" class="mstate-chip">–</span>
+                  <span id="mstate-bias" class="mstate-bias"></span>
+                </div>
+                <div class="mstate-meter-track"><div id="mstate-meter" class="mstate-meter"></div></div>
+                <ul id="mstate-evidence"><li class="empty">Waiting for the next closed candle…</li></ul>
+                <div id="mstate-bars" class="mstate-bars"></div>
+              </div>
+
+              <div class="panel-title panel-title-gap">Theory Accuracy <span id="winrate-overall" class="wr-overall">--</span></div>
+              <ul id="theory-stats"><li class="empty">Collecting results…</li></ul>
+
+              <!-- Signal history mini-list — last 5 signals -->
+              <div class="panel-title panel-title-gap">Recent Signals</div>
+              <div id="signal-history-mini" class="signal-history-mini">
+                <div class="mini-empty">No signals yet</div>
+              </div>
+
+              <div class="panel-title panel-title-gap">Key Levels</div>
+              <ul id="key-levels-list"><li class="empty">–</li></ul>
+
+              <div class="panel-title panel-title-gap">Live Flow</div>
+              <div id="micro-wrap" class="micro-wrap hidden">
+                <div class="micro-pressure-row">
+                  <span id="micro-buy-pct" class="micro-buy">B 50%</span>
+                  <div class="micro-bar-track">
+                    <div id="micro-bar-fill" class="micro-bar-fill micro-bar-init"></div>
+                  </div>
+                  <span id="micro-sell-pct" class="micro-sell">S 50%</span>
+                </div>
+                <div id="micro-pressure" class="micro-tag">–</div>
+                <div id="micro-fight"    class="micro-tag hidden">⚡ Fight Zone</div>
+                <div id="micro-trap"     class="micro-tag hidden"></div>
+                <div id="micro-zigzag"   class="micro-tag hidden"></div>
+                <div id="micro-last-react" class="micro-tag hidden">–</div>
+                <div id="micro-round"     class="micro-tag hidden">–</div>
+                <div id="micro-reaction"  class="micro-tag hidden">–</div>
+                <div class="micro-phases-row">
+                  <span class="micro-phase-lbl">Early</span>
+                  <span id="micro-phase-0" class="micro-phase">–</span>
+                  <span class="micro-phase-lbl">Mid</span>
+                  <span id="micro-phase-1" class="micro-phase">–</span>
+                  <span class="micro-phase-lbl">Late</span>
+                  <span id="micro-phase-2" class="micro-phase">–</span>
+                </div>
+                <div class="micro-hold-row">
+                  <span class="micro-hold-lbl">Hold zone</span>
+                  <span id="micro-hold-price">–</span>
+                </div>
+              </div>
+              <div id="micro-forming" class="micro-forming">Collecting ticks…</div>
+
+              <div class="panel-title panel-title-gap">EOC Analysis</div>
+              <div id="eoc-summary" class="eoc-summary">–</div>
+              <ul id="reasons-list"></ul>
+
+              <div class="panel-title panel-title-gap">Theories</div>
+              <ul id="theory-legend">
+                <li><span class="t-num">RUN</span> Tick pressure (effort vs result)</li>
+                <li><span class="t-num">WICKWALL</span> Repeated wick rejection zone</li>
+                <li><span class="t-num">MICRO</span> Tick microstructure signals</li>
+                <li><span class="t-num">DIVERGENCE</span> Price vs momentum divergence</li>
+                <li><span class="t-num">LIVE</span> Running candle tick vote</li>
+                <li><span class="t-num">TICKSWEEP</span> Running candle stop hunt</li>
+                <li><span class="t-num">ABSORBWALL</span> Running candle price-band absorption</li>
+                <li><span class="t-num">LATEFLIP</span> Running candle 70/30 control transfer</li>
+                <li><span class="t-num">MARKET_STATE</span> Deep analysis (main predictor)</li>
+              </ul>
             </aside>
+          </div>
+        </div>
+
+        <!-- ═══ HISTORY PAGE ═══════════════════════════════════════════════ -->
+        <div id="tab-history" class="page hidden">
+          <div class="page-scroll">
+            <div class="history-page-head">
+              <h2>Signal History</h2>
+              <select id="history-pair-filter" class="ctrl-select" title="Filter by pair">
+                <option value="">All pairs</option>
+              </select>
+              <button type="button" id="history-refresh" class="history-btn">↻ Refresh</button>
+            </div>
+            <div id="history-body">
+              <table id="history-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Pair</th>
+                    <th>Signal</th>
+                    <th>Strength</th>
+                    <th>Result</th>
+                    <th>Why</th>
+                  </tr>
+                </thead>
+                <tbody id="history-rows">
+                  <tr><td colspan="6" class="history-empty">Loading…</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
         <!-- ═══ SETTINGS PAGE ══════════════════════════════════════════════ -->
         <div id="tab-settings" class="page hidden">
           <div class="page-scroll">
-            <button type="button" id="settings-modal-close" class="settings-modal-close-btn">✕</button>
-
             <div class="info-card">
               <h2>Performance</h2>
               <div class="settings-row">
@@ -438,17 +323,13 @@
 
     <!-- ═══ BOTTOM TABS — Mobile navigation (<768px) ═══════════════════════ -->
     <nav id="bottom-tabs">
-      <button type="button" class="tab-btn" data-tab="home">
-        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        <span class="tab-btn-label">Home</span>
-      </button>
-      <button type="button" class="tab-btn" data-tab="signals">
-        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-        <span class="tab-btn-label">Signals</span>
-      </button>
-      <button type="button" class="tab-btn active" data-tab="advance">
+      <button type="button" class="tab-btn active" data-tab="chart">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span class="tab-btn-label">Chart</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="history">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span class="tab-btn-label">History</span>
       </button>
       <button type="button" class="tab-btn" data-tab="settings">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
@@ -456,7 +337,7 @@
       </button>
     </nav>
 
-    <!-- ═══ OVERLAYS — siblings of pages (not inside any display:none container) ═══ -->
+    <!-- ═══ OVERLAYS ═══════════════════════════════════════════════════════ -->
 
     <!-- Pair picker dropdown -->
     <div id="pair-panel" class="pair-panel hidden">
@@ -473,41 +354,6 @@
       <div id="signal-popup-meta" class="signals-last-meta">–</div>
       <button type="button" id="signal-popup-close" class="history-btn">✕</button>
     </div>
-
-    <!-- History modal -->
-    <div id="history-modal" class="hidden">
-      <div id="history-backdrop"></div>
-      <div id="history-panel">
-        <div id="history-head">
-          <span id="history-title">Signal History</span>
-          <select id="history-pair-filter" class="ctrl-select" title="Filter by pair">
-            <option value="">All pairs</option>
-          </select>
-          <button type="button" id="history-refresh" class="history-btn">↻ Refresh</button>
-          <button type="button" id="history-close" class="history-btn history-close">✕</button>
-        </div>
-        <div id="history-body">
-          <table id="history-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Pair</th>
-                <th>Signal</th>
-                <th>Strength</th>
-                <th>Result</th>
-                <th>Why</th>
-              </tr>
-            </thead>
-            <tbody id="history-rows">
-              <tr><td colspan="6" class="history-empty">Loading…</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Settings backdrop (for desktop modal mode) -->
-    <div id="settings-backdrop" class="hidden"></div>
 
   </div><!-- #app -->
 

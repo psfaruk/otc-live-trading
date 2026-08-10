@@ -37,14 +37,16 @@ function _savePairPrefs() {
 }
 
 // Mobile-only bottom-tab navigation (Home/Signals/Advance/Settings — see
-// #bottom-tabs). Desktop ignores this entirely via a >=640px CSS override
-// that always shows #tab-advance regardless of this value, so no
-// window-width branching is needed here. Defaults to 'advance' — Home is
-// an info screen, not something to force on a returning user.
-let _activeTab = 'advance';
+// Default tab is 'chart' (maps to #tab-advance via nav.js's TAB_MAP).
+// Restored from localStorage if the user previously switched tabs.
+let _activeTab = 'chart';
 try {
   const _savedTab = localStorage.getItem('plybit_tab');
   if (_savedTab) _activeTab = _savedTab;
+  // Migrate old saved tab names: 'advance' → 'chart', 'home'/'signals' → 'chart'
+  if (_activeTab === 'advance' || _activeTab === 'home' || _activeTab === 'signals') {
+    _activeTab = 'chart';
+  }
 } catch (_) {}
 
 // Auth/account system fully removed — every visitor gets the full chart
@@ -490,8 +492,14 @@ function tickCountdown() {
   const el = document.getElementById('countdown');
   if (el) { el.textContent = left + 's'; el.className = cls; }
 
-  const hc = document.getElementById('home-countdown');
-  if (hc) { hc.textContent = left + 's'; hc.className = cls; }
+  // Big countdown overlay on the chart — large mono digits with pulse
+  // animation when <10s remaining. Visible only while a candle is open.
+  const cd = document.getElementById('chart-countdown');
+  if (cd) {
+    cd.textContent = left + 's';
+    cd.className = 'chart-countdown ' + cls;
+    cd.classList.toggle('hidden', left <= 0);
+  }
 
   // The running candle's price line shows the countdown on the chart.
   _updateLiveLineTimer(left, cls);
@@ -592,11 +600,12 @@ function handleMsg(msg, perfNow) {
           _pushResult(lastPrediction.signal, msg.accuracy);
         }
       }
-      // Signals tab: an automatic popup the moment a new signal lands —
-      // only while that tab is active (Advance's own #signal-bar, updated
-      // above via applySnapshot, keeps working regardless of active tab).
-      if (_activeTab === 'signals' && msg.prediction) _showSignalPopup(msg.prediction);
+      // Signals tab was removed — no auto-popup on EOC. The signal popup
+      // (gated by userPrefs.popup) still fires from applySnapshot when a
+      // new prediction lands, regardless of active tab.
       loadStats();
+      // Refresh the sidebar's "Recent Signals" mini-list after each candle close
+      _renderSignalHistoryMini();
       break;
 
     case 'tick':
@@ -609,6 +618,8 @@ function handleMsg(msg, perfNow) {
         lastDataAt = Date.now();
         showNoData(false);
         _setTarget(msg.candle, perfNow);
+        // Update the topbar live price ticker with the candle's current close
+        _updateTicker(msg.candle.close, msg.asset);
       }
       if (msg.prediction) {
         applyPrediction(msg.prediction);
@@ -1008,43 +1019,9 @@ function updateSignalUI(pred) {
     }
   }
 
-  // Deep-analysis market state card — Advance tab's sidebar and the
-  // mobile Signals tab's mirror (see index.html's #signals-mstate-card)
+  // Deep-analysis market state card — sidebar panel only (Signals tab
+  // mirror removed along with the tab itself).
   renderMarketState(pred.market_state);
-  renderMarketState(pred.market_state, 'signals-mstate');
-
-  // Home hero mirrors the same signal (mobile Home tab)
-  const hb = document.getElementById('home-hero-badge');
-  if (hb) {
-    const hMeta = document.getElementById('home-hero-meta');
-    if (isNeutral) {
-      hb.className   = 'signal-badge neutral';
-      hb.textContent = '– NO TRADE';
-      if (hMeta) hMeta.textContent = 'No clear edge — skip this candle';
-    } else {
-      const f = _fmtSignalBadge(pred);
-      hb.className   = f.cls;
-      hb.textContent = f.text;
-      if (hMeta) hMeta.textContent = _fmtSignalMeta(pred);
-    }
-    const hcf = document.getElementById('home-hero-conf');
-    if (hcf) {
-      hcf.style.width = `${confPct}%`;
-      hcf.className   = 'conf-bar' +
-        (isNeutral ? '' : ` ${pred.signal === 'CALL' ? 'call' : 'put'}`);
-    }
-    const hst = document.getElementById('home-hero-state');
-    if (hst) {
-      const ms = pred.market_state;
-      if (ms && ms.state && ms.state !== 'UNCLEAR') {
-        const lbl = _MSTATE_LABELS[ms.state] || _MSTATE_LABELS.UNCLEAR;
-        hst.className   = `mstate-chip ms-${ms.state.toLowerCase()}`;
-        hst.textContent = `${lbl.icon} ${lbl.name}`;
-      } else {
-        hst.className = 'mstate-chip hidden';
-      }
-    }
-  }
 }
 
 // ── Deep Analysis card — market-state read from analyze_eoc ─────────────────
@@ -1125,10 +1102,8 @@ function renderMarketState(ms, prefix = 'mstate') {
   }
 }
 
-// ── Signals tab: badge/meta text shared between the auto-popup and the
-// persistent "last signal" summary (same convention as #signal-bar's own
-// badge in updateSignalUI, kept separate rather than refactored in there
-// to avoid touching the already-verified Advance tab rendering path). ────
+// ── Signal popup helpers — badge/meta text formatting shared between the
+// auto-popup and the signal-bar. Kept simple and self-contained. ──────────
 function _fmtSignalBadge(pred) {
   const strength = pred.strength || 'WEAK';
   const tag = strength === 'STRONG' ? '★ ' : strength === 'WEAK' ? '· ' : '';
@@ -1145,8 +1120,8 @@ function _fmtSignalMeta(pred) {
 let _popupTimer = null;
 
 function _showSignalPopup(pred) {
-  if (!pred || pred.signal === 'NEUTRAL') return;   // defensive — see analyze_eoc's rare early-exit guards
-  if (!userPrefs.popup) return;                     // user preference (Settings)
+  if (!pred || pred.signal === 'NEUTRAL') return;
+  if (!userPrefs.popup) return;
   const popup = document.getElementById('signal-popup');
   const badge = document.getElementById('signal-popup-badge');
   const meta  = document.getElementById('signal-popup-meta');
@@ -1157,21 +1132,9 @@ function _showSignalPopup(pred) {
   meta.textContent  = _fmtSignalMeta(pred);
   popup.classList.remove('hidden');
   clearTimeout(_popupTimer);
-  _popupTimer = setTimeout(_hideSignalPopup, 7000);   // auto-dismiss, or the next signal replaces it sooner
-  _updateSignalsLast(pred);
-
-  // Pop animation on both badges — safe to fire unconditionally here since
-  // this function itself is only ever called for a genuinely NEW signal
-  // (the 'eoc' WS case, see the call site), unlike updateSignalUI's desktop
-  // badge which also gets re-invoked by 'tick' messages and needs its own
-  // change-detection to avoid popping on every one of those.
+  _popupTimer = setTimeout(_hideSignalPopup, 7000);
   badge.classList.add('signal-pop');
   setTimeout(() => badge.classList.remove('signal-pop'), 300);
-  const lastBadge = document.getElementById('signals-last-badge');
-  if (lastBadge) {
-    lastBadge.classList.add('signal-pop');
-    setTimeout(() => lastBadge.classList.remove('signal-pop'), 300);
-  }
 }
 
 function _hideSignalPopup() {
@@ -1180,19 +1143,127 @@ function _hideSignalPopup() {
   clearTimeout(_popupTimer);
 }
 
-function _updateSignalsLast(pred) {
-  const idle  = document.getElementById('signals-idle');
-  const last  = document.getElementById('signals-last');
-  const badge = document.getElementById('signals-last-badge');
-  const meta  = document.getElementById('signals-last-meta');
-  if (!last || !badge || !meta) return;
-  const { cls, text } = _fmtSignalBadge(pred);
-  badge.className   = cls;
-  badge.textContent = text;
-  meta.textContent  = _fmtSignalMeta(pred);
-  last.classList.remove('hidden');
-  if (idle) idle.classList.add('hidden');
+// ── Signal history mini-list — sidebar's "Recent Signals" panel ────────────
+// Fetches the last 5 resolved signals from /api/signals and renders compact
+// cards. Called on boot and after every EOC (candle close) to stay current.
+let _lastHistoryMiniKey = '';
+async function _renderSignalHistoryMini() {
+  const wrap = document.getElementById('signal-history-mini');
+  if (!wrap) return;
+  try {
+    const data = await fetch('/api/signals?limit=5').then((r) => r.json());
+    if (!Array.isArray(data) || !data.length) {
+      wrap.innerHTML = '<div class="mini-empty">No signals yet</div>';
+      return;
+    }
+    // Dedup key — skip re-render if the latest signal hasn't changed
+    const key = data.map(s => `${s.ctime}-${s.asset}`).join('|');
+    if (key === _lastHistoryMiniKey) return;
+    _lastHistoryMiniKey = key;
+
+    wrap.innerHTML = data.map((s) => {
+      const sigCls = (s.signal || 'neutral').toLowerCase();
+      const resCls = s.result || '';
+      const resIcon = s.result === 'correct' ? '✓'
+                    : s.result === 'draw'    ? '–'
+                    : s.result === 'wrong'   ? '✗' : '·';
+      const time = new Date(s.ctime * 1000).toLocaleTimeString(
+        [], { hour: '2-digit', minute: '2-digit' });
+      const pair = (s.asset || '').replace('_otc', '').replace('_', '/');
+      return `<div class="mini-signal ${sigCls}">
+        <div class="mini-signal-top">
+          <span class="mini-signal-dir ${sigCls}">${s.signal || '–'}</span>
+          <span class="mini-signal-pair">${pair}</span>
+          <span class="mini-signal-result ${resCls}">${resIcon}</span>
+        </div>
+        <div class="mini-signal-bottom">
+          <span class="mini-signal-time">${time}</span>
+          <span class="mini-signal-strength">${s.strength || '–'}</span>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (_) {
+    // keep whatever was last rendered
+  }
 }
+
+// ── Live price ticker — topbar real-time price display ─────────────────────
+// Updated on every tick message. Flashes green/red based on direction vs
+// the previous tick. Hidden until the first real price arrives.
+let _lastTickerPrice = 0;
+function _updateTicker(price, asset) {
+  const ticker  = document.getElementById('live-price-ticker');
+  const tPair   = document.getElementById('ticker-pair');
+  const tPrice  = document.getElementById('ticker-price');
+  if (!ticker || !tPair || !tPrice) return;
+  if (!price || price <= 0) return;
+
+  // Format price — strip trailing zeros, show 5 decimal places for forex
+  const formatted = price >= 100 ? price.toFixed(2)
+                   : price >= 1   ? price.toFixed(5)
+                                  : price.toFixed(8);
+
+  // Flash direction — green if price went up, red if down
+  if (_lastTickerPrice > 0 && price !== _lastTickerPrice) {
+    const up = price > _lastTickerPrice;
+    tPrice.classList.remove('flash-up', 'flash-down');
+    void tPrice.offsetWidth;  // force reflow to restart animation
+    tPrice.classList.add(up ? 'flash-up' : 'flash-down');
+  }
+  _lastTickerPrice = price;
+
+  // Pair label — strip _otc suffix, add / for readability
+  const pairLabel = (asset || currentAsset)
+    .replace('_otc', '').replace('_', '/');
+  tPair.textContent  = pairLabel;
+  tPrice.textContent = formatted;
+  ticker.classList.remove('hidden');
+}
+
+// ── Sidebar pair list — compact pair list in the sidebar ────────────────────
+// Rendered from the same pairsList that loadPairs() populates. Clicking a
+// pair switches to it (same as the topbar pair-btn dropdown).
+function _renderSidebarPairs() {
+  const list  = document.getElementById('sidebar-pair-list');
+  const count = document.getElementById('sidebar-pairs-count');
+  if (!list) return;
+  if (count) count.textContent = pairsList.length || '–';
+  if (!pairsList.length) {
+    list.innerHTML = '<div class="sidebar-pair-empty">No pairs</div>';
+    return;
+  }
+  list.innerHTML = pairsList.map((p) => {
+    const isActive = p.asset === currentAsset;
+    const statusDot = p.status === 'live' ? 'live'
+                    : p.status === 'otc'  ? 'otc'
+                    : 'closed';
+    const lockIcon = p.locked ? '🔒' : '';
+    const pay = p.payout ? `${p.payout}%` : '–';
+    return `<button type="button" class="sidebar-pair-row ${isActive ? 'active' : ''}"
+            data-asset="${p.asset}">
+      <span class="sidebar-pair-dot ${statusDot}"></span>
+      <span class="sidebar-pair-name">${p.display}</span>
+      <span class="sidebar-pair-pay">${pay}</span>
+      ${lockIcon ? `<span class="sidebar-pair-lock">${lockIcon}</span>` : ''}
+    </button>`;
+  }).join('');
+
+  // Wire click handlers
+  list.querySelectorAll('.sidebar-pair-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      const asset = row.dataset.asset;
+      if (!asset || asset === currentAsset) return;
+      const pair = pairsList.find(p => p.asset === asset);
+      if (!pair || pair.locked) return;
+      currentAsset = asset;
+      _savePairPrefs();
+      _updatePairBtn();
+      _renderSidebarPairs();  // update active highlight
+      resetAndSubscribe();
+    });
+  });
+}
+
 
 // ── Controls ───────────────────────────────────────────────────────────────
 async function loadPairs() {
@@ -1231,24 +1302,20 @@ function renderPairSelect() {
 
 function _updatePairBtn() {
   const p = pairsList.find((x) => x.asset === currentAsset);
-  // Two trigger buttons share one picker/state — the Advance tab's
-  // #pair-btn and the Signals tab's #signals-pair-btn. Update whichever
-  // of them exist in the DOM.
-  for (const id of ['pair-btn-label', 'signals-pair-btn-label']) {
-    const label = document.getElementById(id);
-    if (!label) continue;
-    if (!p) { label.textContent = currentAsset; continue; }
-    const pay = typeof p.payout === 'number' ? ` · ${p.payout}%` : '';
-    label.innerHTML =
-      (p.status === 'live' ? '<span class="pair-live-dot">●</span> ' : '') +
-      `${p.display} <span class="pair-btn-sub">${p.status === 'live' ? 'Real' : 'Otc'}${pay}</span>`;
+  // Only one pair button now (#pair-btn) — Signals tab was removed.
+  const label = document.getElementById('pair-btn-label');
+  if (label) {
+    if (!p) {
+      label.textContent = currentAsset;
+    } else {
+      const pay = typeof p.payout === 'number' ? ` · ${p.payout}%` : '';
+      label.innerHTML =
+        (p.status === 'live' ? '<span class="pair-live-dot">●</span> ' : '') +
+        `${p.display} <span class="pair-btn-sub">${p.status === 'live' ? 'Real' : 'Otc'}${pay}</span>`;
+    }
   }
-  // Home status band mirrors the same selection (display-only, no picker).
-  const hp   = document.getElementById('home-pair');
-  const hpay = document.getElementById('home-payout');
-  if (hp)   hp.textContent   = p ? p.display : currentAsset;
-  if (hpay) hpay.textContent =
-    (p && typeof p.payout === 'number') ? `${p.payout}% payout` : '';
+  // Also update the sidebar pair list's active highlight
+  _renderSidebarPairs();
 }
 
 function _payClass(p) {
@@ -1313,9 +1380,8 @@ function _updateMktBadge() {
 let _panelOpenWidth = 0;   // see the resize listener below — mobile-keyboard guard
 let _panelOpenTrigger = null;   // whichever button opened it — see _closePairPanel
 
-// Shared by both trigger buttons (Advance tab's #pair-btn, Signals tab's
-// #signals-pair-btn) — there's only ever one (asset,period) subscription
-// per browser tab server-side, so one panel/state genuinely serves both.
+// There's only ever one (asset,period) subscription per browser tab
+// server-side, so one panel/state serves the single #pair-btn trigger.
 function _openPairPanel(triggerBtn) {
   const panel = document.getElementById('pair-panel');
   const rect  = triggerBtn.getBoundingClientRect();
@@ -1355,16 +1421,7 @@ function _closePairPanel() {
     if (panel.classList.contains('hidden')) _openPairPanel(btn);
     else _closePairPanel();
   });
-  // Second trigger — Signals tab. Guarded independently: it may be absent
-  // in an older cached HTML without breaking the primary #pair-btn wiring.
-  const signalsBtn = document.getElementById('signals-pair-btn');
-  if (signalsBtn) {
-    signalsBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (panel.classList.contains('hidden')) _openPairPanel(signalsBtn);
-      else _closePairPanel();
-    });
-  }
+  // Only one pair button now — Signals tab was removed.
   panel.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => _closePairPanel());
   document.addEventListener('keydown', (e) => {
@@ -1389,8 +1446,7 @@ function _closePairPanel() {
   });
 })();
 
-// ── Bottom tab navigation (mobile only — see the >=640px CSS override that
-// makes this invisible/inert on desktop) ────────────────────────────────
+// ── Tab navigation — 3-tab layout (Chart / History / Settings) ─────────────
 function _setActiveTab(tab) {
   _activeTab = tab;
   try { localStorage.setItem('plybit_tab', tab); } catch (_) {}
@@ -1400,10 +1456,10 @@ function _setActiveTab(tab) {
     Nav.setPage(tab);
   } else {
     // Fallback if nav.js didn't load
-    for (const id of ['tab-home', 'tab-signals', 'tab-advance', 'tab-settings']) {
+    for (const id of ['tab-advance', 'tab-history', 'tab-settings']) {
       const el = document.getElementById(id);
       if (!el) continue;
-      const isTarget = id === `tab-${tab}`;
+      const isTarget = id === `tab-${tab === 'chart' ? 'advance' : tab}`;
       el.classList.toggle('hidden', !isTarget);
     }
   }
@@ -1411,13 +1467,13 @@ function _setActiveTab(tab) {
   document.querySelectorAll('.tab-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
-  // The header-stats cluster is Advance-specific — hide on mobile for other tabs
+  // The header-stats cluster is Chart-specific — hide on mobile for other tabs
   const stats = document.getElementById('header-stats');
-  if (stats) stats.classList.toggle('hidden', tab !== 'advance');
+  if (stats) stats.classList.toggle('hidden', tab !== 'chart' && tab !== 'advance');
 
-  if (tab === 'signals') {
-    _hideSignalPopup();
-    if (lastPrediction) _updateSignalsLast(lastPrediction);
+  // When switching to History tab, auto-load the history table
+  if (tab === 'history') {
+    loadHistory();
   }
 }
 
@@ -1425,33 +1481,6 @@ document.querySelectorAll('.tab-btn').forEach((b) => {
   b.addEventListener('click', () => _setActiveTab(b.dataset.tab));
 });
 _setActiveTab(_activeTab);   // apply the restored/default tab on load
-
-// Home quick cards → tab shortcuts. History must ALSO switch to the Chart
-// (advance) tab first: #history-modal lives inside #tab-advance, and a
-// display:none ancestor hides even a position:fixed modal (same rule the
-// pair-panel comment in index.html documents).
-document.querySelectorAll('.home-card[data-goto]').forEach((b) => {
-  b.addEventListener('click', () => _setActiveTab(b.dataset.goto));
-});
-const homeHistoryCard = document.getElementById('home-card-history');
-if (homeHistoryCard) {
-  homeHistoryCard.addEventListener('click', () => {
-    _setActiveTab('advance');
-    openHistory();
-  });
-}
-// Legal footer links — clicking a link shows its text block (and collapses
-// it again on a second click); the other blocks always close.
-document.querySelectorAll('.home-legal-link').forEach((b) => {
-  b.addEventListener('click', () => {
-    for (const k of ['terms', 'privacy', 'risk']) {
-      const el = document.getElementById(`legal-${k}`);
-      if (!el) continue;
-      el.classList.toggle('hidden',
-        k !== b.dataset.legal || !el.classList.contains('hidden'));
-    }
-  });
-});
 
 // ── Settings: Preferences card ← userPrefs (localStorage) ────────────────
 for (const [id, key] of [['pref-popup', 'popup'], ['pref-klines', 'klines'],
@@ -1462,8 +1491,6 @@ for (const [id, key] of [['pref-popup', 'popup'], ['pref-klines', 'klines'],
   el.addEventListener('change', () => {
     userPrefs[key] = el.checked;
     _savePrefs();
-    // Re-render the chart overlays from the current prediction immediately
-    // so the toggle is visible without waiting for the next candle close.
     if (lastPrediction) applyPrediction(lastPrediction);
   });
 }
@@ -1612,13 +1639,6 @@ function setStatus(cls, text) {
   const el = document.getElementById('status');
   el.className   = `status ${cls}`;
   el.textContent = text;
-  // Home status band mirrors connection state
-  const hl = document.getElementById('home-live');
-  if (hl) {
-    const live = cls === 'connected';
-    hl.className   = 'home-live' + (live ? '' : ' off');
-    hl.textContent = live ? '● LIVE' : '● OFFLINE';
-  }
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -1656,6 +1676,9 @@ function bootChart(attempt) {
   });
   loadStats();
   setInterval(loadStats, 30000);
+  // Initial load of the sidebar's "Recent Signals" mini-list + periodic refresh
+  _renderSignalHistoryMini();
+  setInterval(_renderSignalHistoryMini, 60000);  // refresh every 60s
 }
 bootChart();
 
@@ -1683,7 +1706,12 @@ function _renderHistoryFilterOptions() {
 async function loadHistory() {
   const rows = document.getElementById('history-rows');
   if (!rows) return;
-  const asset = document.getElementById('history-pair-filter').value;
+  // Populate the filter dropdown if it's empty (first visit to the history tab)
+  const sel = document.getElementById('history-pair-filter');
+  if (sel && sel.options.length <= 1) {
+    _renderHistoryFilterOptions();
+  }
+  const asset = sel ? sel.value : '';
   try {
     const q = asset ? `?asset=${encodeURIComponent(asset)}&limit=150` : '?limit=150';
     const data = await fetch('/api/signals' + q).then((r) => r.json());
@@ -1712,24 +1740,9 @@ async function loadHistory() {
 }
 
 // Desktop entry point into Settings — now navigates to the Settings page
-// instead of opening a modal (redesigned layout has Settings as a full page).
-function openSettingsModal() {
-  _setActiveTab('settings');
-}
-
-function closeSettingsModal() {
-  _setActiveTab('advance');
-}
-
-function openHistory() {
-  _renderHistoryFilterOptions();
-  document.getElementById('history-modal').classList.remove('hidden');
-  loadHistory();
-}
-
-function closeHistory() {
-  document.getElementById('history-modal').classList.add('hidden');
-}
+// History is now a full page (tab-history), not a modal. loadHistory() is
+// called automatically when the History tab is activated (see _setActiveTab).
+// The filter dropdown and refresh button live inside the history page.
 
 // Full page reload — simplest reliable fix for a chart that's stuck showing
 // stale/missing data (bad WS state, a pair that never got its snapshot,
@@ -1737,12 +1750,8 @@ function closeHistory() {
 // the chart from scratch rather than trying to patch whatever's wrong.
 document.getElementById('refresh-btn').addEventListener('click', () => location.reload());
 
-document.getElementById('history-btn').addEventListener('click', openHistory);
-document.getElementById('history-close').addEventListener('click', closeHistory);
-document.getElementById('history-backdrop').addEventListener('click', closeHistory);
-document.getElementById('history-refresh').addEventListener('click', loadHistory);
-document.getElementById('history-pair-filter').addEventListener('change', loadHistory);
-
-document.getElementById('settings-btn').addEventListener('click', openSettingsModal);
-document.getElementById('settings-modal-close').addEventListener('click', closeSettingsModal);
-document.getElementById('settings-backdrop').addEventListener('click', closeSettingsModal);
+// History page controls — guarded (only exist when history tab is in the DOM)
+const histRefresh = document.getElementById('history-refresh');
+if (histRefresh) histRefresh.addEventListener('click', loadHistory);
+const histFilter = document.getElementById('history-pair-filter');
+if (histFilter) histFilter.addEventListener('change', loadHistory);

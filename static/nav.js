@@ -1,14 +1,14 @@
 /* ── Plybit AI — nav.js ─────────────────────────────────────────────────── *
  * Page navigation system: sidebar (desktop) + bottom tabs (mobile)         *
- * Handles page switching, sidebar toggle, and history-nav shortcut.        *
- * chart.js's _setActiveTab is patched to also call this module's           *
- * setPage() so both navigation systems stay in sync.                       *
+ * 3-tab layout: Chart / History / Settings                                  *
+ * chart.js's _setActiveTab calls Nav.setPage() to keep both nav systems     *
+ * in sync.                                                                  *
  * ─────────────────────────────────────────────────────────────────────────── */
 'use strict';
 
 const Nav = (() => {
-  const PAGES = ['tab-home', 'tab-signals', 'tab-advance', 'tab-settings'];
-  const TAB_MAP = { home: 'tab-home', signals: 'tab-signals', advance: 'tab-advance', settings: 'tab-settings' };
+  const PAGES = ['tab-advance', 'tab-history', 'tab-settings'];
+  const TAB_MAP = { chart: 'tab-advance', history: 'tab-history', settings: 'tab-settings' };
 
   let _currentPage = 'tab-advance';
 
@@ -33,6 +33,15 @@ const Nav = (() => {
   });
   if (sidebarBg) sidebarBg.addEventListener('click', closeSidebar);
 
+  // ── Side panel toggle (collapse/expand on desktop) ──────────────────────
+  const sidePanel = document.getElementById('side-panel');
+  const sidePanelToggle = document.getElementById('side-panel-toggle');
+  if (sidePanelToggle && sidePanel) {
+    sidePanelToggle.addEventListener('click', () => {
+      sidePanel.classList.toggle('collapsed');
+    });
+  }
+
   // ── Page switching ─────────────────────────────────────────────────────
   function setPage(tabKey) {
     const pageId = TAB_MAP[tabKey];
@@ -47,9 +56,7 @@ const Nav = (() => {
       el.classList.toggle('hidden', !isTarget);
       el.classList.toggle('page-active', isTarget);
       if (isTarget) {
-        // Trigger CSS entrance animation
         el.classList.remove('page-enter');
-        // Force reflow to restart animation
         void el.offsetWidth;
         el.classList.add('page-enter');
         requestAnimationFrame(() => {
@@ -62,9 +69,7 @@ const Nav = (() => {
 
     // Update sidebar active
     document.querySelectorAll('#sidebar .nav-item').forEach((item) => {
-      const p = item.dataset.page;
-      const isActive = (p === tabKey) || (p === 'history-nav' && tabKey === 'advance');
-      item.classList.toggle('active', isActive);
+      item.classList.toggle('active', item.dataset.page === tabKey);
     });
 
     // Update bottom tabs active
@@ -80,16 +85,7 @@ const Nav = (() => {
   document.querySelectorAll('#sidebar .nav-item').forEach((item) => {
     item.addEventListener('click', () => {
       const page = item.dataset.page;
-      if (page === 'history-nav') {
-        // History: on desktop, just open the modal directly
-        setPage('advance');
-        if (typeof openHistory === 'function') setTimeout(openHistory, 100);
-      } else if (page === 'settings') {
-        // Settings: on desktop use page, on mobile use page
-        setPage('settings');
-      } else {
-        setPage(page);
-      }
+      setPage(page);
     });
   });
 
