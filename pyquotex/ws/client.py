@@ -143,6 +143,16 @@ class WebsocketClient:
             await self.api._on_open()
             self._open_count += 1
             if self._open_count > 1:
+                # Re-send SSID on every reconnect — Quotex's server drops the
+                # auth state when the WS closes, so without re-sending the
+                # SSID here the server replies with "authorization/reject"
+                # which looks exactly like an expired token (false rejection).
+                # This is the root cause of the "token expires after a few
+                # hours" bug: the token is fine, it just wasn't re-sent.
+                try:
+                    await self.api.send_ssid()
+                except Exception as e:
+                    logger.warning("SSID re-send on reconnect failed: %s", e)
                 asyncio.create_task(self._replay_subscriptions())
 
             self._start_watchdog()

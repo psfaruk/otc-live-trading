@@ -335,6 +335,15 @@ class QuotexFeed:
         self._user_token: str = ""
         self._user_token_at: float = 0.0   # when it was set (for status display)
 
+        # ── Reject-streak counter (false-rejection protection) ────────────
+        # Quotex's WS often sends "authorization/reject" on transient
+        # reconnects even when the token is valid. Without this counter,
+        # a single reject would wipe the token and force a manual re-paste.
+        # We only clear the token after 5 CONSECUTIVE rejections (reset
+        # to 0 on any successful connect). 5 rejects in a row ≈ 5 minutes
+        # of backoff retries — strong signal the token is genuinely dead.
+        self._reject_streak: int = 0
+
     # ── Public ────────────────────────────────────────────────────────────────
 
     def set_token(self, token: str) -> None:
@@ -346,6 +355,8 @@ class QuotexFeed:
         """
         self._user_token = (token or "").strip()
         self._user_token_at = time.time() if self._user_token else 0.0
+        # Reset the reject streak — a freshly-pasted token gets a clean slate
+        self._reject_streak = 0
         if self._user_token:
             print(f"[feed] user token set ({self._user_token[:8]}...) — "
                   "will use on next connect")
@@ -786,6 +797,7 @@ class QuotexFeed:
                         self._client.connect(), timeout=30)
                     if ok:
                         self._remember_token()
+                        self._reject_streak = 0  # reset on success
                         print(f"[feed] connect -> ok=True  reason={reason}")
                         return True
                     # DIFFERENTIATE: real auth-reject (token genuinely
@@ -839,6 +851,32 @@ class QuotexFeed:
                 # close the client and DON'T wipe the token unless we
                 # know it's rejected.
                 await self._close_client(self._client)
+                # IMPORTANT: do NOT clear the token here. Quotex's WS often
+                # sends "authorization/reject" on transient reconnects even
+                # when the token is perfectly valid (the server drops auth
+                # state on WS close, and pyquotex used to forget to re-send
+                # the SSID — now fixed in ws/client.py). Clearing the token
+                # on every transient reject caused the "token expires after
+                # a few hours" false-positive bug. Instead, keep the token
+                # and let the manager loop retry with exponential backoff.
+                # The token is only cleared after N consecutive failures
+                # (see _reject_streak logic below).
+                # ── Reject-streak tracking ──────────────────────────────
+                # Only after 5 consecutive rejections do we conclude the
+                # token is genuinely expired (not a transient server hiccup).
+                self._reject_streak = getattr(self, '_reject_streak', 0) + 1
+                if self._reject_streak >= 5:
+                    print(f"[feed] token rejected {self._reject_streak}x in a row "
+                          "— assuming genuinely expired, clearing")
+                    if self._user_token:
+                        self._user_token = ""
+                        self._user_token_at = 0.0
+                    else:
+                        os.environ.pop("QX_TOKEN", None)
+                    self._reject_streak = 0
+                else:
+                    print(f"[feed] token reject streak: {self._reject_streak}/5 "
+                          "— keeping token, will retry (transient rejects are common)")
 
             # ── Attempt 2: FRESH client, email/password only ──────────────────
             # A brand-new Quotex instance has no leftover WebSocket state from
@@ -857,11 +895,20 @@ class QuotexFeed:
             print(f"[feed] connect -> ok={ok}  reason={reason}")
             if ok:
                 self._remember_token()
+                self._reject_streak = 0  # reset on success
                 return True
-            if reason and "authorization/reject" in str(reason).lower():
-                # Real server-side reject — clear stale token (only here,
-                # NOT on timeout — see Attempt 1 comment for why).
-                self._clear_stale_token()
+            # Only clear the stale token after 5 consecutive rejections —
+            # a single transient "reject" (common on server-side hiccups)
+            # should NOT wipe a valid token. See _connect's Attempt 1 for
+            # the full rationale.
+            if reason and "reject" in str(reason).lower():
+                self._reject_streak = getattr(self, '_reject_streak', 0) + 1
+                if self._reject_streak >= 5:
+                    self._clear_stale_token()
+                    self._reject_streak = 0
+                else:
+                    print(f"[feed] email/password reject streak: "
+                          f"{self._reject_streak}/5 — keeping token")
             # If the login itself failed (vs. a WS reject), surface a clear
             # hint — the most common cause is wrong/missing creds, and the
             # default "Websocket connection rejected" message is misleading.
@@ -891,9 +938,14 @@ class QuotexFeed:
                     print(f"[feed] retry -> ok={ok}  reason={reason}")
                     if ok:
                         self._remember_token()
+                        self._reject_streak = 0  # reset on success
                         return True
-                    if reason and "authorization/reject" in str(reason).lower():
-                        self._clear_stale_token()
+                    # Streak-based clear — same as Attempt 1 & 2
+                    if reason and "reject" in str(reason).lower():
+                        self._reject_streak = getattr(self, '_reject_streak', 0) + 1
+                        if self._reject_streak >= 5:
+                            self._clear_stale_token()
+                            self._reject_streak = 0
                 except Exception as _re:
                     print(f"[feed] retry error: {_re}")
 
