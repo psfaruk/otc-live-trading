@@ -497,6 +497,83 @@ class QuotexFeed:
             "prediction": stream.prediction,
         }
 
+    def get_share_signals(self) -> list[dict]:
+        """Return the latest signal for all 16 wanted pairs, for the Share
+        Signal table. One row per pair — the most recent closed-candle
+        prediction + the closed candle's buyer/seller pressure.
+
+        Each row contains:
+          asset            — e.g. "EURUSD_otc"
+          display          — e.g. "EUR/USD"
+          type             — "otc" or "real"
+          time             — Unix timestamp of the signal (candle close time)
+          buy_pct          — buyer tick % from the closed candle's micro
+          sell_pct         — seller tick % (100 - buy_pct)
+          signal           — "CALL" / "PUT" / "NEUTRAL"
+          strength         — "STRONG" / "MEDIUM" / "WEAK"
+          confidence       — 0.0–1.0
+          prediction_candle — {open, high, low, close} of the ghost candle
+                             (None if no prediction yet)
+
+        Pairs with no stream or no closed candle yet return a row with
+        signal=None so the table always shows all 16 rows.
+        """
+        rows = []
+        for base, variant in _WANTED_PAIRS.items():
+            asset = base + ("_otc" if variant == "otc" else "")
+            # Look for a 60s stream (the default/always-on period)
+            stream = self._streams.get((asset, 60))
+            row = {
+                "asset":             asset,
+                "display":           _api_to_display(asset),
+                "type":              variant,
+                "time":              None,
+                "buy_pct":           None,
+                "sell_pct":          None,
+                "signal":            None,
+                "strength":          None,
+                "confidence":        None,
+                "prediction_candle": None,
+            }
+            if stream:
+                # Latest prediction (for the NEXT candle)
+                pred = stream.prediction
+                if pred:
+                    row["signal"]     = pred.get("signal")
+                    row["strength"]   = pred.get("strength")
+                    row["confidence"] = pred.get("confidence")
+                    pc = pred.get("candle")
+                    if pc and isinstance(pc, dict):
+                        row["prediction_candle"] = {
+                            "open":  pc.get("open"),
+                            "high":  pc.get("high"),
+                            "low":   pc.get("low"),
+                            "close": pc.get("close"),
+                        }
+                # Last closed candle's time + buyer/seller pressure.
+                # stream.candles holds closed candles; the last one is the
+                # most recent close. Its micro data (buy_pct/sell_pct) is
+                # fetched from the DB via get_micro_history.
+                if stream.candles:
+                    last_closed = stream.candles[-1]
+                    row["time"] = last_closed.get("time")
+                    # Fetch the micro summary for this closed candle
+                    try:
+                        micro_hist = _db.get_micro_history(
+                            asset, 60, n=1,
+                            before_ctime=last_closed.get("time", 0) + 1)
+                        if micro_hist:
+                            m = micro_hist[-1]  # most recent
+                            row["buy_pct"]  = m.get("buy_pct")
+                            row["sell_pct"] = (100 - m["buy_pct"]
+                                               if m.get("buy_pct") is not None
+                                               else None)
+                    except Exception:
+                        pass
+            rows.append(row)
+        return rows
+
+
     async def ensure_stream(self, asset: str, period: int,
                             cid: str | None = None) -> dict:
         """

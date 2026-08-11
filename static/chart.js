@@ -1236,6 +1236,89 @@ async function _renderSignalHistoryMini() {
   }
 }
 
+// ── Share Signal table — live signal table for all 16 pairs ────────────────
+// Fetches /api/share-signals and renders one row per pair in #share-signal-rows.
+// Columns: Pair | Type | Time | Buyer% | Seller% | Signal | Prediction Candle.
+// Polled every 10s while the Share Signal tab is active (see _setActiveTab).
+let _sharePollTimer = null;
+let _lastShareKey = '';
+
+async function _loadShareSignals() {
+  const tbody = document.getElementById('share-signal-rows');
+  if (!tbody) return;
+  try {
+    const r = await fetch('/api/share-signals');
+    if (!r.ok) return;
+    const data = await r.json();
+    const signals = data.signals || [];
+    if (!signals.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="history-empty">No signals yet — waiting for first candle close</td></tr>';
+      return;
+    }
+    // Dedup — skip re-render if nothing changed
+    const key = signals.map(s => `${s.asset}:${s.signal}:${s.time}:${s.buy_pct}`).join('|');
+    if (key === _lastShareKey) return;
+    _lastShareKey = key;
+
+    tbody.innerHTML = signals.map((s) => {
+      const sigCls = (s.signal || 'neutral').toLowerCase();
+      const rowCls = s.signal === 'CALL' ? 'row-call' : s.signal === 'PUT' ? 'row-put' : '';
+      const typeBadge = s.type === 'otc'
+        ? '<span class="ss-type-badge otc">OTC</span>'
+        : '<span class="ss-type-badge real">Real</span>';
+      // Time formatting
+      const timeStr = s.time
+        ? new Date(s.time * 1000).toLocaleTimeString('en-GB', {
+            hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+          })
+        : '–';
+      // Buyer/seller pressure
+      const buyPct = s.buy_pct != null ? s.buy_pct : '–';
+      const sellPct = s.sell_pct != null ? s.sell_pct : '–';
+      const buyBar = s.buy_pct != null
+        ? `<span class="ss-pressure">
+             <span class="ss-pressure-bar"><span class="ss-pressure-bar-fill buyer" style="width:${s.buy_pct}%"></span></span>
+             <span class="ss-pressure-pct buyer">${s.buy_pct}%</span>
+           </span>`
+        : '<span class="ss-pressure-pct">–</span>';
+      const sellBar = s.sell_pct != null
+        ? `<span class="ss-pressure">
+             <span class="ss-pressure-bar"><span class="ss-pressure-bar-fill seller" style="width:${s.sell_pct}%"></span></span>
+             <span class="ss-pressure-pct seller">${s.sell_pct}%</span>
+           </span>`
+        : '<span class="ss-pressure-pct">–</span>';
+      // Signal badge
+      const sigBadge = s.signal
+        ? `<span class="ss-signal-badge ${sigCls}">${s.signal === 'CALL' ? '▲ CALL' : s.signal === 'PUT' ? '▼ PUT' : s.signal}</span>`
+        : '<span class="ss-signal-badge neutral">–</span>';
+      // Prediction candle
+      let predCandle = '–';
+      if (s.prediction_candle && s.prediction_candle.open != null) {
+        const pc = s.prediction_candle;
+        const fmt = (v) => v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(5) : v.toFixed(8);
+        predCandle = `<span class="ss-pred-candle">` +
+                     `<span class="pc-o">O:${fmt(pc.open)}</span> ` +
+                     `<span class="pc-h">H:${fmt(pc.high)}</span> ` +
+                     `<span class="pc-l">L:${fmt(pc.low)}</span> ` +
+                     `<span class="pc-c">C:${fmt(pc.close)}</span>` +
+                     `</span>`;
+      }
+
+      return `<tr class="${rowCls}">
+        <td class="col-pair">${s.display || s.asset}</td>
+        <td class="col-type">${typeBadge}</td>
+        <td class="col-time">${timeStr}</td>
+        <td class="col-buyer">${buyBar}</td>
+        <td class="col-seller">${sellBar}</td>
+        <td class="col-signal">${sigBadge}</td>
+        <td class="col-pred">${predCandle}</td>
+      </tr>`;
+    }).join('');
+  } catch (_) {
+    // keep whatever was last rendered
+  }
+}
+
 // ── Live price ticker — topbar real-time price display ─────────────────────
 // Updated on every tick message. Flashes green/red based on direction vs
 // the previous tick. Hidden until the first real price arrives.
@@ -1526,7 +1609,7 @@ let _setActiveTab = function(tab) {
     Nav.setPage(tab);
   } else {
     // Fallback if nav.js didn't load
-    for (const id of ['tab-advance', 'tab-history', 'tab-settings']) {
+    for (const id of ['tab-advance', 'tab-signals', 'tab-history', 'tab-settings']) {
       const el = document.getElementById(id);
       if (!el) continue;
       const isTarget = id === `tab-${tab === 'chart' ? 'advance' : tab}`;
@@ -1544,6 +1627,17 @@ let _setActiveTab = function(tab) {
   // When switching to History tab, auto-load the history table
   if (tab === 'history') {
     loadHistory();
+  }
+  // When switching to Share Signal tab, load + start polling
+  if (tab === 'signals') {
+    _loadShareSignals();
+    if (_sharePollTimer) clearInterval(_sharePollTimer);
+    _sharePollTimer = setInterval(_loadShareSignals, 10000);  // 10s poll
+  } else {
+    if (_sharePollTimer) {
+      clearInterval(_sharePollTimer);
+      _sharePollTimer = null;
+    }
   }
 }
 
@@ -1959,3 +2053,10 @@ const histRefresh = document.getElementById('history-refresh');
 if (histRefresh) histRefresh.addEventListener('click', loadHistory);
 const histFilter = document.getElementById('history-pair-filter');
 if (histFilter) histFilter.addEventListener('change', loadHistory);
+
+// Share Signal page controls
+const shareRefresh = document.getElementById('share-refresh');
+if (shareRefresh) shareRefresh.addEventListener('click', () => {
+  _lastShareKey = '';  // force re-render
+  _loadShareSignals();
+});

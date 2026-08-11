@@ -265,6 +265,14 @@ def signals(asset: str | None = None, period: int | None = None,
     return _db.get_signals(asset, period, limit)
 
 
+@app.get("/api/share-signals")
+def share_signals():
+    """Live signal table for all 16 pairs. One row per pair — the latest
+    closed-candle prediction + buyer/seller pressure. Polled by the Share
+    Signal tab every 10s while active."""
+    return {"signals": feed.get_share_signals()}
+
+
 @app.get("/api/theory-perf")
 def theory_perf(asset: str | None = None, period: int | None = None,
                 days: int = 7):

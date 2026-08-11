@@ -7,8 +7,13 @@
 'use strict';
 
 const Nav = (() => {
-  const PAGES = ['tab-advance', 'tab-history', 'tab-settings'];
-  const TAB_MAP = { chart: 'tab-advance', history: 'tab-history', settings: 'tab-settings' };
+  const PAGES = ['tab-advance', 'tab-signals', 'tab-history', 'tab-settings'];
+  const TAB_MAP = {
+    chart: 'tab-advance',
+    signals: 'tab-signals',
+    history: 'tab-history',
+    settings: 'tab-settings',
+  };
 
   let _currentPage = 'tab-advance';
 

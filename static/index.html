@@ -27,6 +27,10 @@
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           <span class="nav-label">Chart</span>
         </button>
+        <button type="button" class="nav-item" data-page="signals">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <span class="nav-label">Share Signal</span>
+        </button>
         <button type="button" class="nav-item" data-page="history">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           <span class="nav-label">History</span>
@@ -224,6 +228,38 @@
           </div>
         </div>
 
+        <!-- ═══ SHARE SIGNAL PAGE (new) ═══════════════════════════════════
+             Live table of the latest signal for all 16 pairs. Updates in
+             real-time as each pair's candle closes. Columns: Pair | Type |
+             Time | Buyer% | Seller% | Signal | Prediction Candle. -->
+        <div id="tab-signals" class="page hidden">
+          <div class="page-scroll">
+            <div class="share-signal-head">
+              <h2>Share Signal</h2>
+              <span class="share-signal-sub">Live signals for all 16 pairs — updates every candle close</span>
+              <button type="button" id="share-refresh" class="history-btn">↻ Refresh</button>
+            </div>
+            <div class="share-signal-table-wrap">
+              <table id="share-signal-table" class="share-signal-table">
+                <thead>
+                  <tr>
+                    <th class="col-pair">Pair</th>
+                    <th class="col-type">Type</th>
+                    <th class="col-time">Time</th>
+                    <th class="col-buyer">Buyer %</th>
+                    <th class="col-seller">Seller %</th>
+                    <th class="col-signal">Signal</th>
+                    <th class="col-pred">Prediction Candle</th>
+                  </tr>
+                </thead>
+                <tbody id="share-signal-rows">
+                  <tr><td colspan="7" class="history-empty">Loading signals…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <!-- ═══ HISTORY PAGE ═══════════════════════════════════════════════ -->
         <div id="tab-history" class="page hidden">
           <div class="page-scroll">
@@ -367,6 +403,10 @@
       <button type="button" class="tab-btn active" data-tab="chart">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span class="tab-btn-label">Chart</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="signals">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <span class="tab-btn-label">Signals</span>
       </button>
       <button type="button" class="tab-btn" data-tab="history">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>

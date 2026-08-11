@@ -3368,3 +3368,281 @@ input:focus-visible {
     display: none;
   }
 }
+
+/* ── 52. Share Signal Table — live signal table for all 16 pairs ─────────────
+   Full-width table on the Share Signal tab. Columns: Pair | Type | Time |
+   Buyer% | Seller% | Signal | Prediction Candle. Row tinted green/red by
+   signal direction. Buyer/seller shown as a mini bar + percentage.
+   Responsive: on mobile <640px, hides Prediction Candle column. */
+
+.share-signal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.share-signal-head h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.share-signal-sub {
+  color: var(--text2);
+  font-size: 12px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.share-signal-table-wrap {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.share-signal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.share-signal-table thead {
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+}
+
+.share-signal-table th {
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+.share-signal-table th.col-signal,
+.share-signal-table td.col-signal {
+  text-align: center;
+}
+
+.share-signal-table th.col-buyer,
+.share-signal-table td.col-buyer,
+.share-signal-table th.col-seller,
+.share-signal-table td.col-seller {
+  text-align: right;
+}
+
+.share-signal-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.share-signal-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.share-signal-table tbody tr:hover {
+  background: rgba(68, 138, 255, 0.04);
+}
+
+/* Row tint by signal direction */
+.share-signal-table tr.row-call {
+  background: rgba(0, 230, 118, 0.03);
+}
+
+.share-signal-table tr.row-put {
+  background: rgba(255, 23, 68, 0.03);
+}
+
+.share-signal-table tr.row-call:hover {
+  background: rgba(0, 230, 118, 0.07);
+}
+
+.share-signal-table tr.row-put:hover {
+  background: rgba(255, 23, 68, 0.07);
+}
+
+/* Pair name cell */
+.share-signal-table .col-pair {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Type badge (OTC / Real) */
+.ss-type-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ss-type-badge.otc {
+  color: var(--blue);
+  background: rgba(68, 138, 255, 0.12);
+  border: 1px solid rgba(68, 138, 255, 0.25);
+}
+
+.ss-type-badge.real {
+  color: var(--green);
+  background: rgba(0, 230, 118, 0.12);
+  border: 1px solid rgba(0, 230, 118, 0.25);
+}
+
+/* Time cell */
+.share-signal-table .col-time {
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+/* Buyer/seller mini bar */
+.ss-pressure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ss-pressure-bar {
+  display: inline-block;
+  width: 40px;
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.ss-pressure-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width var(--duration-normal) var(--ease-out-expo);
+}
+
+.ss-pressure-bar-fill.buyer {
+  background: var(--green);
+}
+
+.ss-pressure-bar-fill.seller {
+  background: var(--red);
+}
+
+.ss-pressure-pct {
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+  text-align: right;
+}
+
+.ss-pressure-pct.buyer {
+  color: var(--green);
+}
+
+.ss-pressure-pct.seller {
+  color: var(--red);
+}
+
+/* Signal cell — CALL/PUT badge */
+.ss-signal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ss-signal-badge.call {
+  color: var(--green);
+  background: rgba(0, 230, 118, 0.15);
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.ss-signal-badge.put {
+  color: var(--red);
+  background: rgba(255, 23, 68, 0.15);
+  border: 1px solid rgba(255, 23, 68, 0.3);
+}
+
+.ss-signal-badge.neutral {
+  color: var(--text3);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+}
+
+/* Prediction candle cell */
+.ss-pred-candle {
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+.ss-pred-candle .pc-o { color: var(--text2); }
+.ss-pred-candle .pc-h { color: var(--green); }
+.ss-pred-candle .pc-l { color: var(--red); }
+.ss-pred-candle .pc-c { color: var(--text); font-weight: 600; }
+
+/* Empty / loading state */
+.share-signal-table .history-empty {
+  text-align: center;
+  padding: 32px 14px;
+  color: var(--text3);
+  font-style: italic;
+}
+
+/* ── Share Signal table responsive ────────────────────────────────────────── */
+
+@media (max-width: 1024px) {
+  .share-signal-table th,
+  .share-signal-table td {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .ss-pressure-bar {
+    width: 30px;
+  }
+}
+
+@media (max-width: 640px) {
+  /* Hide Prediction Candle column on small screens */
+  .share-signal-table th.col-pred,
+  .share-signal-table td.col-pred {
+    display: none;
+  }
+  /* Hide Time column too — less critical on mobile */
+  .share-signal-table th.col-time,
+  .share-signal-table td.col-time {
+    display: none;
+  }
+  .share-signal-table th,
+  .share-signal-table td {
+    padding: 8px;
+    font-size: 11px;
+  }
+  .ss-pressure-bar {
+    display: none;  /* just show the % number on mobile */
+  }
+  .share-signal-head h2 {
+    font-size: 16px;
+  }
+  .share-signal-sub {
+    display: none;
+  }
+}
