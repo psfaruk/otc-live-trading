@@ -221,17 +221,23 @@ def _debug_hint(feed) -> str:
         return "Feed is connected — live data should be streaming."
     # User-supplied token (from frontend) takes priority over env vars
     if feed.has_token():
-        return ("User token is set but the WebSocket rejected it. The token "
-                "may be expired — re-extract it from a fresh browser session "
-                "and paste it into the Settings page.")
+        return ("User token is set but the WebSocket did not authenticate "
+                "in time. This is most often a transient slow-network issue, "
+                "NOT an expired token — the feed will retry the same token "
+                "automatically. If it stays disconnected for >2 minutes, "
+                "re-extract the SSID from a fresh browser session and paste "
+                "it into the Settings page.")
     if not (os.environ.get("QX_TOKEN", "").strip()
             or (os.environ.get("QX_EMAIL", "").strip()
                 and os.environ.get("QX_PASSWORD", "").strip())):
         return ("No Quotex credentials set. Open the Settings page and paste "
                 "your SSID token, OR set QX_TOKEN as a Railway env var.")
     if os.environ.get("QX_TOKEN", "").strip():
-        return ("QX_TOKEN is set but the WebSocket rejected it. The token may "
-                "be expired — re-extract it from a fresh browser session.")
+        return ("QX_TOKEN is set but the WebSocket did not authenticate in "
+                "time. This is usually a transient slow-network issue, not "
+                "an expired token — the feed will retry automatically. If it "
+                "stays disconnected for >2 minutes, re-extract the SSID from "
+                "a fresh browser session.")
     return ("QX_EMAIL/QX_PASSWORD are set but login is failing — this is "
             "almost always Cloudflare blocking the login page. Switch to "
             "QX_TOKEN (extract SSID cookie from a logged-in browser session).")

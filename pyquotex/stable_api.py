@@ -106,18 +106,35 @@ class Quotex(
     async def _check_connect(state: Any) -> bool:
         """Check connection using the per-instance state object.
 
-        Waits up to ~2s for the state to settle on AUTHENTICATED; returns
+        Waits up to ~12s for the state to settle on AUTHENTICATED; returns
         as soon as the predicate is satisfied (event-driven path) or False
-        on timeout. Replaces an unconditional ``await asyncio.sleep(2)``.
+        on timeout.
+
+        Previously this waited only 2s, which is too short for a fresh
+        WebSocket handshake + SSID round-trip (especially on hosts with
+        slow DNS, cold TLS sessions, or a laggy Quotex backend). A 2s
+        timeout falsely reported valid tokens as "rejected" — the auth
+        frame simply hadn't arrived yet — and the caller wiped the token
+        from session_data, causing the next reconnect to fall through to
+        email/password (which then fails on Cloudflare). 12s gives the
+        auth handshake enough room to complete under realistic latency
+        without hanging the manager loop on a truly-dead socket (which
+        start_websocket() already catches at the 10s mark).
         """
         from pyquotex._api._waits import wait_until
+        # Bail out immediately if the server has ALREADY explicitly
+        # rejected us (real `authorization/reject` frame) — no point
+        # waiting 12s for something we know will never come.
+        if state.auth_status == AuthStatus.FAILED:
+            return False
         try:
             await wait_until(
-                lambda: state.auth_status == AuthStatus.AUTHENTICATED,
-                timeout=2,
+                lambda: state.auth_status in
+                        (AuthStatus.AUTHENTICATED, AuthStatus.FAILED),
+                timeout=12,
                 poll_interval=0.05,
             )
-            return True
+            return state.auth_status == AuthStatus.AUTHENTICATED
         except asyncio.TimeoutError:
             return state.auth_status == AuthStatus.AUTHENTICATED
 

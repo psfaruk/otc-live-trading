@@ -129,6 +129,19 @@ def _pred_candle(candles: list[dict], signal: str, period: int, actual_open: flo
     atr  = _atr(candles[-20:]) if len(candles) >= 20 else (last["high"] - last["low"]) or 0.0001
     t    = last["time"] + period
 
+    # NEUTRAL — draw a flat doji-style "ghost" candle so the chart
+    # still shows the next-candle slot, but visually distinct from a
+    # real CALL/PUT prediction. The UI looks for signal == "NEUTRAL"
+    # to render a "WAIT — no clear edge" badge instead of CALL/PUT.
+    if signal == "NEUTRAL":
+        # Tiny body at the open, tiny wick both sides — clearly
+        # different from a real directional prediction candle.
+        tiny = atr * 0.05
+        return {"time":  t, "open":  op,
+                "high":  round(op + tiny, 6),
+                "low":   round(op - tiny, 6),
+                "close": round(op, 6)}
+
     # Realistic candle proportions (fractions of ATR)
     # Body is the main body, wick extends from body tip (signal direction),
     # tail extends from open (opposite direction).
@@ -775,19 +788,57 @@ class QuotexFeed:
                         self._remember_token()
                         print(f"[feed] connect -> ok=True  reason={reason}")
                         return True
-                    print(f"[feed] token auth failed ({reason}) — trying login")
+                    # DIFFERENTIATE: real auth-reject (token genuinely
+                    # invalid) vs. auth timeout (token fine, just slow).
+                    # Previously the reason was always "Websocket
+                    # connection rejected." which contains "reject", so
+                    # _clear_stale_token() wiped a perfectly valid token
+                    # every time a slow auth tripped the (formerly 2s,
+                    # now 12s) check_connect timeout. After a few hours
+                    # of running, a transient slow-auth moment would
+                    # silently kill the token, the next reconnect fell
+                    # through to email/password (Cloudflare 403), and
+                    # the operator saw "token expired" even though the
+                    # token had hours/days of life left.
+                    _reason_str = str(reason or "")
+                    if "authorization/reject" in _reason_str or _reason_str == "authorization/reject":
+                        print(f"[feed] token REJECTED by server ({reason}) — "
+                              "token is genuinely invalid, clearing and "
+                              "falling through to email/password")
+                        # Token genuinely rejected — invalidate so we
+                        # don't keep retrying a known-bad token.
+                        await self._close_client(self._client)
+                        if self._user_token:
+                            self._user_token = ""
+                            self._user_token_at = 0.0
+                        else:
+                            os.environ.pop("QX_TOKEN", None)
+                        self._clear_stale_token()
+                    else:
+                        # Timeout / transient slowness — KEEP the token.
+                        # Just close this client and let the manager loop
+                        # retry the SAME token on the next iteration.
+                        print(f"[feed] auth timed out / transient ({reason}) — "
+                              "KEEPING token, will retry on next manager "
+                              "loop iteration")
+                        await self._close_client(self._client)
+                        # IMPORTANT: do NOT clear _user_token / QX_TOKEN
+                        # and do NOT call _clear_stale_token — the token
+                        # is fine, we just need to retry.
+                        # Re-arm env var if _remember_token cached it
+                        # earlier (it's already there, nothing to do).
+                        return False
                 except Exception as _te:
                     print(f"[feed] token attempt error: {_te}")
-                # Token failed — close this client cleanly before making a new one
+                    await self._close_client(self._client)
+                    # Network error during connect — also keep the token.
+                    # Don't punish a valid token for a TCP blip.
+                    return False
+                # Legacy fall-through (shouldn't reach here, but keep
+                # behavior safe): if we somehow didn't return above,
+                # close the client and DON'T wipe the token unless we
+                # know it's rejected.
                 await self._close_client(self._client)
-                # Invalidate the stale token so next reconnect skips this path.
-                # For env tokens, pop from os.environ; for user tokens, clear
-                # self._user_token (so a bad token doesn't retry forever).
-                if self._user_token:
-                    self._user_token = ""
-                    self._user_token_at = 0.0
-                else:
-                    os.environ.pop("QX_TOKEN", None)
 
             # ── Attempt 2: FRESH client, email/password only ──────────────────
             # A brand-new Quotex instance has no leftover WebSocket state from
@@ -807,7 +858,9 @@ class QuotexFeed:
             if ok:
                 self._remember_token()
                 return True
-            if reason and "reject" in str(reason).lower():
+            if reason and "authorization/reject" in str(reason).lower():
+                # Real server-side reject — clear stale token (only here,
+                # NOT on timeout — see Attempt 1 comment for why).
                 self._clear_stale_token()
             # If the login itself failed (vs. a WS reject), surface a clear
             # hint — the most common cause is wrong/missing creds, and the
@@ -839,7 +892,7 @@ class QuotexFeed:
                     if ok:
                         self._remember_token()
                         return True
-                    if reason and "reject" in str(reason).lower():
+                    if reason and "authorization/reject" in str(reason).lower():
                         self._clear_stale_token()
                 except Exception as _re:
                     print(f"[feed] retry error: {_re}")
@@ -981,18 +1034,16 @@ class QuotexFeed:
                 f"CHOP GUARD: {_key[0]}/{_key[1]} wrong "
                 f"{stream.zone_streak['losses']}x running -> WEAK until zone changes")
 
-        # Neutral signals should remain neutral; do not force a fake CALL/PUT
-        # just to keep a ghost candle on screen.
-        # ── 2026-08-10: NEUTRAL path removed. analyze_eoc now guarantees a
-        # CALL/PUT on every candle (zero-range + score=0 both fall through
-        # to its coin-flip tiebreak), so this branch is dead code kept only
-        # as a defensive fallback — if it ever fires, force CALL so a ghost
-        # candle still draws on screen.
-        if result["signal"] == "NEUTRAL":
-            result["signal"] = "CALL"
-            result.setdefault("reasons", []).append(
-                "DEFENSIVE: NEUTRAL forced to CALL — every candle must show a signal")
-            result["strength"] = "WEAK"
+        # ── 2026-08-11: NEUTRAL is now a VALID first-class output. ──
+        # analyze_eoc returns NEUTRAL when no theory voted AND no market
+        # state had conviction (see its docstring for the new rules).
+        # Forcing NEUTRAL → CALL here was the source of the user's
+        # complaint: "signals fall back without any pattern analysis".
+        # The UI now renders NEUTRAL as "WAIT — no clear edge" and
+        # draws a flat doji-style ghost candle (see _pred_candle's
+        # NEUTRAL branch). The strength="NONE" is the marker the UI
+        # checks.
+        # We do NOT force CALL here — NEUTRAL passes through.
         return {**result, "candle": _pred_candle(closed, result["signal"], stream.period, actual_open),
                 "payout": stream.payout}
 
@@ -1880,12 +1931,17 @@ class QuotexFeed:
                     # rendered from tick updates and does not need to overwrite
                     # the last completed bar in history.
 
-                    # ── LIVE theory periodic re-eval (Method A, 2026-07-10, untested) ──
+                    # ── LIVE theory periodic re-eval (Method A, 2026-07-10) ──
                     # Re-run analyze_eoc with the running candle's own ticks
                     # every ~30 ticks so the LIVE vote can update mid-candle.
                     # Reuses the (closed candles, just-closed ticks) snapshot
                     # taken by _run_eoc at candle-open — stream.ticks now
                     # holds the NEW (still-open) candle's ticks instead.
+                    #
+                    # 2026-08-11: also accept NEUTRAL updates — if the
+                    # fresh analysis says "no edge" mid-candle, we should
+                    # surface that to the UI (show "WAIT") rather than
+                    # keep displaying a stale CALL/PUT from candle open.
                     pred_changed = False
                     if (ENABLE_LIVE_THEORY and stream.base_candles
                             and len(stream.ticks) >= 15
@@ -1896,10 +1952,24 @@ class QuotexFeed:
                                 stream.base_candles, stream.base_ticks,
                                 running_ticks=list(stream.ticks))
                             stream._live_reeval_ticks = len(stream.ticks)
-                            if fresh and fresh.get("signal") in ("CALL", "PUT"):
-                                stream.prediction = {
-                                    **(stream.prediction or {}), **fresh}
-                                pred_changed = True
+                            if fresh and fresh.get("signal") in ("CALL", "PUT", "NEUTRAL"):
+                                # Only mark changed if the signal ACTUALLY
+                                # differs — avoids spurious broadcasts when
+                                # the LIVE vote is stable.
+                                _old_sig = (stream.prediction or {}).get("signal")
+                                if _old_sig != fresh.get("signal"):
+                                    stream.prediction = {
+                                        **(stream.prediction or {}), **fresh}
+                                    # Re-render the prediction candle for
+                                    # the new signal (esp. NEUTRAL's flat
+                                    # doji shape — see _pred_candle).
+                                    if stream.prediction:
+                                        stream.prediction["candle"] = _pred_candle(
+                                            stream.candles,
+                                            stream.prediction["signal"],
+                                            stream.period,
+                                            stream.candle_open_price)
+                                    pred_changed = True
                         except Exception as exc:
                             print(f"[feed] LIVE re-eval error "
                                   f"({stream.asset}@{stream.period}s): {exc}")

@@ -55,12 +55,36 @@ class AccountMixin:
 
         check, reason = await self.api.connect(self.account_is_demo == AccountType.DEMO)
         if not await self.check_connect():
-            logger.error(
-                "Websocket failed to connect or connection was rejected."
-            )
-            if "token" in self.session_data:
+            # DIFFERENTIATE the failure mode so the caller can decide
+            # whether to wipe the token or keep it.
+            #
+            # Previously this always wiped the token AND returned the
+            # string "Websocket connection rejected." — even when the
+            # socket simply timed out waiting for the SSID auth frame.
+            # The caller (feed._connect) sees "reject" in the reason and
+            # clears the env var token too, so a SLOW auth (not a bad
+            # token) was bricking the entire app until a manual redeploy.
+            #
+            # Now: only wipe the token if the server ACTUALLY rejected
+            # the auth (state.auth_status == FAILED). A timeout leaves
+            # the token intact so the next reconnect can retry it.
+            from pyquotex.global_value import AuthStatus
+            if self.api.state.auth_status == AuthStatus.FAILED:
+                # Real `authorization/reject` from the server — token is
+                # genuinely invalid (expired, wrong account, etc.).
+                logger.error(
+                    "WebSocket authorization REJECTED by server — "
+                    "invalidating token."
+                )
                 self.session_data["token"] = None
-            return False, "Websocket connection rejected."
+                return False, "authorization/reject"
+            # Auth didn't complete in time but was NOT rejected —
+            # transient slowness, not a bad token. Preserve the token.
+            logger.error(
+                "WebSocket auth timed out (not rejected) — keeping "
+                "token for next reconnect attempt."
+            )
+            return False, "auth timeout"
 
         return check, reason
 

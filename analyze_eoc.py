@@ -1,6 +1,27 @@
 """
 End-of-candle (EOC) analysis — DEEP-ANALYSIS-FIRST predictor (refactored 2026-07-10).
 
+2026-08-11: NEUTRAL is now a first-class output.
+  Previously the engine forced a CALL/PUT on every candle, even when no
+  theory voted and no market state had any conviction. The tiebreak fell
+  through to "repeat the last candle's color" — a parrot-bias that told
+  the user "CALL" every time a green candle closed, regardless of any
+  actual pattern. The user's complaint is exactly right: signals arrive
+  WITHOUT any pattern analysis.
+
+  Now: when no real evidence exists, the engine returns NEUTRAL. The
+  feed layer passes NEUTRAL through to the UI, which shows "WAIT — no
+  clear edge" instead of a fake CALL/PUT. A CALL/PUT is emitted only
+  when at least ONE of these is true:
+    (a) score != 0      — at least one theory voted with real weight
+    (b) _indep_net != 0 — color-independent evidence has a lean
+    (c) MARKET_STATE confirms a CONTINUATION at conviction >= 25%
+        (deep analysis agrees the trend is real, not just "chart
+        goes up so call CALL")
+
+  Strength="NONE" is the new strength value for NEUTRAL signals — the
+  UI uses it to render the "no signal" state distinctly from WEAK.
+
 ARCHITECTURE OVERHAUL (2026-07-10):
   Phase-1/2 history proved that piling many small OHLC-based theories
   (T7, T2, TRAP, STAR, STREAK, OUTSIDE, SPIN, ZIGZAG, MTF, ANOMALY,
@@ -29,6 +50,8 @@ ARCHITECTURE OVERHAUL (2026-07-10):
     - COLOR-GATED CAP         : no longer needed — color-forced theories
                                 are gone, so there's no pile-up to cap
     - PARROT GUARD            : same reason — the parrot-bias source is gone
+                                (and the 2026-08-11 refactor also removes
+                                the parrot tiebreak itself, see below)
     - UNSTABLE BASE / OVERHEATED : with fewer theories, score scale is
                                 naturally smaller and the strength
                                 calibration handles this directly
@@ -49,10 +72,15 @@ Signal flow now:
   4. Apply state's directional vote to score (scaled by conviction)
   5. Apply INFORMATION_WEIGHT (tick count + ATR + session, unified)
   6. Calibrate strength from final score + agreement
+  7. NEUTRAL tiebreak: only emit CALL/PUT if (a), (b), or (c) above;
+     otherwise return NEUTRAL with strength="NONE" — DO NOT parrot
+     the last candle color.
 
 Note: 1-minute binary options remain near-random. The point of this
 refactor is HONESTY — fewer theories, each with a real job, no pile-on,
-no self-deception. Accuracy claims beyond ~52-55% are still fiction.
+no self-deception, and NO fake signal when there's no edge. Accuracy
+claims beyond ~52-55% are still fiction. But "I don't know" (NEUTRAL)
+is now an honest answer instead of a coin-flip pretending to be a signal.
 """
 import math
 import os
@@ -368,6 +396,13 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     _zone       = "NEUTRAL"
     _zz_predict = 0
     _zz_len     = 0
+
+    # Pre-initialize market_state so the NEUTRAL tiebreak near the bottom
+    # can safely reference market_state.get(...) even on the early-return
+    # path (e.g. when len(candles) < 1 was caught above). It gets
+    # overwritten by the MAIN PREDICTOR block below.
+    market_state = {"state": "UNCLEAR", "bias": "NEUTRAL",
+                    "conviction": 0, "points": {}, "evidence": []}
 
     # ═══════════════════════════════════════════════════════════════════════
     # CONTEXT — key levels, wick walls, regime, round numbers
@@ -1166,23 +1201,50 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 f" {_COOLDOWN_SECONDS}s -> WEAK")
         _last_signal_time[_cooldown_key] = _now
 
-    # NEUTRAL tiebreak — weakest-first honesty
+    # NEUTRAL tiebreak — HONESTY-FIRST (refactored 2026-08-11).
+    #
+    # Previously: when score=0 and no independent lean and no regime, the
+    # code would emit `signal = "CALL" if is_bull else "PUT"` — literally
+    # repeating the last candle's color. This "parrot bias" meant the
+    # app would tell the user "CALL" every time a green candle closed
+    # even when ZERO theories had any opinion. The README sold this as
+    # "coin-flip honesty, marked WEAK", but in practice users followed
+    # these no-evidence signals and lost money. The user's complaint is
+    # exactly right: signals arrive without any pattern analysis.
+    #
+    # New behavior: NEUTRAL is a valid output. The caller decides how
+    # to surface it (the UI now shows "WAIT — no clear edge" instead
+    # of a fake CALL/PUT). We still emit a CALL/PUT *only* when at
+    # least one of these is true:
+    #   (a) score != 0      — at least one theory voted with real weight
+    #   (b) _indep_net != 0 — color-independent evidence has a lean
+    #   (c) regime is UPTREND/DOWNTREND AND market_state has a real
+    #       conviction (>= 25%) — i.e. the deep-analysis agrees the
+    #       trend is real. Pure regime with no conviction is NOT
+    #       enough — that's just "the chart goes up, call CALL".
     if signal == "NEUTRAL":
         if _indep_net != 0:
             signal = "CALL" if _indep_net > 0 else "PUT"
             _weak_cap_reasons.append(
                 f"TIEBREAK: score 0 — color-independent evidence leans"
-                f" {signal} -> {signal} (forced pick, WEAK)")
-        elif _regime in ("UPTREND", "DOWNTREND"):
+                f" {signal} (agree_weight drives direction) -> WEAK")
+        elif (_regime in ("UPTREND", "DOWNTREND")
+                and market_state.get("conviction", 0) >= 25
+                and market_state.get("state") == "CONTINUATION"):
+            # Real continuation: trend confirmed by deep state analysis.
             signal = "CALL" if _regime == "UPTREND" else "PUT"
             _weak_cap_reasons.append(
-                f"TIEBREAK: score 0, no independent lean — following"
-                f" {_regime} -> {signal} (forced pick, WEAK)")
+                f"TIEBREAK: score 0, but MARKET_STATE confirms {_regime}"
+                f" continuation @ {market_state.get('conviction')}%"
+                f" -> {signal} (trend-confirmed, WEAK)")
         else:
-            signal = "CALL" if is_bull else "PUT"
+            # No real evidence — keep NEUTRAL. The UI shows "WAIT".
+            # Do NOT repeat the last candle color. This is the fix
+            # for the parrot-bias / fallback-without-analysis bug.
             _weak_cap_reasons.append(
-                f"TIEBREAK: zero evidence — repeating last candle color"
-                f" -> {signal} (coin flip, WEAK)")
+                "NO EDGE: no theory vote, no regime confirmation, no "
+                "market-state conviction — NEUTRAL (no signal emitted)")
+            # No forced CALL/PUT — leave signal as NEUTRAL.
     elif abs(score) < 2:
         _weak_cap_reasons.append(
             f"NO EDGE: |score|={abs(score)} is noise-level -> WEAK")
@@ -1208,21 +1270,31 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     reasons.extend(_weak_cap_reasons)
     confidence = round(min(abs(score) / MAX_SCORE, 1.0), 2)
 
-    # AGREEMENT — distinct theories net-voting the winning side
+    # AGREEMENT — distinct theories net-voting the winning side.
+    # NEUTRAL signals get agree=0 / agree_weight=0 — there's no
+    # winning side to count votes for.
     _net_votes: dict[str, int] = {}
     for _code, _vdir, _vmag in _parse_votes(reasons, include_muted=False):
         _net_votes[_code] = _net_votes.get(_code, 0) + _vdir * _vmag
-    _want = 1 if signal == "CALL" else -1
-    agree = sum(1 for _nv in _net_votes.values() if _nv * _want > 0)
-    agree_weight = sum(abs(_nv) for _nv in _net_votes.values()
-                       if _nv * _want > 0)
+    if signal in ("CALL", "PUT"):
+        _want = 1 if signal == "CALL" else -1
+        agree = sum(1 for _nv in _net_votes.values() if _nv * _want > 0)
+        agree_weight = sum(abs(_nv) for _nv in _net_votes.values()
+                           if _nv * _want > 0)
+    else:
+        agree = 0
+        agree_weight = 0
 
     # Strength calibration. With 6 theories max, score scale is smaller:
     #   |score| 0-1 → WEAK (noise or tiebreak)
     #   |score| 2-3 + agree 2+ → MEDIUM
     #   |score| 4+  + agree 3+ + agree_weight 4+ → STRONG
     # OVERHEATED guard removed (no pile-on possible with 6 theories).
-    if _weak_cap_reasons:
+    # NEUTRAL signals get strength="NONE" so the UI can render them
+    # differently from real CALL/PUT signals.
+    if signal == "NEUTRAL":
+        strength = "NONE"
+    elif _weak_cap_reasons:
         strength = "WEAK"
     elif agree >= 3 and agree_weight >= 4 and abs(score) >= 4:
         strength = "STRONG"
