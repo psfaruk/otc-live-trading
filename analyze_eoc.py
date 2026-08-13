@@ -386,10 +386,7 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
 
     score   = 0
     reasons = []
-    indep_dirs: list[tuple[str, int]] = []   # color-INDEPENDENT votes (parrot guard gone,
-                                             # but kept for `agree` counting)
-    forced_score = 0  # legacy: kept for compatibility, always 0 in refactor
-                      # (no color-forced theories remain)
+    indep_dirs: list[tuple[str, int]] = []   # color-INDEPENDENT votes (used for `agree` counting)
 
     # Market regime / zigzag state (populated later; defaults allow safe return)
     _regime     = "SIDEWAYS"
@@ -468,7 +465,6 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 f" -> reversal -> CALL (x4)")
         elif res_buyer and eff_buyer:
             score += 2
-            forced_score += 2
             reasons.append(
                 f"RUN  Buyers WON (close {close_pos:.0%} hi, {bpct:.0%} up-ticks)"
                 f" -> CALL (x2)")
@@ -718,11 +714,9 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         _r_late  = _rt[-1] - _rt[2*_t3]
         if _r_early > 0 and _r_mid > 0 and _r_late > 0:
             score += 1
-            forced_score += 1
             reasons.append('LIVE  3-phase UP momentum -> CALL (x1)')
         elif _r_early < 0 and _r_mid < 0 and _r_late < 0:
             score -= 1
-            forced_score -= 1
             reasons.append('LIVE  3-phase DOWN momentum -> PUT (x1)')
 
         # LIVE INVASION — final ~1/6 ticks moving opposite to close
@@ -1148,8 +1142,6 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             _mc, _md, _mm = _mv[0]
             if _mc in muted:
                 score -= _md * _mm
-                if _mc in _FORCED_ONLY:
-                    forced_score -= _md * _mm
                 reasons[_mi] = _mr + f" [MUTED {muted[_mc]}]"
         indep_dirs = [(_t, _d) for (_t, _d) in indep_dirs if _t not in muted]
 
@@ -1201,27 +1193,16 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 f" {_COOLDOWN_SECONDS}s -> WEAK")
         _last_signal_time[_cooldown_key] = _now
 
-    # NEUTRAL tiebreak — HONESTY-FIRST (refactored 2026-08-11).
+    # ALWAYS-EMIT TIEBREAK — every candle gets a CALL or PUT (user requirement).
     #
-    # Previously: when score=0 and no independent lean and no regime, the
-    # code would emit `signal = "CALL" if is_bull else "PUT"` — literally
-    # repeating the last candle's color. This "parrot bias" meant the
-    # app would tell the user "CALL" every time a green candle closed
-    # even when ZERO theories had any opinion. The README sold this as
-    # "coin-flip honesty, marked WEAK", but in practice users followed
-    # these no-evidence signals and lost money. The user's complaint is
-    # exactly right: signals arrive without any pattern analysis.
-    #
-    # New behavior: NEUTRAL is a valid output. The caller decides how
-    # to surface it (the UI now shows "WAIT — no clear edge" instead
-    # of a fake CALL/PUT). We still emit a CALL/PUT *only* when at
-    # least one of these is true:
-    #   (a) score != 0      — at least one theory voted with real weight
-    #   (b) _indep_net != 0 — color-independent evidence has a lean
-    #   (c) regime is UPTREND/DOWNTREND AND market_state has a real
-    #       conviction (>= 25%) — i.e. the deep-analysis agrees the
-    #       trend is real. Pure regime with no conviction is NOT
-    #       enough — that's just "the chart goes up, call CALL".
+    # Order of precedence when score == 0:
+    #   (a) _indep_net != 0  — color-independent evidence has a lean (e.g. RUN absorption).
+    #   (b) regime is UPTREND/DOWNTREND AND market_state confirms CONTINUATION at >=25%.
+    #   (c) regime has ANY direction (UPTREND/DOWNTREND) — even without CONTINUATION conviction.
+    #   (d) Final fallback: the just-closed candle's own color (bull close -> CALL, bear close -> PUT).
+    #       This guarantees every candle emits a signal — the user explicitly requested
+    #       "no NEUTRAL, every candle must signal". Marked WEAK with a clear reason so the
+    #       user knows it's a low-confidence tiebreak, not a strong conviction.
     if signal == "NEUTRAL":
         if _indep_net != 0:
             signal = "CALL" if _indep_net > 0 else "PUT"
@@ -1231,20 +1212,25 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         elif (_regime in ("UPTREND", "DOWNTREND")
                 and market_state.get("conviction", 0) >= 25
                 and market_state.get("state") == "CONTINUATION"):
-            # Real continuation: trend confirmed by deep state analysis.
             signal = "CALL" if _regime == "UPTREND" else "PUT"
             _weak_cap_reasons.append(
                 f"TIEBREAK: score 0, but MARKET_STATE confirms {_regime}"
                 f" continuation @ {market_state.get('conviction')}%"
                 f" -> {signal} (trend-confirmed, WEAK)")
-        else:
-            # No real evidence — keep NEUTRAL. The UI shows "WAIT".
-            # Do NOT repeat the last candle color. This is the fix
-            # for the parrot-bias / fallback-without-analysis bug.
+        elif _regime in ("UPTREND", "DOWNTREND"):
+            # Weaker trend-only fallback — regime detected but no CONTINUATION confirmation.
+            signal = "CALL" if _regime == "UPTREND" else "PUT"
             _weak_cap_reasons.append(
-                "NO EDGE: no theory vote, no regime confirmation, no "
-                "market-state conviction — NEUTRAL (no signal emitted)")
-            # No forced CALL/PUT — leave signal as NEUTRAL.
+                f"TIEBREAK: score 0, regime={_regime} without state confirmation"
+                f" -> {signal} (trend-only, WEAK)")
+        else:
+            # Final fallback: the just-closed candle's own color.
+            # Every candle emits a signal. No NEUTRAL is ever shown to the user.
+            signal = "CALL" if is_bull else "PUT"
+            _weak_cap_reasons.append(
+                f"TIEBREAK: score 0, no theory vote, no regime — "
+                f"falling back to last-candle color ({'bull' if is_bull else 'bear'})"
+                f" -> {signal} (no-edge fallback, WEAK)")
     elif abs(score) < 2:
         _weak_cap_reasons.append(
             f"NO EDGE: |score|={abs(score)} is noise-level -> WEAK")

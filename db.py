@@ -109,34 +109,6 @@ CREATE TABLE IF NOT EXISTS theory_votes (
 );
 CREATE INDEX IF NOT EXISTS idx_votes_theory
     ON theory_votes (theory, ctime DESC);
-
--- Periodic snapshots of the STILL-FORMING candle (many rows per candle —
--- one per throttled tick-batch, not a single closed-candle summary like
--- candle_micro). Captures how price behaved against EXISTING key levels
--- (built from already-closed candle history) while the candle was still
--- open, so that reaction data isn't discarded when the candle finally
--- closes and only its final OHLC survives.
-CREATE TABLE IF NOT EXISTS candle_running (
-    asset        TEXT    NOT NULL,
-    period       INTEGER NOT NULL,
-    ctime        INTEGER NOT NULL,   -- open time of the still-forming candle
-    snap_time    INTEGER NOT NULL,   -- wall-clock time of this snapshot
-    open         REAL,
-    high_so_far  REAL,
-    low_so_far   REAL,
-    last_price   REAL,
-    tick_count   INTEGER,
-    zone              TEXT,          -- SUPPORT/RESISTANCE/MID/WICK_WALL/GAP_ZONE/RANGE_EDGE
-    zone_side         TEXT,
-    zone_price        REAL,
-    zone_touches      INTEGER,
-    reaction_type     TEXT,          -- BOUNCE/REJECTION/SWEEP/BREAKOUT/ABSORPTION/EXHAUSTION/CONTINUATION/NONE
-    reaction_quality  INTEGER,
-    reaction_direction INTEGER,      -- +1/-1/0
-    PRIMARY KEY (asset, period, ctime, snap_time)
-);
-CREATE INDEX IF NOT EXISTS idx_running_asset_ctime
-    ON candle_running (asset, period, ctime DESC, snap_time DESC);
 """
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -295,11 +267,6 @@ def cleanup(keep_days: int = 7) -> None:
         con = sqlite3.connect(DB_PATH)
         try:
             con.execute("DELETE FROM candle_micro WHERE ctime < ?", (cutoff,))
-            # candle_running gets many rows PER candle (throttled snapshots
-            # through its whole life) — prune much more aggressively (1 day)
-            # or it grows far faster than every other table.
-            con.execute("DELETE FROM candle_running WHERE ctime < ?",
-                        (int(time.time()) - 1 * 86400,))
             # Keep signal_log longer (30 days) so win-rate has history.
             con.execute("DELETE FROM signal_log WHERE ctime < ?",
                         (int(time.time()) - 30 * 86400,))

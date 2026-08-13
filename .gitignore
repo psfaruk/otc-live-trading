@@ -16,3 +16,4 @@ candle_micro.backup-*.db
 # Editor / local tooling
 .vscode/
 .claude/
+candle_micro_test.db

@@ -1,17 +1,18 @@
 /* ── Plybit AI — nav.js ─────────────────────────────────────────────────── *
  * Page navigation system: sidebar (desktop) + bottom tabs (mobile)         *
- * 3-tab layout: Chart / History / Settings                                  *
+ * 4-tab layout: Home / Chart / History / Settings                          *
  * chart.js's _setActiveTab calls Nav.setPage() to keep both nav systems     *
- * in sync.                                                                  *
+ * in sync. Sidebar clicks are routed THROUGH _setActiveTab so per-tab        *
+ * loaders (share-signals poll, history load, settings poll) actually fire.  *
  * ─────────────────────────────────────────────────────────────────────────── */
 'use strict';
 
 const Nav = (() => {
-  const PAGES = ['tab-advance', 'tab-signals', 'tab-history', 'tab-settings'];
+  const PAGES = ['tab-home', 'tab-advance', 'tab-history', 'tab-settings'];
   const TAB_MAP = {
-    chart: 'tab-advance',
-    signals: 'tab-signals',
-    history: 'tab-history',
+    home:     'tab-home',
+    chart:    'tab-advance',
+    history:  'tab-history',
     settings: 'tab-settings',
   };
 
@@ -87,10 +88,17 @@ const Nav = (() => {
   }
 
   // ── Sidebar nav item clicks ────────────────────────────────────────────
+  // Route THROUGH chart.js's _setActiveTab so the per-tab loaders fire on
+  // desktop too (sidebar clicks used to bypass them — share-signals/history/
+  // settings never populated when the user clicked the desktop sidebar).
   document.querySelectorAll('#sidebar .nav-item').forEach((item) => {
     item.addEventListener('click', () => {
       const page = item.dataset.page;
-      setPage(page);
+      if (typeof window._setActiveTab === 'function') {
+        window._setActiveTab(page);
+      } else {
+        setPage(page);
+      }
     });
   });
 

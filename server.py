@@ -4,12 +4,19 @@ Plybit AI — OTC live trading signal server.
 Auth/signup/login fully removed: the app is now a single-tenant public
 dashboard. Every visitor gets the full chart + signals feed with no
 login wall, no admin panel, no per-user data.
+
+OPTIONAL API-key system (env-gated, default disabled):
+  Set PLYBIT_API_KEYS=key1,key2,key3 to require an X-API-Key header on
+  write endpoints (POST /api/token, DELETE /api/token, POST /api/subscribe).
+  Reads (GET /api/*, /healthz, /, /ws) stay public — anyone with the URL
+  can still view every chart, every signal, every theory reason. When
+  PLYBIT_API_KEYS is unset/empty, ALL endpoints are open (the default).
 """
 import asyncio
 import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -21,29 +28,48 @@ feed = QuotexFeed()
 _clients: set[WebSocket] = set()
 
 
+# ── Optional API-key gate ───────────────────────────────────────────────────
+# Comma-separated list of valid keys from env. Empty (default) = open access
+# for everyone, matching the original "public dashboard, no signup" design.
+# When set, write endpoints require a matching X-API-Key header.
+_API_KEYS: set[str] = {k.strip() for k in os.environ.get("PLYBIT_API_KEYS", "").split(",")
+                      if k.strip()}
+
+
+def _require_write_key(x_api_key: str | None = Header(None, alias="X-API-Key")) -> None:
+    """FastAPI dependency: gate write endpoints behind an API key when configured.
+    No-op (open access) when PLYBIT_API_KEYS is unset/empty."""
+    if not _API_KEYS:
+        return  # open mode — no check
+    if not x_api_key or x_api_key not in _API_KEYS:
+        raise HTTPException(status_code=401,
+                            detail="Invalid or missing X-API-Key header")
+
+
 async def _broadcast(data: dict) -> None:
-    """Fan-out one payload to every connected WS client. No tier filtering —
-    every viewer now gets the full candle + prediction + microstructure
-    payload (the old _tier_payload / _client_category machinery is gone
-    along with the user accounts it existed to gate)."""
+    """Fan-out one payload to every connected WS client concurrently.
+    Uses asyncio.gather with return_exceptions=True so a single slow
+    client can't block the others (the old serial loop with a 2s timeout
+    per client could stall the feed for N×2s on bad networks)."""
     if not _clients:
         return
-    dead = set()
-    # Snapshot: _clients mutates while we await sends (connect/disconnect),
-    # iterating the live set raises "Set changed size during iteration" and
-    # kills the feed loop that called us.
-    for ws in list(_clients):
+    # Snapshot the set — _clients mutates while we await sends, and
+    # iterating the live set raises "Set changed size during iteration".
+    targets = list(_clients)
+    async def _safe_send(ws: WebSocket) -> None:
         try:
             await asyncio.wait_for(ws.send_json(data), timeout=2.0)
-        except asyncio.TimeoutError:
-            dead.add(ws)
-            print("[ws] send timeout, disconnecting client")
-        except Exception as e:
-            dead.add(ws)
-            if str(e) != "WebSocket is not connected":
-                print(f"[ws] send error: {type(e).__name__}")
+        except Exception:
+            # Swallowed — caller handles dead-client cleanup below.
+            raise
+    results = await asyncio.gather(
+        *(_safe_send(ws) for ws in targets), return_exceptions=True)
+    # Drop any client whose send raised.
+    dead = {ws for ws, res in zip(targets, results) if isinstance(res, Exception)}
     if dead:
         _clients.difference_update(dead)
+        print(f"[ws] dropped {len(dead)} dead client(s) "
+              f"(total now {len(_clients)})")
 
 
 @asynccontextmanager
@@ -92,6 +118,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
 
 from pydantic import BaseModel
+from fastapi import Depends
 
 
 class SubReq(BaseModel):
@@ -101,8 +128,9 @@ class SubReq(BaseModel):
 
 
 @app.post("/api/subscribe")
-async def subscribe(req: SubReq):
-    """Open / refresh a stream — no auth, no tier trimming."""
+async def subscribe(req: SubReq, _=Depends(_require_write_key)):
+    """Open / refresh a stream — gated by API key ONLY when PLYBIT_API_KEYS is set.
+    In the default open mode, anyone can call this (the original public design)."""
     return await feed.ensure_stream(req.asset, req.period, req.cid)
 
 
@@ -127,7 +155,7 @@ class TokenReq(BaseModel):
 
 
 @app.post("/api/token")
-def set_token(req: TokenReq):
+def set_token(req: TokenReq, _=Depends(_require_write_key)):
     """Store a user-supplied SSID token. Takes priority over QX_TOKEN env
     var on the next connect attempt. Pass an empty string to clear."""
     token = (req.token or "").strip()
@@ -144,7 +172,6 @@ def set_token(req: TokenReq):
     return {
         "ok": True,
         "message": "Token stored — reconnecting now. Check status in a few seconds.",
-        "token_preview": token[:8] + "...",
     }
 
 
@@ -173,7 +200,7 @@ def server_time():
 
 
 @app.delete("/api/token")
-def clear_token():
+def clear_token(_=Depends(_require_write_key)):
     """Clear a previously-set user token. The feed will fall back to
     QX_TOKEN env var (if set) or disconnect entirely."""
     had_token = feed.has_token()

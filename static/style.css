@@ -3646,3 +3646,62 @@ input:focus-visible {
     display: none;
   }
 }
+
+/* ═══ HOME PAGE — overview dashboard ════════════════════════════════════════
+   Quick-stats row + share-signal table on the Home tab. The home-stats-row
+   is a flex row of 4 cards on desktop, collapsing to 2x2 grid on tablet
+   and 1-column stack on narrow phones. */
+.home-stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 0 0 18px 0;
+}
+.home-stat-card {
+  background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 78px;
+}
+.home-stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255,255,255,0.55);
+  font-weight: 500;
+}
+.home-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: #f5f6f8;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.home-stat-value.live {
+  color: #00e676;
+}
+.home-stat-value.offline {
+  color: #ff5252;
+}
+@media (max-width: 1023px) {
+  .home-stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 480px) {
+  .home-stats-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .home-stat-card {
+    padding: 10px 12px;
+    min-height: 64px;
+  }
+  .home-stat-value {
+    font-size: 18px;
+  }
+}

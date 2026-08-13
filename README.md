@@ -66,19 +66,56 @@ and what's wrong if it isn't connecting:
 | `QX_DB_PATH` | Optional | SQLite path. Set this to a Railway volume for persistence across redeploys. |
 | `QX_ROOT` | Optional | Browser profile cache dir. Defaults to a temp dir. |
 | `QX_UA` | Optional | Override User-Agent string. |
+| `PLYBIT_API_KEYS` | Optional | Comma-separated API keys. When set, write endpoints (POST /api/token, DELETE /api/token, POST /api/subscribe) require an `X-API-Key` header. Default empty = open access for everyone. |
 | `PORT` | Set by Railway | — |
 
 ## Pair list
 
-The app streams exactly 15 pairs (whitelist-curated, see `_WANTED_PAIRS` in `feed.py`):
+The app streams exactly 16 pairs (whitelist-curated, see `_WANTED_PAIRS` in `feed.py`):
 
 **OTC (11):** BRL/USD, USD/INR, USD/IDR, USD/COP, USD/BDT, USD/MXN, NZD/USD, USD/DZD, USD/PHP, USD/PKR, USD/ZAR
 
-**Real (4):** USD/JPY, EUR/USD, GBP/USD, AUD/USD
+**Real (5):** USD/JPY, EUR/USD, GBP/USD, AUD/USD, EURGBP
 
 ## Signal guarantee
 
-Every closed candle emits a CALL or PUT signal. Edge cases (zero-range candle, score=0, insufficient history) fall through to a coin-flip tiebreak that still emits a direction — marked WEAK strength. There is no NEUTRAL on screen.
+Every closed candle emits a CALL or PUT signal — no NEUTRAL is ever shown.
+When the multi-theory analyzer returns a zero score (no theory voted, no
+color-independent evidence, no regime continuation), a layered tiebreak
+picks a direction in this order:
+
+1. Color-independent evidence lean (e.g. RUN absorption).
+2. Regime continuation with deep-state conviction ≥ 25%.
+3. Any regime direction (UPTREND/DOWNTREND) even without state confirmation.
+4. Final fallback: the just-closed candle's own color (bull → CALL, bear → PUT).
+
+Every fallback layer is marked WEAK strength so the user knows the
+difference between a strong-agreement signal and a tiebreak.
+
+## Tab navigation
+
+Four tabs (mobile = bottom bar, desktop = sidebar):
+
+1. **Home** — overview dashboard: connection status, pairs streaming count,
+   overall win-rate, active signals count, plus the live Share Signal table
+   for all 16 pairs.
+2. **Chart Signal** — main chart + deep-analysis side panel (market state,
+   theory accuracy, key levels, live micro flow, EOC analysis).
+3. **History** — resolved signal log with pair filter + postmortem.
+4. **Settings** — Quotex SSID token input, preferences, legal, about.
+
+## Optional API-key system
+
+By default the app is fully open — anyone with the URL can view every chart,
+signal, and theory reason. To gate write endpoints (POST /api/token, DELETE
+/api/token, POST /api/subscribe) behind an API key, set the env var:
+
+```
+PLYBIT_API_KEYS=key1,key2,key3
+```
+
+When set, write requests must include `X-API-Key: <key>` header. Reads
+(GET /api/*, /ws, /, /healthz) stay public.
 
 ## Deploy
 

@@ -23,13 +23,13 @@
       </div>
 
       <nav class="sidebar-nav">
-        <button type="button" class="nav-item active" data-page="chart">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-          <span class="nav-label">Chart</span>
+        <button type="button" class="nav-item active" data-page="home">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          <span class="nav-label">Home</span>
         </button>
-        <button type="button" class="nav-item" data-page="signals">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-          <span class="nav-label">Share Signal</span>
+        <button type="button" class="nav-item" data-page="chart">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <span class="nav-label">Chart Signal</span>
         </button>
         <button type="button" class="nav-item" data-page="history">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -109,8 +109,8 @@
       <!-- ═══ PAGES CONTAINER ═══════════════════════════════════════════ -->
       <div id="pages">
 
-        <!-- ═══ CHART PAGE (default) ═════════════════════════════════════ -->
-        <div id="tab-advance" class="page">
+        <!-- ═══ CHART PAGE ═══════════════════════════════════════════════ -->
+        <div id="tab-advance" class="page hidden">
           <!-- Signal Bar — prominent top-center -->
           <div id="signal-bar" class="hidden">
             <div id="signal-badge" class="signal-badge neutral">–</div>
@@ -228,12 +228,31 @@
           </div>
         </div>
 
-        <!-- ═══ SHARE SIGNAL PAGE (new) ═══════════════════════════════════
-             Live table of the latest signal for all 16 pairs. Updates in
-             real-time as each pair's candle closes. Columns: Pair | Type |
-             Time | Buyer% | Seller% | Signal | Prediction Candle. -->
-        <div id="tab-signals" class="page hidden">
+        <!-- ═══ HOME PAGE (default landing) ══════════════════════════════════
+             Overview dashboard: pair count + connection status + live signal
+             table for all 16 pairs. Updates in real-time as each pair's
+             candle closes. The "Share Signal" content lives here now. -->
+        <div id="tab-home" class="page">
           <div class="page-scroll">
+            <div class="home-stats-row">
+              <div class="home-stat-card">
+                <span class="home-stat-label">Status</span>
+                <span id="home-stat-status" class="home-stat-value">–</span>
+              </div>
+              <div class="home-stat-card">
+                <span class="home-stat-label">Pairs Streaming</span>
+                <span id="home-stat-pairs" class="home-stat-value">–</span>
+              </div>
+              <div class="home-stat-card">
+                <span class="home-stat-label">Overall Win-Rate</span>
+                <span id="home-stat-winrate" class="home-stat-value">–</span>
+              </div>
+              <div class="home-stat-card">
+                <span class="home-stat-label">Active Signals</span>
+                <span id="home-stat-active" class="home-stat-value">–</span>
+              </div>
+            </div>
+
             <div class="share-signal-head">
               <h2>Share Signal</h2>
               <span class="share-signal-sub">Live signals for all 16 pairs — updates every candle close</span>
@@ -400,13 +419,13 @@
 
     <!-- ═══ BOTTOM TABS — Mobile navigation (<768px) ═══════════════════════ -->
     <nav id="bottom-tabs">
-      <button type="button" class="tab-btn active" data-tab="chart">
+      <button type="button" class="tab-btn active" data-tab="home">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span class="tab-btn-label">Home</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="chart">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span class="tab-btn-label">Chart</span>
-      </button>
-      <button type="button" class="tab-btn" data-tab="signals">
-        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-        <span class="tab-btn-label">Signals</span>
       </button>
       <button type="button" class="tab-btn" data-tab="history">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>

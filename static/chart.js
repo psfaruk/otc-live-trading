@@ -37,16 +37,16 @@ function _savePairPrefs() {
 }
 
 // Mobile-only bottom-tab navigation (Home/Signals/Advance/Settings — see
-// Default tab is 'chart' (maps to #tab-advance via nav.js's TAB_MAP).
-// Restored from localStorage if the user previously switched tabs.
-let _activeTab = 'chart';
+// Default tab is 'home' (the overview dashboard). Restored from
+// localStorage if the user previously switched tabs — old saved values
+// like 'advance' or 'signals' are migrated to the new layout.
+let _activeTab = 'home';
 try {
   const _savedTab = localStorage.getItem('plybit_tab');
   if (_savedTab) _activeTab = _savedTab;
-  // Migrate old saved tab names: 'advance' → 'chart', 'home'/'signals' → 'chart'
-  if (_activeTab === 'advance' || _activeTab === 'home' || _activeTab === 'signals') {
-    _activeTab = 'chart';
-  }
+  // Migrate old saved tab names: 'advance' → 'chart', 'signals' → 'home'
+  if (_activeTab === 'advance') _activeTab = 'chart';
+  if (_activeTab === 'signals') _activeTab = 'home';
 } catch (_) {}
 
 // Auth/account system fully removed — every visitor gets the full chart
@@ -527,7 +527,8 @@ function tickCountdown() {
   const cls  = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
 
   // Header countdown was removed (it lives on the chart's live price line
-  // now) — keep this null-safe in case the element is ever absent.
+  // now). The element reference is intentionally null-safe — there's no
+  // #countdown in the DOM anymore.
   const el = document.getElementById('countdown');
   if (el) { el.textContent = left + 's'; el.className = cls; }
 
@@ -649,9 +650,8 @@ function handleMsg(msg, perfNow) {
           _pushResult(lastPrediction.signal, msg.accuracy);
         }
       }
-      // Signals tab was removed — no auto-popup on EOC. The signal popup
-      // (gated by userPrefs.popup) still fires from applySnapshot when a
-      // new prediction lands, regardless of active tab.
+      // Share Signal popup is gated by userPrefs.popup and fires from
+      // applySnapshot when a new prediction lands, regardless of active tab.
       loadStats();
       // Refresh the sidebar's "Recent Signals" mini-list after each candle close
       _renderSignalHistoryMini();
@@ -1030,18 +1030,10 @@ function updateSignalUI(pred) {
     }
   }
 
-  // Zigzag detection display (in micro panel)
+  // Zigzag block removed — analyze_eoc no longer returns a `zigzag` field
+  // (was a leftover from an earlier predictor version that was deleted).
   const zzEl = document.getElementById('micro-zigzag');
-  if (zzEl) {
-    const zz = pred.zigzag;
-    if (zz && zz.length >= 4) {
-      const zzDir = zz.predict > 0 ? '▲ CALL' : '▼ PUT';
-      zzEl.className   = `micro-tag zz-${zz.predict > 0 ? 'call' : 'put'}`;
-      zzEl.textContent = `↕ Zigzag ${zz.length}-candle -> ${zzDir}`;
-    } else {
-      zzEl.classList.add('hidden');
-    }
-  }
+  if (zzEl) zzEl.classList.add('hidden');
 
   // EOC summary line (sidebar, above the reasons list)
   const summaryEl = document.getElementById('eoc-summary');
@@ -1074,9 +1066,9 @@ function updateSignalUI(pred) {
 }
 
 // ── Deep Analysis card — market-state read from analyze_eoc ─────────────────
-// Informational layer (continuation/exhaustion/reversal/trap/range) — shown
-// only when the payload carries it ('normal' accounts genuinely don't
-// receive market_state, see server.py's _tier_payload).
+// Informational layer (continuation/exhaustion/reversal/trap/range). Every
+// client receives market_state now — the old _tier_payload tier system was
+// removed when auth was ripped out.
 const _MSTATE_LABELS = {
   CONTINUATION: { icon: '➜', name: 'Continuation' },
   EXHAUSTION:   { icon: '⏳', name: 'Exhaustion' },
@@ -1251,12 +1243,21 @@ async function _loadShareSignals() {
     if (!r.ok) return;
     const data = await r.json();
     const signals = data.signals || [];
-    if (!signals.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="history-empty">No signals yet — waiting for first candle close</td></tr>';
+    // Backend always returns 16 rows (one per wanted pair). The empty state
+    // we actually care about is "no row has a real signal yet" — that means
+    // the feed hasn't closed a candle on any pair yet (cold start).
+    const hasAnySignal = signals.some(s => s.signal === 'CALL' || s.signal === 'PUT');
+    if (!signals.length || !hasAnySignal) {
+      tbody.innerHTML = '<tr><td colspan="7" class="history-empty">Waiting for first candle close — connect Quotex in Settings to start streaming.</td></tr>';
+      _lastShareKey = '';  // reset so the next real update re-renders
       return;
     }
-    // Dedup — skip re-render if nothing changed
-    const key = signals.map(s => `${s.asset}:${s.signal}:${s.time}:${s.buy_pct}`).join('|');
+    // Dedup — skip re-render if nothing changed. Include strength + confidence
+    // + prediction_candle.close so a strength upgrade (WEAK→STRONG) or a new
+    // ghost candle re-renders even when buy_pct/signal are unchanged.
+    const key = signals.map(s =>
+      `${s.asset}:${s.signal || ''}:${s.strength || ''}:${s.time || ''}:${s.buy_pct ?? ''}:${s.prediction_candle?.close ?? ''}`
+    ).join('|');
     if (key === _lastShareKey) return;
     _lastShareKey = key;
 
@@ -1596,7 +1597,7 @@ function _closePairPanel() {
   });
 })();
 
-// ── Tab navigation — 3-tab layout (Chart / History / Settings) ─────────────
+// ── Tab navigation — 4-tab layout (Home / Chart / History / Settings) ──────
 // Declared as `let` (not `function`) so the token-status polling wrapper
 // below can reassign it to add Settings-tab polling without throwing in
 // strict mode.
@@ -1609,11 +1610,12 @@ let _setActiveTab = function(tab) {
     Nav.setPage(tab);
   } else {
     // Fallback if nav.js didn't load
-    for (const id of ['tab-advance', 'tab-signals', 'tab-history', 'tab-settings']) {
+    const _fallbackMap = { home: 'tab-home', chart: 'tab-advance',
+                           history: 'tab-history', settings: 'tab-settings' };
+    for (const [key, id] of Object.entries(_fallbackMap)) {
       const el = document.getElementById(id);
       if (!el) continue;
-      const isTarget = id === `tab-${tab === 'chart' ? 'advance' : tab}`;
-      el.classList.toggle('hidden', !isTarget);
+      el.classList.toggle('hidden', key !== tab);
     }
   }
 
@@ -1622,17 +1624,22 @@ let _setActiveTab = function(tab) {
   });
   // The header-stats cluster is Chart-specific — hide on mobile for other tabs
   const stats = document.getElementById('header-stats');
-  if (stats) stats.classList.toggle('hidden', tab !== 'chart' && tab !== 'advance');
+  if (stats) stats.classList.toggle('hidden', tab !== 'chart');
 
   // When switching to History tab, auto-load the history table
   if (tab === 'history') {
     loadHistory();
   }
-  // When switching to Share Signal tab, load + start polling
-  if (tab === 'signals') {
+  // When switching to Home tab, load share-signals + home stats and start polling.
+  // (Share-signal table now lives on the Home overview page, not its own tab.)
+  if (tab === 'home') {
     _loadShareSignals();
+    _loadHomeStats();
     if (_sharePollTimer) clearInterval(_sharePollTimer);
-    _sharePollTimer = setInterval(_loadShareSignals, 10000);  // 10s poll
+    _sharePollTimer = setInterval(() => {
+      _loadShareSignals();
+      _loadHomeStats();
+    }, 10000);  // 10s poll
   } else {
     if (_sharePollTimer) {
       clearInterval(_sharePollTimer);
@@ -1641,9 +1648,50 @@ let _setActiveTab = function(tab) {
   }
 }
 
+// ── Home stats overview — populate the 4 quick-stat cards on the Home tab ──
+// Pulled from /api/stream-status (pairs count, connection state) and
+// /api/stats (overall win-rate). Cheap calls, run alongside share-signals.
+async function _loadHomeStats() {
+  try {
+    const [ss, st] = await Promise.all([
+      fetch('/api/stream-status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/stats').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const setStatus = document.getElementById('home-stat-status');
+    const setPairs  = document.getElementById('home-stat-pairs');
+    const setWR     = document.getElementById('home-stat-winrate');
+    const setActive = document.getElementById('home-stat-active');
+    if (ss) {
+      if (setStatus) setStatus.textContent = ss.connected ? '● Live' : '● Offline';
+      if (setStatus) setStatus.className = 'home-stat-value ' + (ss.connected ? 'live' : 'offline');
+      if (setPairs)  setPairs.textContent = (ss.active_streams ?? 0) + ' / 16';
+    }
+    if (st) {
+      const wr = st.overall_winrate ?? st.winrate ?? null;
+      if (setWR && wr != null) setWR.textContent = (wr * 100).toFixed(1) + '%';
+      else if (setWR) setWR.textContent = '–';
+    }
+    // Active CALL/PUT signals count — read from the share-signal rows
+    // rendered by _loadShareSignals (re-uses the same fetch result).
+    const r = await fetch('/api/share-signals');
+    if (r.ok) {
+      const data = await r.json();
+      const sigs = data.signals || [];
+      const active = sigs.filter(s => s.signal === 'CALL' || s.signal === 'PUT').length;
+      if (setActive) setActive.textContent = active + ' / ' + sigs.length;
+    }
+  } catch (_) {
+    // silently — home stats are non-critical
+  }
+}
+
 document.querySelectorAll('.tab-btn').forEach((b) => {
   b.addEventListener('click', () => _setActiveTab(b.dataset.tab));
 });
+// Expose _setActiveTab globally so nav.js (sidebar clicks) can route through
+// it instead of bypassing the per-tab loaders. The `chart` global holds the
+// LightweightCharts instance, so we can't hang this off `chart`.
+window._setActiveTab = _setActiveTab;
 _setActiveTab(_activeTab);   // apply the restored/default tab on load
 
 // ── Settings: Preferences card ← userPrefs (localStorage) ────────────────

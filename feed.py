@@ -543,13 +543,18 @@ class QuotexFeed:
         signal=None so the table always shows all 16 rows.
         """
         rows = []
+        # Build a quick lookup of asset → Quotex-supplied display name (so the
+        # share table matches the rest of the app, not the reconstructed
+        # _api_to_display which gets BRL/USD backwards vs Quotex's USD/BRL).
+        _display_by_asset = {p["asset"]: p.get("display") or _api_to_display(p["asset"])
+                             for p in self._pairs_list}
         for base, variant in _WANTED_PAIRS.items():
             asset = base + ("_otc" if variant == "otc" else "")
             # Look for a 60s stream (the default/always-on period)
             stream = self._streams.get((asset, 60))
             row = {
                 "asset":             asset,
-                "display":           _api_to_display(asset),
+                "display":           _display_by_asset.get(asset) or _api_to_display(asset),
                 "type":              variant,
                 "time":              None,
                 "buy_pct":           None,
@@ -930,7 +935,8 @@ class QuotexFeed:
             #    returned False (pyquotex race condition). If session_data now
             #    holds a fresh token, one more connect() often succeeds. ────────
             new_tok = (self._client.session_data or {}).get("token", "")
-            if new_tok and new_tok != env_token:
+            _env_tok = os.environ.get("QX_TOKEN", "").strip()
+            if new_tok and new_tok != _env_tok:
                 print(f"[feed] retrying with fresh token={new_tok[:8]}...")
                 try:
                     ok, reason = await asyncio.wait_for(
