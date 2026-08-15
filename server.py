@@ -17,6 +17,7 @@ import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -304,6 +305,228 @@ def share_signals():
     closed-candle prediction + buyer/seller pressure. Polled by the Share
     Signal tab every 10s while active."""
     return {"signals": feed.get_share_signals()}
+
+
+# ── OPEN API: anyone can fetch live signals without authentication ──────────
+# These endpoints are deliberately PUBLIC (no API-key gate) so the app's
+# Call/Put signals can be consumed by external scripts, bots, dashboards,
+# or anyone with the URL. The original design already had open read access
+# for /api/share-signals — these endpoints expose the same data in formats
+# optimized for automated consumption (single pair, JSON, plaintext).
+
+@app.get("/api/v1/signals")
+def api_v1_signals(asset: str | None = None):
+    """Open API: get the current signal for one pair, or all pairs.
+
+    Usage:
+      GET /api/v1/signals                  -> all pairs (array)
+      GET /api/v1/signals?asset=EURUSD_otc -> one pair
+
+    Response shape per pair:
+      {
+        "asset": "EURUSD_otc",
+        "display": "EUR/USD",
+        "type": "otc",
+        "time": 1700000000,         # Unix timestamp of signal
+        "signal": "CALL",           # CALL | PUT | NEUTRAL
+        "strength": "MEDIUM",       # STRONG | MEDIUM | WEAK | NONE
+        "confidence": 0.65,         # 0..1
+        "score": 4,                 # signed vote sum
+        "agree": 3,                 # # theories agreeing
+        "buy_pct": 65,              # last closed candle buyer %
+        "sell_pct": 35,
+        "prediction_candle": {"open":1.0850,"high":1.0855,"low":1.0845,"close":1.0854},
+        "patterns_fired": ["BULLISH_ENGULFING","MARKET_STATE"],
+        "archetype": "MIXED",       # pair archetype
+        "session_quality": 1.0,     # 0..1 timing quality
+        "candle_expires_in": 45,    # seconds until candle close (if known)
+      }
+    """
+    rows = feed.get_share_signals()
+    if asset:
+        rows = [r for r in rows if r["asset"] == asset]
+    # Enrich with strategy-engine metadata
+    import time as _time
+    out = []
+    for r in rows:
+        stream = feed._streams.get((r["asset"], 60))
+        candle_expires = None
+        patterns_fired = []
+        archetype = None
+        session_q = None
+        score = None
+        agree = None
+        if stream:
+            now = feed._broker_time()
+            if stream.candle_open_time > 0:
+                candle_expires = max(0, int(stream.candle_open_time + 60 - now))
+            pred = stream.prediction or {}
+            patterns_fired = pred.get("patterns_fired", [])
+            ctx = pred.get("context") or {}
+            archetype = ctx.get("archetype")
+            session_q = ctx.get("session_quality")
+            score = pred.get("score")
+            agree = pred.get("agree")
+        out.append({
+            "asset": r["asset"],
+            "display": r.get("display"),
+            "type": r.get("type"),
+            "time": r.get("time"),
+            "signal": r.get("signal"),
+            "strength": r.get("strength"),
+            "confidence": r.get("confidence"),
+            "score": score,
+            "agree": agree,
+            "buy_pct": r.get("buy_pct"),
+            "sell_pct": r.get("sell_pct"),
+            "prediction_candle": r.get("prediction_candle"),
+            "patterns_fired": patterns_fired,
+            "archetype": archetype,
+            "session_quality": session_q,
+            "candle_expires_in": candle_expires,
+            "server_time": int(_time.time()),
+        })
+    return {"count": len(out), "signals": out}
+
+
+@app.get("/api/v1/signals/{asset}")
+def api_v1_signal_one(asset: str):
+    """Open API: get the current signal for a single pair by asset code.
+
+    Example: GET /api/v1/signals/EURUSD_otc
+
+    Returns WAIT/NEUTRAL with reason if the stream is not active yet.
+    """
+    rows = feed.get_share_signals()
+    row = next((r for r in rows if r["asset"] == asset), None)
+    if not row:
+        # Stream not active OR pairs list not yet loaded from Quotex.
+        # Return a NEUTRAL "WAIT" response so consumers don't 500.
+        from strategies import get_profile
+        try:
+            p = get_profile(asset)
+            return {
+                "asset": asset,
+                "display": p.display,
+                "type": "otc" if asset.endswith("_otc") else "real",
+                "time": None,
+                "signal": "NEUTRAL",
+                "strength": "NONE",
+                "confidence": 0.0,
+                "score": None,
+                "agree": 0,
+                "buy_pct": None,
+                "sell_pct": None,
+                "prediction_candle": None,
+                "patterns_fired": [],
+                "archetype": p.archetype,
+                "session_quality": None,
+                "candle_expires_in": None,
+                "server_time": int(__import__('time').time()),
+                "note": "Stream not active — pair is not currently streaming. "
+                        "Call POST /api/subscribe to start the stream.",
+            }
+        except Exception:
+            raise HTTPException(status_code=404,
+                                detail=f"Asset '{asset}' not found in pair catalog")
+    # Reuse the list endpoint's enrichment logic
+    return api_v1_signals(asset=asset)
+
+
+@app.get("/api/v1/signals/{asset}/plain")
+def api_v1_signal_plain(asset: str):
+    """Open API: get the current signal as a single-line plain-text response,
+    ideal for quick `curl` checks or simple bots.
+
+    Format:
+      EURUSD_otc CALL MEDIUM conf=0.65 score=4 expires_in=45
+    """
+    rows = feed.get_share_signals()
+    row = next((r for r in rows if r["asset"] == asset), None)
+    if not row:
+        # Fall back to NEUTRAL if no stream active yet — never 404.
+        from strategies import get_profile
+        try:
+            get_profile(asset)
+        except Exception:
+            raise HTTPException(status_code=404,
+                                detail=f"Asset '{asset}' not found in catalog")
+        return PlainTextResponse(f"{asset} NEUTRAL NONE conf=0.00 expires_in=?\n")
+    stream = feed._streams.get((asset, 60))
+    expires = "?"
+    if stream and stream.candle_open_time > 0:
+        now = feed._broker_time()
+        expires = max(0, int(stream.candle_open_time + 60 - now))
+    sig = row.get("signal") or "WAIT"
+    strength = row.get("strength") or "-"
+    conf = row.get("confidence")
+    conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "?"
+    return PlainTextResponse(
+        f"{asset} {sig} {strength} conf={conf_str} expires_in={expires}\n")
+
+
+@app.get("/api/v1/pairs")
+def api_v1_pairs():
+    """Open API: list all tradeable pairs with their per-pair profile
+    (archetype, best windows, notes). Useful for automated bots to know
+    which pairs to subscribe to."""
+    from strategies import list_profiles
+    return {
+        "count": len(list_profiles()),
+        "pairs": [
+            {
+                "asset": p.asset,
+                "display": p.display,
+                "archetype": p.archetype,
+                "best_windows_utc": p.best_windows_utc,
+                "notes": p.notes,
+                "trap_wick_sensitivity": p.trap_wick_sensitivity,
+                "continuation_edge": p.continuation_edge,
+                "min_atr_pct": p.min_atr_pct,
+            } for p in list_profiles()
+        ],
+    }
+
+
+@app.get("/api/v1/strategies")
+def api_v1_strategies():
+    """Open API: list all candlestick pattern detectors available in the
+    strategy engine. Each entry documents the pattern's name, expected
+    direction, and reliability rating from web research."""
+    from strategies.patterns import (
+        SINGLE_CANDLE_DETECTORS, TWO_CANDLE_DETECTORS,
+        THREE_CANDLE_DETECTORS,
+        rising_three_methods, falling_three_methods,
+        ladder_bottom, ladder_top,
+    )
+    detectors = []
+    for fn in SINGLE_CANDLE_DETECTORS:
+        detectors.append({"name": fn.__name__, "type": "single"})
+    for fn in TWO_CANDLE_DETECTORS:
+        detectors.append({"name": fn.__name__, "type": "two"})
+    for fn in THREE_CANDLE_DETECTORS:
+        detectors.append({"name": fn.__name__, "type": "three"})
+    for fn in (rising_three_methods, falling_three_methods,
+               ladder_bottom, ladder_top):
+        detectors.append({"name": fn.__name__, "type": "four_plus"})
+    return {"count": len(detectors), "detectors": detectors}
+
+
+@app.get("/api/v1/backtest")
+def api_v1_backtest(asset: str | None = None):
+    """Open API: return the latest backtest report (if generated).
+    Run `python tools/backtest_strategies.py --all` to regenerate."""
+    import os, json
+    path = "/home/z/my-project/download/backtest_report.json"
+    if not os.path.exists(path):
+        return {"available": False,
+                "message": "Run `python tools/backtest_strategies.py --all` to generate"}
+    with open(path) as f:
+        data = json.load(f)
+    if asset:
+        data["per_pair"] = [p for p in data.get("per_pair", [])
+                            if p["asset"] == asset]
+    return data
 
 
 @app.get("/api/theory-perf")

@@ -30,6 +30,22 @@ from dataclasses import dataclass, field
 from analyze_eoc import analyze_eoc, _round_level, _key_levels, _parse_votes
 import db as _db
 
+# New modular strategy engine (per-pair profiles + candlestick patterns).
+# Used as the PRIMARY signal generator; analyze_eoc stays as legacy fallback
+# for shadow comparison (see _STRATEGY_ENGINE env flag below).
+try:
+    from strategies import run_strategy as _run_strategy_engine
+    _STRATEGY_ENGINE_AVAILABLE = True
+except Exception as _e:
+    print(f"[feed] WARNING: strategies package unavailable, "
+          f"falling back to analyze_eoc only: {_e}")
+    _STRATEGY_ENGINE_AVAILABLE = False
+    _run_strategy_engine = None
+
+# Master kill switch: when "1" (default), use the new modular strategy engine.
+# When "0", fall back to the legacy analyze_eoc analyzer for shadow comparison.
+USE_STRATEGY_ENGINE = os.environ.get("USE_STRATEGY_ENGINE", "1") == "1"
+
 # Minimum live 1-minute payout % for a forex pair to be tradeable in this
 # app — pairs below this are blocked from streaming outright (not just from
 # always-on pre-warming), matching the win-rate-needs-to-clear-payout math
@@ -635,11 +651,22 @@ class QuotexFeed:
         # below the floor, anyone already watching keeps their stream (see
         # _reconcile_always_on, which only ever demotes always_on, never
         # tears the stream down).
+        #
+        # 2026-08-15: When ALL_PAIRS_ALWAYS_ON=1 (default), the payout gate
+        # is bypassed — the user's explicit requirement is that EVERY pair
+        # gets a signal on EVERY candle. Set ALL_PAIRS_ALWAYS_ON=0 to
+        # restore the payout-gated behavior.
         pair = next((p for p in self._pairs_list if p["asset"] == asset), None)
         if pair and pair.get("locked"):
-            return {"ok": False, "status": "locked", "payout": pair.get("payout"),
-                    "reason": f"Needs {PAYOUT_FLOOR}% payout "
-                              f"(currently {pair.get('payout', '?')}%)"}
+            all_pairs = os.environ.get("ALL_PAIRS_ALWAYS_ON", "1") == "1"
+            if not all_pairs:
+                return {"ok": False, "status": "locked", "payout": pair.get("payout"),
+                        "reason": f"Needs {PAYOUT_FLOOR}% payout "
+                                  f"(currently {pair.get('payout', '?')}%)"}
+            # else: warn but proceed — user explicitly wants all pairs tradable
+            print(f"[feed] WARNING: {asset} payout {pair.get('payout')}% < "
+                  f"{PAYOUT_FLOOR}% floor, but ALL_PAIRS_ALWAYS_ON=1 -> "
+                  f"streaming anyway (user requirement)")
 
         if time.time() < self._cooldown_until:
             return {"ok": False, "status": "cooldown",
@@ -1051,6 +1078,27 @@ class QuotexFeed:
         micro_hist = _db.get_micro_history(
             asset, period, n=5,
             before_ctime=candles[-1]["time"])
+
+        # ── Primary path: new modular strategy engine (per-pair profiles +
+        # candlestick patterns + market-state deep analysis).
+        # Falls back to legacy analyze_eoc when USE_STRATEGY_ENGINE=0 or
+        # when the strategies package failed to import at startup.
+        if USE_STRATEGY_ENGINE and _STRATEGY_ENGINE_AVAILABLE:
+            try:
+                result = _run_strategy_engine(
+                    candles, asset=asset, period=period,
+                    ticks=ticks,
+                    running_ticks=running_ticks if ENABLE_LIVE_THEORY else None,
+                    muted=self._muted_theories,
+                )
+                # analyze_eoc compat: ensure all keys the feed expects exist.
+                result.setdefault("candle", None)  # filled in by _run_eoc
+                return result, micro_hist
+            except Exception as _e:
+                print(f"[feed] strategy engine error for {asset}@{period}s: "
+                      f"{_e} — falling back to analyze_eoc")
+
+        # Legacy path (also used as fallback when the new engine raises)
         result = analyze_eoc(candles, ticks,
                              micro_history=micro_hist,
                              period=period,
@@ -1813,6 +1861,28 @@ class QuotexFeed:
                             "prediction": stream.prediction,
                             "accuracy":   accuracy,
                         })
+                        # ── Signal-at-candle-start (timer-close path) ──────────
+                        # Same 0-second signal broadcast as the tick-close path
+                        # above. Timer-close fires when no boundary tick arrived
+                        # within the grace window — we still need to push the
+                        # signal_start event so external API clients receive it.
+                        if stream.prediction and stream.prediction.get("signal") in (
+                                "CALL", "PUT", "NEUTRAL"):
+                            await self._broadcast({
+                                "type":          "signal_start",
+                                "asset":         stream.asset,
+                                "period":        stream.period,
+                                "candle_open_time": expected_new,
+                                "candle_expires_at": expected_new + stream.period,
+                                "signal":        stream.prediction["signal"],
+                                "strength":      stream.prediction.get("strength"),
+                                "confidence":    stream.prediction.get("confidence"),
+                                "score":         stream.prediction.get("score"),
+                                "agree":         stream.prediction.get("agree"),
+                                "patterns_fired": stream.prediction.get("patterns_fired", []),
+                                "reasons":       stream.prediction.get("reasons", [])[:5],
+                                "prediction_candle": stream.prediction.get("candle"),
+                            })
 
                 if self._client is None:
                     await asyncio.sleep(1)
@@ -1892,6 +1962,33 @@ class QuotexFeed:
                             "prediction": stream.prediction,
                             "accuracy":   accuracy,
                         })
+                        # ── Signal-at-candle-start event ───────────────────────
+                        # 0-second signal broadcast — fires IMMEDIATELY when a
+                        # new 1-minute candle opens, carrying the prediction for
+                        # that candle. External API clients (and the open API
+                        # endpoint /api/v1/signals) can listen on /ws to receive
+                        # this the moment the candle starts, then count down
+                        # the candle's full duration as the signal's expiry.
+                        # This is the user's explicit requirement:
+                        #   "এক মিনিটের ক্যান্ডেল যখন 0 সেকেন্ড এ শুরু হবে,
+                        #    টিক তখনি সিগন্যাল আসতে হবে।"
+                        if stream.prediction and stream.prediction.get("signal") in (
+                                "CALL", "PUT", "NEUTRAL"):
+                            await self._broadcast({
+                                "type":          "signal_start",
+                                "asset":         stream.asset,
+                                "period":        stream.period,
+                                "candle_open_time": tick_new_open,
+                                "candle_expires_at": tick_new_open + stream.period,
+                                "signal":        stream.prediction["signal"],
+                                "strength":      stream.prediction.get("strength"),
+                                "confidence":    stream.prediction.get("confidence"),
+                                "score":         stream.prediction.get("score"),
+                                "agree":         stream.prediction.get("agree"),
+                                "patterns_fired": stream.prediction.get("patterns_fired", []),
+                                "reasons":       stream.prediction.get("reasons", [])[:5],
+                                "prediction_candle": stream.prediction.get("candle"),
+                            })
                     else:
                         # Timer already fired for this boundary. new_ticks can
                         # contain LATE ticks that belong to the candle we already
@@ -2183,9 +2280,23 @@ class QuotexFeed:
         on-demand streams, subject to the usual idle sweep — never killed
         outright, matching ensure_stream's "never tear down a running
         stream" philosophy.
+
+        ALL_PAIRS_ALWAYS_ON (default "1"): when set, ALL open pairs (live
+        + OTC) are kept always-on regardless of payout floor — the user's
+        explicit requirement is "every pair every candle gets a signal".
+        Set to "0" to restore the payout-gated behavior.
         """
-        eligible = {(p["asset"], 60) for p in self._pairs_list
-                    if p["status"] in ("live", "otc") and not p.get("locked")}
+        # When ALL_PAIRS_ALWAYS_ON is enabled, every open pair (live + OTC)
+        # is pre-warmed regardless of payout. User requirement: "every pair
+        # every candle must have a signal".
+        all_pairs = os.environ.get("ALL_PAIRS_ALWAYS_ON", "1") == "1"
+
+        if all_pairs:
+            eligible = {(p["asset"], 60) for p in self._pairs_list
+                        if p["status"] in ("live", "otc")}
+        else:
+            eligible = {(p["asset"], 60) for p in self._pairs_list
+                        if p["status"] in ("live", "otc") and not p.get("locked")}
 
         for key, s in self._streams.items():
             if s.always_on and key not in eligible:
