@@ -23,12 +23,12 @@ import random
 import sys
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
-from strategies import run_strategy, list_profiles, get_profile, detect_all
+from strategies import run_strategy, list_profiles
 from strategies.pair_profiles import PairProfile
 
 
@@ -294,6 +294,21 @@ def backtest_pair(profile: PairProfile, n: int = 2000,
     graded = n_correct + n_wrong
     accuracy = (n_correct / graded * 100) if graded else 0.0
     cont_rate = (cont / (cont + rev) * 100) if (cont + rev) else 0.0
+
+    # ── Hard guarantee: every closed candle MUST emit CALL or PUT ─────────
+    # The user's explicit requirement is "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ
+    # সিগন্যাল আসতে হবে" — every candle on every pair must produce a signal.
+    # The strategy engine's tiebreak (strategies/runner.py:515-530) and the
+    # legacy analyze_eoc tiebreak both guarantee this on any non-empty candle
+    # window. If n_neutral > 0 here, the guarantee is broken — surface it
+    # loudly instead of silently shipping a regression.
+    if n_neutral > 0:
+        raise AssertionError(
+            f"INVARIANT VIOLATION on {profile.asset}: {n_neutral} of "
+            f"{n_signals} closed candles returned NEUTRAL instead of "
+            f"CALL/PUT. The always-emit tiebreak is broken — investigate "
+            f"strategies/runner.py:515-530 before deploying."
+        )
 
     # Finalize pattern stats
     for ps in pattern_stats.values():

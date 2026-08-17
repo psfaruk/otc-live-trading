@@ -1,7 +1,7 @@
 """
 Strategy runner — composes candlestick pattern detections with per-pair
 profiles, market context, and tick microstructure to produce a final
-CALL/PUT/NEUTRAL signal for the next 1-minute candle.
+CALL/PUT signal for the next 1-minute candle.
 
 This is the new signal engine. It REPLACES the role of analyze_eoc for
 the live trading path while keeping analyze_eoc available for backward
@@ -21,12 +21,20 @@ Design principles (from web research):
      to 0.5..0.8.
   6. Tick-volume confirmation: when ticks are available, check that the
      directional pressure matches the pattern direction.
-  7. Every candle emits a signal — NEUTRAL when no edge exists, CALL/PUT
-     when a pattern fires with confluence.
+  7. EVERY closed candle emits a CALL or PUT signal — never NEUTRAL.
+     The always-emit tiebreak at lines 515-530 of this module guarantees
+     this on any non-empty candle window. When no pattern fires, the
+     tiebreak falls through to:
+       (a) indep_net lean (color-independent evidence)
+       (b) regime direction (UPTREND/DOWNTREND)
+       (c) final fallback: the just-closed candle's own color (bull → CALL, bear → PUT)
+     Marked WEAK so the user knows it's a low-confidence tiebreak. This
+     matches the user's explicit requirement:
+       "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে।"
 
 Output schema (consumed by feed.py + chart.js):
   {
-    signal: "CALL" | "PUT" | "NEUTRAL",
+    signal: "CALL" | "PUT",     # never "NEUTRAL" on non-empty candles
     score: int,                  # signed vote sum
     confidence: float,           # 0..1
     strength: "STRONG" | "MEDIUM" | "WEAK" | "NONE",
@@ -38,8 +46,7 @@ Output schema (consumed by feed.py + chart.js):
 """
 from __future__ import annotations
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from .patterns import (
     Signal, detect_all, candle_anatomy,

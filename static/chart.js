@@ -526,9 +526,9 @@ function tickCountdown() {
   const left = currentPeriod - (Math.floor(nowSec) % currentPeriod);
   const cls  = left <= 5 ? 'danger' : left <= 15 ? 'warn' : '';
 
-  // Header countdown was removed (it lives on the chart's live price line
-  // now). The element reference is intentionally null-safe — there's no
-  // #countdown in the DOM anymore.
+  // (Header countdown element was removed in an earlier refactor — it now
+  // lives on the chart's live price line. The lookup is intentionally a
+  // no-op so legacy callers don't throw. Left as a guard for safety.)
   const el = document.getElementById('countdown');
   if (el) { el.textContent = left + 's'; el.className = cls; }
 
@@ -1030,10 +1030,8 @@ function updateSignalUI(pred) {
     }
   }
 
-  // Zigzag block removed — analyze_eoc no longer returns a `zigzag` field
-  // (was a leftover from an earlier predictor version that was deleted).
-  const zzEl = document.getElementById('micro-zigzag');
-  if (zzEl) zzEl.classList.add('hidden');
+  // (micro-zigzag element removed 2026-08-17 — was a leftover from a
+  // deleted predictor. No-op here so the rest of the render path runs.)
 
   // EOC summary line (sidebar, above the reasons list)
   const summaryEl = document.getElementById('eoc-summary');
@@ -1870,8 +1868,7 @@ function resetAndSubscribe() {
   if (et) et.className = 'entry-timing hidden';
   const rb = document.getElementById('regime-badge');
   if (rb) rb.className = 'regime-badge hidden';
-  const zzEl = document.getElementById('micro-zigzag');
-  if (zzEl) zzEl.className = 'micro-tag hidden';
+  // (micro-zigzag hide removed 2026-08-17 — element no longer in the DOM)
   renderMarketState(null);
   renderMicro(null);
   showNoData(false);

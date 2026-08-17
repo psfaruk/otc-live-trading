@@ -18,7 +18,6 @@ these detectors and weights them with market context.
 from __future__ import annotations
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 
 # ── Anatomy helpers ──────────────────────────────────────────────────────────
@@ -61,15 +60,6 @@ class Signal:
     strength: float       # 0..1
     reason: str
     name: str = ""
-
-    def merge(self, other: "Signal") -> "Signal":
-        """Combine two signals (used when chaining pattern + context)."""
-        if not other.matched:
-            return self
-        if not self.matched:
-            return other
-        # If both fired, prefer the one with higher strength
-        return self if self.strength >= other.strength else other
 
 
 def _ok(name: str, direction: int, strength: float, reason: str) -> Signal:

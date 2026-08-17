@@ -344,35 +344,47 @@ class QuotexFeed:
         self._last_db_cleanup: float = 0.0
 
         # ── User-supplied session token (in-memory, NOT persisted) ────────
-        # Set via POST /api/token from the frontend Settings page. Takes
-        # priority over QX_TOKEN env var in _connect(). Cleared on process
-        # restart (deliberate — the token is sensitive and shouldn't survive
-        # a redeploy to a different machine). Empty string = no user token.
+        # Set via POST /api/token from the frontend Settings page. This is
+        # the ONLY auth path the live app ever uses — email/password login
+        # was removed because Cloudflare blocks the HTTP sign-in page on
+        # every non-browser client, and retrying a failed login made the
+        # failure worse (it kept hammering Quotex with bad credentials).
+        # Empty string = no user token.
         self._user_token: str = ""
         self._user_token_at: float = 0.0   # when it was set (for status display)
 
-        # ── Reject-streak counter (false-rejection protection) ────────────
-        # Quotex's WS often sends "authorization/reject" on transient
-        # reconnects even when the token is valid. Without this counter,
-        # a single reject would wipe the token and force a manual re-paste.
-        # We only clear the token after 5 CONSECUTIVE rejections (reset
-        # to 0 on any successful connect). 5 rejects in a row ≈ 5 minutes
-        # of backoff retries — strong signal the token is genuinely dead.
-        self._reject_streak: int = 0
+        # ── One-shot login gate ─────────────────────────────────────────────
+        # The login system tries EXACTLY ONCE per token. If _connect() returns
+        # False for ANY reason (auth reject, timeout, network error), this flag
+        # flips True and the manager loop stops retrying. Only set_token()
+        # (called when the user pastes a fresh SSID) clears it — that's the
+        # explicit "try again" signal from the operator.
+        self._login_failed_permanently: bool = False
+        self._login_fail_reason: str = ""
 
     # ── Public ────────────────────────────────────────────────────────────────
 
     def set_token(self, token: str) -> None:
         """Store a user-supplied SSID token (from the frontend Settings page).
 
-        Takes priority over QX_TOKEN env var on the next _connect() attempt.
+        This is the ONLY auth path — the app does NOT fall back to email/
+        password login (Cloudflare blocks it on every non-browser client).
         Stored in-memory only — never written to disk or env. Pass an empty
         string to clear a previously-set token.
+
+        Pasting a new token also clears the one-shot login-fail flag, which
+        is the explicit operator "try again" signal — _connect() will run
+        exactly once more with the new token. If that attempt fails for ANY
+        reason, the system stops retrying until the operator pastes another
+        token.
         """
         self._user_token = (token or "").strip()
         self._user_token_at = time.time() if self._user_token else 0.0
-        # Reset the reject streak — a freshly-pasted token gets a clean slate
-        self._reject_streak = 0
+        # Clearing the one-shot fail gate is the ONLY way _connect() will run
+        # again after a failure. The operator pasting a new token is the
+        # explicit "try again" signal — we honor it unconditionally.
+        self._login_failed_permanently = False
+        self._login_fail_reason = ""
         if self._user_token:
             print(f"[feed] user token set ({self._user_token[:8]}...) — "
                   "will use on next connect")
@@ -405,7 +417,9 @@ class QuotexFeed:
     def token_status(self) -> dict:
         """Return the current token state for the /api/token-status endpoint.
         Never exposes the token value itself — only whether one is set,
-        when it was set, and whether the feed is currently connected."""
+        when it was set, whether the feed is currently connected, and whether
+        the one-shot login gate has tripped (so the UI can show "paste again"
+        instead of an opaque "Waiting…")."""
         return {
             "has_user_token": bool(self._user_token),
             "has_env_token":  bool(os.environ.get("QX_TOKEN", "").strip()),
@@ -414,6 +428,8 @@ class QuotexFeed:
                                else "none"),
             "set_at":         self._user_token_at if self._user_token else None,
             "connected":      self._connected,
+            "login_failed":   self._login_failed_permanently,
+            "login_fail_reason": self._login_fail_reason,
         }
 
     def available_pairs(self) -> dict:
@@ -718,43 +734,6 @@ class QuotexFeed:
         except Exception:
             pass
 
-    def _clear_stale_token(self) -> None:
-        """
-        Auto-heal the "authorization/reject" loop (documented project issue):
-        pyquotex persists the session to session.json on disk, and its own
-        internal connect() logic replays that token on the NEXT attempt even
-        for a brand-new client — so a rejected/expired token keeps getting
-        rejected forever unless it's cleared. Previously this required a
-        manual fix each time; now it runs automatically right after a
-        rejection so the exponential-backoff retry in run() self-heals.
-        """
-        import json as _json
-        # pyquotex writes session.json relative to the process's CURRENT
-        # WORKING DIRECTORY (pyquotex/config.py's base_dir = Path.cwd(), NOT
-        # the root_path constructor arg — an upstream quirk, confirmed by
-        # reading config.py/stable_api.py directly) — so this must match cwd,
-        # not __file__, for the two to ever agree on the same file. Both
-        # local dev (`cd` into the project first) and Railway's default
-        # working directory satisfy this.
-        path = os.path.join(os.getcwd(), "session.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = _json.load(f)
-            changed = False
-            for acct in data.values():
-                if isinstance(acct, dict) and acct.get("token"):
-                    acct["token"] = None
-                    changed = True
-            if changed:
-                with open(path, "w", encoding="utf-8") as f:
-                    _json.dump(data, f)
-                print("[feed] cleared stale session token after auth rejection "
-                      "— next retry will do a fresh login")
-        except FileNotFoundError:
-            pass
-        except Exception as _e:
-            print(f"[feed] could not clear stale token: {_e}")
-
     def _make_client(self, ua: str, root: str):
         from pyquotex.stable_api import Quotex
         from pyquotex.types import ReconnectPolicy
@@ -767,9 +746,16 @@ class QuotexFeed:
         # by pinning the whole header family to consistent Chrome values.
         # Override via QX_HOST only if Quotex changes its primary host.
         host = os.environ.get("QX_HOST", "qxbroker.com")
+        # NOTE: email/password are required by the Quotex() constructor signature
+        # but are NEVER used as an auth path — we always authenticate via the SSID
+        # token passed to set_session() before connect(). Empty strings are fine
+        # here because pyquotex's account.py:51-54 only calls authenticate() when
+        # self.session_data.get("token") is falsy, and we always set it via
+        # set_session(ssid=token) before connect(). See _connect() for the
+        # single-attempt, token-only login flow.
         return Quotex(
-            email    = os.environ.get("QX_EMAIL",    ""),
-            password = os.environ.get("QX_PASSWORD", ""),
+            email    = "",
+            password = "",
             host     = host,
             lang     = "en",
             root_path= root,
@@ -793,6 +779,24 @@ class QuotexFeed:
                 return
 
     async def _connect(self) -> bool:
+        """Single-attempt token-only login.
+
+        The login system tries EXACTLY ONCE per token. There is NO email/
+        password fallback (Cloudflare blocks the HTTP sign-in page on every
+        non-browser client, so retrying it was just hammering Quotex with
+        bad credentials) and NO second retry — if this attempt fails for
+        any reason (auth reject, timeout, network error), the manager loop
+        stops calling _connect() until set_token() clears the fail gate.
+
+        The fail gate is the explicit operator "try again" signal: paste a
+        fresh SSID in the Settings tab and _connect() runs exactly once more.
+        """
+        # If a previous attempt already failed, don't even try — the
+        # manager loop checks this flag before calling _connect(), but
+        # belt-and-braces here too so a stray call is a no-op.
+        if self._login_failed_permanently:
+            return False
+
         try:
             from pyquotex.types import ReconnectPolicy  # noqa: ensure importable
             # Cross-platform default (was a hardcoded Windows path — broke
@@ -805,195 +809,91 @@ class QuotexFeed:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-            # ── Attempt 1: TOKEN (fast path, skipped if no token) ─────────────
-            # Recommended for production: a pre-extracted SSID token bypasses
-            # the Cloudflare-protected login form entirely (no HTTP GET to
-            # /en/sign-in) and just opens the WS connection directly. This
-            # is the ONLY reliable auth path on hosts where Cloudflare
-            # returns a JS challenge to non-browser TLS clients.
-            #
-            # Token precedence: user-supplied (from frontend Settings page)
-            # takes priority over QX_TOKEN env var. The user token is set
-            # via POST /api/token and stored in self._user_token (in-memory,
-            # not persisted). This lets the operator refresh an expired
-            # token without a Railway redeploy.
+            # ── Token precedence: user-supplied (frontend) > QX_TOKEN env ──
+            # This is the ONLY auth path. Email/password was removed because
+            # Cloudflare's JS challenge on the /en/sign-in page rejects every
+            # non-browser HTTP client with HTTP 403, and retrying it just
+            # made the failure louder.
             token = self._user_token or os.environ.get("QX_TOKEN", "").strip()
-            if token:
-                self._client = self._make_client(ua, root)
-                self._client.set_session(user_agent=ua, ssid=token)
-                src = "user" if self._user_token else "env"
-                print(f"[feed] connecting with session token={token[:8]}... "
-                      f"(source={src})")
-                try:
-                    ok, reason = await asyncio.wait_for(
-                        self._client.connect(), timeout=30)
-                    if ok:
-                        self._remember_token()
-                        self._reject_streak = 0  # reset on success
-                        print(f"[feed] connect -> ok=True  reason={reason}")
-                        return True
-                    # DIFFERENTIATE: real auth-reject (token genuinely
-                    # invalid) vs. auth timeout (token fine, just slow).
-                    # Previously the reason was always "Websocket
-                    # connection rejected." which contains "reject", so
-                    # _clear_stale_token() wiped a perfectly valid token
-                    # every time a slow auth tripped the (formerly 2s,
-                    # now 12s) check_connect timeout. After a few hours
-                    # of running, a transient slow-auth moment would
-                    # silently kill the token, the next reconnect fell
-                    # through to email/password (Cloudflare 403), and
-                    # the operator saw "token expired" even though the
-                    # token had hours/days of life left.
-                    _reason_str = str(reason or "")
-                    if "authorization/reject" in _reason_str or _reason_str == "authorization/reject":
-                        print(f"[feed] token REJECTED by server ({reason}) — "
-                              "token is genuinely invalid, clearing and "
-                              "falling through to email/password")
-                        # Token genuinely rejected — invalidate so we
-                        # don't keep retrying a known-bad token.
-                        await self._close_client(self._client)
-                        if self._user_token:
-                            self._user_token = ""
-                            self._user_token_at = 0.0
-                        else:
-                            os.environ.pop("QX_TOKEN", None)
-                        self._clear_stale_token()
-                    else:
-                        # Timeout / transient slowness — KEEP the token.
-                        # Just close this client and let the manager loop
-                        # retry the SAME token on the next iteration.
-                        print(f"[feed] auth timed out / transient ({reason}) — "
-                              "KEEPING token, will retry on next manager "
-                              "loop iteration")
-                        await self._close_client(self._client)
-                        # IMPORTANT: do NOT clear _user_token / QX_TOKEN
-                        # and do NOT call _clear_stale_token — the token
-                        # is fine, we just need to retry.
-                        # Re-arm env var if _remember_token cached it
-                        # earlier (it's already there, nothing to do).
-                        return False
-                except Exception as _te:
-                    print(f"[feed] token attempt error: {_te}")
-                    await self._close_client(self._client)
-                    # Network error during connect — also keep the token.
-                    # Don't punish a valid token for a TCP blip.
-                    return False
-                # Legacy fall-through (shouldn't reach here, but keep
-                # behavior safe): if we somehow didn't return above,
-                # close the client and DON'T wipe the token unless we
-                # know it's rejected.
-                await self._close_client(self._client)
-                # IMPORTANT: do NOT clear the token here. Quotex's WS often
-                # sends "authorization/reject" on transient reconnects even
-                # when the token is perfectly valid (the server drops auth
-                # state on WS close, and pyquotex used to forget to re-send
-                # the SSID — now fixed in ws/client.py). Clearing the token
-                # on every transient reject caused the "token expires after
-                # a few hours" false-positive bug. Instead, keep the token
-                # and let the manager loop retry with exponential backoff.
-                # The token is only cleared after N consecutive failures
-                # (see _reject_streak logic below).
-                # ── Reject-streak tracking ──────────────────────────────
-                # Only after 5 consecutive rejections do we conclude the
-                # token is genuinely expired (not a transient server hiccup).
-                self._reject_streak = getattr(self, '_reject_streak', 0) + 1
-                if self._reject_streak >= 5:
-                    print(f"[feed] token rejected {self._reject_streak}x in a row "
-                          "— assuming genuinely expired, clearing")
+            if not token:
+                # No credentials at all — this is the boot state on a fresh
+                # Railway deploy before the operator has pasted a token. Don't
+                # set the fail gate here: the manager loop will keep polling
+                # so the moment a token lands via POST /api/token, _connect()
+                # runs immediately. We just sleep this cycle.
+                print("[feed] no token set — paste your SSID in the Settings "
+                      "tab (or set QX_TOKEN env var) to start streaming")
+                return False
+
+            self._client = self._make_client(ua, root)
+            self._client.set_session(user_agent=ua, ssid=token)
+            src = "user" if self._user_token else "env"
+            print(f"[feed] connecting with session token={token[:8]}... "
+                  f"(source={src}) — single attempt, no retry on failure")
+
+            try:
+                ok, reason = await asyncio.wait_for(
+                    self._client.connect(), timeout=30)
+                if ok:
+                    self._remember_token()
+                    print(f"[feed] connect -> ok=True  reason={reason}")
+                    return True
+                # Connect returned False. The user requirement is strict:
+                # "if the first login fails, the second time cannot be tried".
+                # We do NOT fall back to email/password and we do NOT retry
+                # — we set the one-shot fail gate and wait for the operator
+                # to paste a fresh token via set_token().
+                _reason_str = str(reason or "")
+                if ("authorization/reject" in _reason_str
+                        or _reason_str == "authorization/reject"):
+                    # Real reject — token is genuinely invalid (expired, wrong
+                    # account, etc.). Clear it so the next attempt starts
+                    # clean and the token_status endpoint reflects reality.
+                    print(f"[feed] token REJECTED by server ({reason}) — "
+                          "token is genuinely invalid. Clearing and waiting "
+                          "for a fresh SSID paste.")
                     if self._user_token:
                         self._user_token = ""
                         self._user_token_at = 0.0
                     else:
                         os.environ.pop("QX_TOKEN", None)
-                    self._reject_streak = 0
+                    self._login_failed_permanently = True
+                    self._login_fail_reason = (
+                        "Token rejected by Quotex — re-extract the SSID "
+                        "from a fresh browser session and paste it in "
+                        "the Settings tab.")
                 else:
-                    print(f"[feed] token reject streak: {self._reject_streak}/5 "
-                          "— keeping token, will retry (transient rejects are common)")
+                    # Timeout / transient slowness / network error — the
+                    # token itself is probably fine, but per the user's
+                    # explicit requirement we still don't retry. The operator
+                    # can paste the SAME token again to trigger one more
+                    # attempt; the token is preserved so they don't have to
+                    # re-extract it.
+                    print(f"[feed] connect failed ({reason}) — NOT retrying. "
+                          "Paste the same token again in the Settings tab "
+                          "to retry once, or paste a fresh SSID if the "
+                          "token has expired.")
+                    self._login_failed_permanently = True
+                    self._login_fail_reason = (
+                        f"Connect failed: {reason}. Token kept — paste it "
+                        f"again to retry once.")
+            except Exception as _te:
+                print(f"[feed] token attempt error: {_te} — NOT retrying.")
+                self._login_failed_permanently = True
+                self._login_fail_reason = (
+                    f"Network/connect error: {_te}. Token kept — paste it "
+                    f"again to retry once.")
 
-            # ── Attempt 2: FRESH client, email/password only ──────────────────
-            # A brand-new Quotex instance has no leftover WebSocket state from
-            # the failed token attempt, so pyquotex does a clean HTTP login.
-            email = os.environ.get("QX_EMAIL", "")
-            if not email or not os.environ.get("QX_PASSWORD", ""):
-                print("[feed] FATAL: QX_EMAIL / QX_PASSWORD not set in env — "
-                      "cannot log in to Quotex. Set them as Railway env vars "
-                      "and redeploy. Until then, no live data will stream.")
-                return False
-            print(f"[feed] connecting via email/password "
-                  f"(user={email}, host={os.environ.get('QX_HOST','qxbroker.com')})...")
-            self._client = self._make_client(ua, root)
-            ok, reason = await asyncio.wait_for(
-                self._client.connect(), timeout=45)
-            print(f"[feed] connect -> ok={ok}  reason={reason}")
-            if ok:
-                self._remember_token()
-                self._reject_streak = 0  # reset on success
-                return True
-            # Only clear the stale token after 5 consecutive rejections —
-            # a single transient "reject" (common on server-side hiccups)
-            # should NOT wipe a valid token. See _connect's Attempt 1 for
-            # the full rationale.
-            if reason and "reject" in str(reason).lower():
-                self._reject_streak = getattr(self, '_reject_streak', 0) + 1
-                if self._reject_streak >= 5:
-                    self._clear_stale_token()
-                    self._reject_streak = 0
-                else:
-                    print(f"[feed] email/password reject streak: "
-                          f"{self._reject_streak}/5 — keeping token")
-            # If the login itself failed (vs. a WS reject), surface a clear
-            # hint — the most common cause is wrong/missing creds, and the
-            # default "Websocket connection rejected" message is misleading.
-            if "Login failed" in str(reason):
-                print("[feed] login failed — verify QX_EMAIL/QX_PASSWORD are "
-                      "correct Quotex credentials. If the account uses 2FA, "
-                      "pass a session token via QX_TOKEN instead.")
-            # Cloudflare challenge on the sign-in page — httpx can't solve
-            # the JS challenge. The only fix is to bypass the HTTP login
-            # entirely with a pre-extracted SSID token (QX_TOKEN env var).
-            if "Forbidden" in str(reason) or "403" in str(reason):
-                print("[feed] HTTP 403 from Cloudflare on the sign-in page — "
-                      "the login form is bot-protected and can't be fetched "
-                      "by an HTTP client. Set QX_TOKEN to a pre-extracted "
-                      "SSID cookie (see README) to bypass the login form "
-                      "entirely and connect directly over WebSocket.")
-
-            # ── Attempt 3: auth may have succeeded internally but connect()
-            #    returned False (pyquotex race condition). If session_data now
-            #    holds a fresh token, one more connect() often succeeds. ────────
-            new_tok = (self._client.session_data or {}).get("token", "")
-            _env_tok = os.environ.get("QX_TOKEN", "").strip()
-            if new_tok and new_tok != _env_tok:
-                print(f"[feed] retrying with fresh token={new_tok[:8]}...")
-                try:
-                    ok, reason = await asyncio.wait_for(
-                        self._client.connect(), timeout=30)
-                    print(f"[feed] retry -> ok={ok}  reason={reason}")
-                    if ok:
-                        self._remember_token()
-                        self._reject_streak = 0  # reset on success
-                        return True
-                    # Streak-based clear — same as Attempt 1 & 2
-                    if reason and "reject" in str(reason).lower():
-                        self._reject_streak = getattr(self, '_reject_streak', 0) + 1
-                        if self._reject_streak >= 5:
-                            self._clear_stale_token()
-                            self._reject_streak = 0
-                except Exception as _re:
-                    print(f"[feed] retry error: {_re}")
-
+            # Best-effort client teardown — the client object is left for
+            # the manager loop to clean up if needed, but the connection
+            # itself is dead.
+            await self._close_client(self._client)
             return False
         except Exception as exc:
             err = str(exc)
-            print(f"[feed] connect error: {exc}")
-            # Cloudflare 403 on the login page — the most common cause of
-            # "Waiting..." in production. Surface a clear actionable hint
-            # instead of just the bare exception.
-            if "Forbidden" in err or "403" in err:
-                print("[feed] >>> Cloudflare blocked the HTTP login page. "
-                      "Set QX_TOKEN (SSID cookie from a logged-in browser "
-                      "session) to bypass the login form entirely. See "
-                      "README.md for step-by-step instructions. <<<")
+            print(f"[feed] connect error: {exc} — NOT retrying.")
+            self._login_failed_permanently = True
+            self._login_fail_reason = f"Connect error: {err}"
             return False
 
     async def _load_history(self, asset: str, period: int) -> list[dict]:
@@ -1072,12 +972,31 @@ class QuotexFeed:
         restricts it to the 5 candle-slots immediately before the just-closed
         candle: a restart / asset switch can no longer feed hours-old rows to
         MICRO as if they were the previous candle.
+
+        EVERY closed candle emits a CALL or PUT signal — the user's explicit
+        requirement ("প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে").
+        The strategy engine's tiebreak (strategies/runner.py:515-530) and the
+        legacy analyze_eoc tiebreak (analyze_eoc.py:1196-1233) both guarantee
+        this — when no theory voted, the engine falls back to (a) independent
+        evidence lean, (b) regime direction, (c) last-candle color. NEUTRAL is
+        only ever returned when `candles` is completely empty (cold-start with
+        zero history and zero accumulated ticks — an edge case that should
+        never happen on an always-on 1m stream).
+
+        Previously this method had a `len(candles) < 5` early-None guard that
+        suppressed signals during cold-start (~5 min per pair). That guard
+        violated the user's every-candle requirement and is now removed —
+        the runner handles 1-2 candle windows fine via its tiebreak.
         """
-        if len(candles) < 5:
+        if not candles:
+            # Truly empty — no candle has closed yet. The runner's _empty_signal
+            # path returns NEUTRAL for this, but we want to suppress the broadcast
+            # entirely (no candle = nothing to predict on). The next closed candle
+            # will have len(candles) >= 1 and go through the full pipeline.
             return None, []
         micro_hist = _db.get_micro_history(
             asset, period, n=5,
-            before_ctime=candles[-1]["time"])
+            before_ctime=candles[-1]["time"]) if len(candles) >= 2 else []
 
         # ── Primary path: new modular strategy engine (per-pair profiles +
         # candlestick patterns + market-state deep analysis).
@@ -1140,16 +1059,23 @@ class QuotexFeed:
                 f"CHOP GUARD: {_key[0]}/{_key[1]} wrong "
                 f"{stream.zone_streak['losses']}x running -> WEAK until zone changes")
 
-        # ── 2026-08-11: NEUTRAL is now a VALID first-class output. ──
-        # analyze_eoc returns NEUTRAL when no theory voted AND no market
-        # state had conviction (see its docstring for the new rules).
-        # Forcing NEUTRAL → CALL here was the source of the user's
-        # complaint: "signals fall back without any pattern analysis".
-        # The UI now renders NEUTRAL as "WAIT — no clear edge" and
-        # draws a flat doji-style ghost candle (see _pred_candle's
-        # NEUTRAL branch). The strength="NONE" is the marker the UI
-        # checks.
-        # We do NOT force CALL here — NEUTRAL passes through.
+        # ── Every-candle signal guarantee ──────────────────────────────────
+        # The strategy engine (strategies/runner.py) and the legacy analyze_eoc
+        # both end with an always-emit tiebreak that GUARANTEES a CALL or PUT
+        # on every closed candle — the user's explicit requirement:
+        #   "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে।"
+        # When no theory voted and no market state had conviction, the tiebreak
+        # falls through to the just-closed candle's own color (bull → CALL,
+        # bear → PUT), marked WEAK so the user knows it's a low-confidence
+        # tiebreak, not a strong-agreement signal. NEUTRAL is unreachable on
+        # any non-empty candle window.
+        #
+        # The earlier 2026-08-11 note here claimed NEUTRAL was first-class —
+        # that was an aspirational refactor that was never actually applied
+        # to the engines' tiebreak code (both still force CALL/PUT). The
+        # user's every-candle requirement (re-confirmed 2026-08-17) ratifies
+        # the existing behavior, so this comment now matches what the code
+        # actually does.
         return {**result, "candle": _pred_candle(closed, result["signal"], stream.period, actual_open),
                 "payout": stream.payout}
 
@@ -2359,16 +2285,40 @@ class QuotexFeed:
             try:
                 # ── Connect (shared across all streams) ───────────────────
                 if not self._connected:
+                    # One-shot login gate: if the previous _connect() attempt
+                    # failed for ANY reason (reject, timeout, network error),
+                    # we do NOT retry automatically. The operator must paste
+                    # a fresh SSID via POST /api/token to clear the gate and
+                    # trigger exactly one more attempt. This is the user's
+                    # explicit requirement:
+                    #   "যদি কোনো কারণে প্রথম বারে লগিং ফেইল হলে,
+                    #    সেকেন্ড টাইম আর লগিং ট্রাই করা যাবে না।"
+                    if self._login_failed_permanently:
+                        # Idle until set_token() clears the gate. Print once
+                        # every ~5 min (60 manager cycles × 5s) so the log
+                        # isn't spammed but the operator still sees a heartbeat.
+                        if self._reconnect_attempts % 60 == 0:
+                            print(f"[feed] login previously failed — waiting "
+                                  f"for a fresh SSID paste via Settings tab "
+                                  f"(reason: {self._login_fail_reason})")
+                        self._reconnect_attempts += 1
+                        await asyncio.sleep(HOUSEKEEP_SECS)
+                        continue
                     print("[feed] connecting...")
                     self._connected = await self._connect()
                     if not self._connected:
-                        # Exponential backoff (10→20→40→60s, capped) so repeated
-                        # failures don't hammer Quotex into a 429 rate-limit.
+                        if self._login_failed_permanently:
+                            # _connect set the fail gate — stop retrying.
+                            # The above branch will pick it up next iteration.
+                            self._reconnect_attempts += 1
+                            await asyncio.sleep(HOUSEKEEP_SECS)
+                            continue
+                        # Soft-fail (e.g. no token yet) — short backoff so
+                        # the moment a token lands, we try immediately.
                         self._reconnect_attempts += 1
-                        delay = min(10 * (2 ** (self._reconnect_attempts - 1)), 60)
-                        print(f"[feed] reconnect attempt {self._reconnect_attempts} "
-                              f"failed — retrying in {delay}s")
-                        self._record_stream_error()
+                        delay = min(5, 1 * self._reconnect_attempts)
+                        print(f"[feed] connect attempt {self._reconnect_attempts} "
+                              f"failed (soft) — retrying in {delay}s")
                         await asyncio.sleep(delay)
                         continue
                     self._reconnect_attempts = 0          # reset on success

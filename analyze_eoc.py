@@ -1,26 +1,26 @@
 """
 End-of-candle (EOC) analysis — DEEP-ANALYSIS-FIRST predictor (refactored 2026-07-10).
 
-2026-08-11: NEUTRAL is now a first-class output.
-  Previously the engine forced a CALL/PUT on every candle, even when no
-  theory voted and no market state had any conviction. The tiebreak fell
-  through to "repeat the last candle's color" — a parrot-bias that told
-  the user "CALL" every time a green candle closed, regardless of any
-  actual pattern. The user's complaint is exactly right: signals arrive
-  WITHOUT any pattern analysis.
+EVERY-CANDLE GUARANTEE (re-confirmed 2026-08-17):
+  The user's explicit requirement is "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ
+  সিগন্যাল আসতে হবে" — every candle on every pair must emit a CALL or PUT
+  signal, never NEUTRAL. The always-emit tiebreak at the bottom of this
+  module (lines ~1196-1233) guarantees this on any non-empty candle window.
 
-  Now: when no real evidence exists, the engine returns NEUTRAL. The
-  feed layer passes NEUTRAL through to the UI, which shows "WAIT — no
-  clear edge" instead of a fake CALL/PUT. A CALL/PUT is emitted only
-  when at least ONE of these is true:
-    (a) score != 0      — at least one theory voted with real weight
-    (b) _indep_net != 0 — color-independent evidence has a lean
-    (c) MARKET_STATE confirms a CONTINUATION at conviction >= 25%
-        (deep analysis agrees the trend is real, not just "chart
-        goes up so call CALL")
+  Order of precedence when score == 0:
+    (a) _indep_net != 0  — color-independent evidence has a lean (e.g. RUN absorption).
+    (b) MARKET_STATE confirms a CONTINUATION at conviction >= 25%.
+    (c) regime has ANY direction (UPTREND/DOWNTREND) — even without CONTINUATION conviction.
+    (d) Final fallback: the just-closed candle's own color (bull close -> CALL, bear close -> PUT).
 
-  Strength="NONE" is the new strength value for NEUTRAL signals — the
-  UI uses it to render the "no signal" state distinctly from WEAK.
+  The (d) fallback is UNCONDITIONAL — it always produces CALL or PUT. Marked
+  WEAK so the user knows it's a low-confidence tiebreak, not a strong-agreement
+  signal.
+
+  Note: an earlier 2026-08-11 note here claimed NEUTRAL was first-class. That
+  was an aspirational refactor that was never actually applied to the tiebreak
+  code — the engine has ALWAYS forced CALL/PT. The note was stale and has
+  been removed. The current docstring reflects what the code actually does.
 
 ARCHITECTURE OVERHAUL (2026-07-10):
   Phase-1/2 history proved that piling many small OHLC-based theories
@@ -49,9 +49,12 @@ ARCHITECTURE OVERHAUL (2026-07-10):
     - MTF / ANOMALY / OBLOCK  : below coin-flip on live measurement
     - COLOR-GATED CAP         : no longer needed — color-forced theories
                                 are gone, so there's no pile-up to cap
-    - PARROT GUARD            : same reason — the parrot-bias source is gone
-                                (and the 2026-08-11 refactor also removes
-                                the parrot tiebreak itself, see below)
+    - PARROT GUARD            : the parrot-bias source is gone — but the
+                                always-emit tiebreak's final fallback still
+                                uses the last candle's color as a last-resort
+                                direction. That's intentional (the user
+                                requires every candle to emit a signal),
+                                not a parrot bug
     - UNSTABLE BASE / OVERHEATED : with fewer theories, score scale is
                                 naturally smaller and the strength
                                 calibration handles this directly
@@ -72,15 +75,15 @@ Signal flow now:
   4. Apply state's directional vote to score (scaled by conviction)
   5. Apply INFORMATION_WEIGHT (tick count + ATR + session, unified)
   6. Calibrate strength from final score + agreement
-  7. NEUTRAL tiebreak: only emit CALL/PUT if (a), (b), or (c) above;
-     otherwise return NEUTRAL with strength="NONE" — DO NOT parrot
-     the last candle color.
+  7. ALWAYS-EMIT TIEBREAK: emit CALL or PUT (never NEUTRAL) via the
+     4-layer fallback at the top of this docstring. The user explicitly
+     requires a signal on every closed candle — see EVERY-CANDLE GUARANTEE.
 
 Note: 1-minute binary options remain near-random. The point of this
-refactor is HONESTY — fewer theories, each with a real job, no pile-on,
-no self-deception, and NO fake signal when there's no edge. Accuracy
-claims beyond ~52-55% are still fiction. But "I don't know" (NEUTRAL)
-is now an honest answer instead of a coin-flip pretending to be a signal.
+refactor is HONESTY about WHICH candles have a real edge (and marking
+those without one as WEAK) — but the user's requirement is that every
+candle still gets a directional call. The tiebreak's WEAK marker is
+the honesty mechanism.
 """
 import math
 import os

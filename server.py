@@ -1,22 +1,24 @@
 """
 Plybit AI — OTC live trading signal server.
 
-Auth/signup/login fully removed: the app is now a single-tenant public
+Auth/signup/login fully removed: the app is a single-tenant public
 dashboard. Every visitor gets the full chart + signals feed with no
-login wall, no admin panel, no per-user data.
+login wall, no admin panel, no per-user data. The ONLY credential is
+a Quotex SSID token pasted into the Settings tab — there is no API-key
+system, no admin key, no email/password fallback (Cloudflare blocks
+the HTTP sign-in page on every non-browser client, so retrying was
+just hammering Quotex with bad credentials).
 
-OPTIONAL API-key system (env-gated, default disabled):
-  Set PLYBIT_API_KEYS=key1,key2,key3 to require an X-API-Key header on
-  write endpoints (POST /api/token, DELETE /api/token, POST /api/subscribe).
-  Reads (GET /api/*, /healthz, /, /ws) stay public — anyone with the URL
-  can still view every chart, every signal, every theory reason. When
-  PLYBIT_API_KEYS is unset/empty, ALL endpoints are open (the default).
+Read endpoints (GET /api/*, /ws, /, /healthz) are fully public.
+Write endpoints (POST /api/token, DELETE /api/token, POST /api/subscribe)
+are also public — the operator pastes a token and the feed connects
+with it. There is nothing else to gate.
 """
 import asyncio
 import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -27,24 +29,6 @@ from feed import QuotexFeed
 
 feed = QuotexFeed()
 _clients: set[WebSocket] = set()
-
-
-# ── Optional API-key gate ───────────────────────────────────────────────────
-# Comma-separated list of valid keys from env. Empty (default) = open access
-# for everyone, matching the original "public dashboard, no signup" design.
-# When set, write endpoints require a matching X-API-Key header.
-_API_KEYS: set[str] = {k.strip() for k in os.environ.get("PLYBIT_API_KEYS", "").split(",")
-                      if k.strip()}
-
-
-def _require_write_key(x_api_key: str | None = Header(None, alias="X-API-Key")) -> None:
-    """FastAPI dependency: gate write endpoints behind an API key when configured.
-    No-op (open access) when PLYBIT_API_KEYS is unset/empty."""
-    if not _API_KEYS:
-        return  # open mode — no check
-    if not x_api_key or x_api_key not in _API_KEYS:
-        raise HTTPException(status_code=401,
-                            detail="Invalid or missing X-API-Key header")
 
 
 async def _broadcast(data: dict) -> None:
@@ -119,7 +103,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
 
 from pydantic import BaseModel
-from fastapi import Depends
 
 
 class SubReq(BaseModel):
@@ -129,9 +112,9 @@ class SubReq(BaseModel):
 
 
 @app.post("/api/subscribe")
-async def subscribe(req: SubReq, _=Depends(_require_write_key)):
-    """Open / refresh a stream — gated by API key ONLY when PLYBIT_API_KEYS is set.
-    In the default open mode, anyone can call this (the original public design)."""
+async def subscribe(req: SubReq):
+    """Open / refresh a stream. Public endpoint — no API key required.
+    The only credential in the system is the Quotex SSID token (POST /api/token)."""
     return await feed.ensure_stream(req.asset, req.period, req.cid)
 
 
@@ -145,20 +128,24 @@ async def stream_status():
     return feed.stream_status()
 
 
-# ── Session token management (frontend → backend) ───────────────────────────
+# ── Session token management (frontend → backend) ───────────────────────
 # Lets the operator paste an SSID cookie directly into the Settings page
 # instead of redeploying on Railway every time the token expires. The token
 # is stored in-memory only (feed._user_token) — never written to disk or
-# env vars, and cleared on process restart.
+# env vars, and cleared on process restart. This is the ONLY credential
+# in the system — there is no admin key, no API key, no email/password.
 
 class TokenReq(BaseModel):
     token: str = ""
 
 
 @app.post("/api/token")
-def set_token(req: TokenReq, _=Depends(_require_write_key)):
-    """Store a user-supplied SSID token. Takes priority over QX_TOKEN env
-    var on the next connect attempt. Pass an empty string to clear."""
+def set_token(req: TokenReq):
+    """Store a user-supplied SSID token. The token is the ONLY auth path —
+    there is no email/password fallback. The feed does exactly ONE connect
+    attempt with this token; if it fails for ANY reason, the operator must
+    paste a fresh SSID (or the same one again) to retry once. No automatic
+    retry."""
     token = (req.token or "").strip()
     if not token:
         return {"ok": False, "error": "Token is empty"}
@@ -172,7 +159,7 @@ def set_token(req: TokenReq, _=Depends(_require_write_key)):
     feed.set_token(token)
     return {
         "ok": True,
-        "message": "Token stored — reconnecting now. Check status in a few seconds.",
+        "message": "Token stored — connecting now (single attempt, no auto-retry on failure).",
     }
 
 
@@ -201,7 +188,7 @@ def server_time():
 
 
 @app.delete("/api/token")
-def clear_token(_=Depends(_require_write_key)):
+def clear_token():
     """Clear a previously-set user token. The feed will fall back to
     QX_TOKEN env var (if set) or disconnect entirely."""
     had_token = feed.has_token()
@@ -221,11 +208,9 @@ async def debug():
     Use this when the dashboard is stuck on 'Waiting'."""
     import os
     return {
-        # Show presence (not value) of each auth env var so the user can
-        # tell at a glance which auth path the feed is trying.
+        # Show presence (not value) of QX_TOKEN only — email/password are
+        # no longer auth paths (Cloudflare blocks the HTTP sign-in page).
         "env": {
-            "QX_EMAIL_set":    bool(os.environ.get("QX_EMAIL", "").strip()),
-            "QX_PASSWORD_set": bool(os.environ.get("QX_PASSWORD", "").strip()),
             "QX_TOKEN_set":    bool(os.environ.get("QX_TOKEN", "").strip()),
             "QX_HOST":         os.environ.get("QX_HOST", "qxbroker.com (default)"),
         },
@@ -237,8 +222,7 @@ async def debug():
             "pairs_loaded":       len(feed._pairs_list),
         },
         "token": feed.token_status(),
-        # The single most useful piece — tells the user exactly which auth
-        # path to set up next.
+        # The single most useful piece — tells the user exactly what to do next.
         "hint": _debug_hint(feed),
     }
 
@@ -247,28 +231,28 @@ def _debug_hint(feed) -> str:
     import os
     if feed._connected:
         return "Feed is connected — live data should be streaming."
+    # One-shot fail gate is the most actionable signal — tells the operator
+    # they need to paste a fresh SSID (the system is NOT retrying on its own).
+    if feed._login_failed_permanently:
+        return (f"Login failed and is NOT being retried: "
+                f"{feed._login_fail_reason} "
+                f"Open the Settings page and paste a fresh SSID to retry once.")
     # User-supplied token (from frontend) takes priority over env vars
     if feed.has_token():
-        return ("User token is set but the WebSocket did not authenticate "
-                "in time. This is most often a transient slow-network issue, "
-                "NOT an expired token — the feed will retry the same token "
-                "automatically. If it stays disconnected for >2 minutes, "
-                "re-extract the SSID from a fresh browser session and paste "
-                "it into the Settings page.")
+        return ("User token is set but the feed has not connected yet. "
+                "If it stays disconnected, re-extract the SSID from a fresh "
+                "browser session and paste it into the Settings page.")
     if not (os.environ.get("QX_TOKEN", "").strip()
-            or (os.environ.get("QX_EMAIL", "").strip()
-                and os.environ.get("QX_PASSWORD", "").strip())):
-        return ("No Quotex credentials set. Open the Settings page and paste "
-                "your SSID token, OR set QX_TOKEN as a Railway env var.")
+            or feed.has_token()):
+        return ("No Quotex SSID set. Open the Settings page and paste your "
+                "SSID token (extract it from a logged-in browser session — "
+                "see the help link on the Settings page). There is no "
+                "email/password fallback (Cloudflare blocks the HTTP sign-in).")
     if os.environ.get("QX_TOKEN", "").strip():
-        return ("QX_TOKEN is set but the WebSocket did not authenticate in "
-                "time. This is usually a transient slow-network issue, not "
-                "an expired token — the feed will retry automatically. If it "
-                "stays disconnected for >2 minutes, re-extract the SSID from "
-                "a fresh browser session.")
-    return ("QX_EMAIL/QX_PASSWORD are set but login is failing — this is "
-            "almost always Cloudflare blocking the login page. Switch to "
-            "QX_TOKEN (extract SSID cookie from a logged-in browser session).")
+        return ("QX_TOKEN env var is set but the feed has not connected yet. "
+                "If it stays disconnected, re-extract the SSID from a fresh "
+                "browser session and paste it into the Settings page.")
+    return "Unexpected state — check the logs for details."
 
 
 
