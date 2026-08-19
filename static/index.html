@@ -111,17 +111,28 @@
 
         <!-- ═══ CHART PAGE ═══════════════════════════════════════════════ -->
         <div id="tab-advance" class="page hidden">
-          <!-- Signal Bar — prominent top-center -->
+          <!-- Signal Bar — prominent top-center. Two-tier card: the call/put
+               read is the primary focal point (top row), score + transient
+               state chips (entry timing, tick confirmation, strength gate)
+               are secondary (bottom row, wraps as a set on narrow screens). -->
           <div id="signal-bar" class="hidden">
-            <div id="signal-badge" class="signal-badge neutral">–</div>
-            <span id="runconf-badge" class="runconf-badge hidden"></span>
-            <div class="signal-meta">
-              <div id="signal-score">–</div>
-              <div class="conf-bar-wrap"><div id="signal-conf-bar" class="conf-bar"></div></div>
-              <div id="signal-conf">–</div>
+            <div class="signal-primary">
+              <div id="signal-badge" class="signal-badge neutral">
+                <span class="signal-dir">–</span><span class="signal-strength"></span>
+              </div>
+              <div class="signal-confidence">
+                <div class="conf-bar-wrap"><div id="signal-conf-bar" class="conf-bar"></div></div>
+                <div id="signal-conf">–</div>
+              </div>
             </div>
-            <div id="entry-timing" class="entry-timing hidden"></div>
-            <div id="running-conf" class="running-conf hidden"></div>
+            <div class="signal-detail">
+              <div id="signal-score">–</div>
+              <div class="signal-chips">
+                <span id="runconf-badge" class="runconf-badge hidden"></span>
+                <div id="entry-timing" class="entry-timing hidden"></div>
+                <div id="running-conf" class="running-conf hidden"></div>
+              </div>
+            </div>
           </div>
 
           <div id="accuracy-strip" class="hidden"></div>
@@ -435,6 +446,26 @@
         <span class="tab-btn-label">Settings</span>
       </button>
     </nav>
+
+    <!-- Mobile-only floating toggle for the Deep Analysis bottom sheet.
+         MUST live here — a sibling of #bottom-tabs, NOT nested inside
+         #main/.page/<aside id="side-panel"> — because .page (#tab-advance)
+         always carries a non-none CSS transform (its enter/active-state
+         animation, style.css ~line 685-695), and #side-panel itself gets a
+         transform to slide off-screen when closed. Per the CSS spec, ANY
+         ancestor with a transform becomes the containing block for
+         position:fixed descendants too, not just position:absolute ones —
+         so a toggle nested in either of those would either be dragged
+         off-screen with the panel it's supposed to open, or be positioned
+         relative to the wrong box entirely instead of the viewport. This
+         level (a direct child of #app, alongside #bottom-tabs, which has
+         no transform anywhere in its ancestor chain) is the first place a
+         real position:fixed is guaranteed to behave like one. -->
+    <button type="button" id="side-panel-toggle-mobile"
+            class="side-panel-toggle-mobile" title="Deep Analysis"
+            aria-label="Toggle deep analysis panel">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+    </button>
 
     <!-- ═══ OVERLAYS ═══════════════════════════════════════════════════════ -->
 

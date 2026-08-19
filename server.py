@@ -16,6 +16,7 @@ with it. There is nothing else to gate.
 """
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -261,18 +262,46 @@ def _debug_hint(feed) -> str:
 # the event loop, stalling every live stream's tick processing while a
 # query runs. FastAPI executes sync endpoints in its threadpool instead;
 # db.py's threading.Lock makes that safe.
+#
+# /api/stats and /api/theory-report each do a full-table scan over
+# signal_log/theory_votes (db.py:423-487, 490-525). The Home tab polls
+# /api/stats every 10s from EVERY visitor (chart.js:1637-1640), so without
+# caching, N concurrent visitors means N full scans every 10s, each holding
+# db.py's global lock — the exact contention pattern that stalls live-stream
+# processing under load. A short TTL cache collapses that back down to one
+# scan per TTL window regardless of visitor count; the underlying data only
+# changes once per candle close (60s) anyway, so 5s freshness costs nothing
+# real.
+_STATS_CACHE_TTL = 5.0
+_stats_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def _cached(cache: dict, key: tuple, ttl: float, compute):
+    now = time.time()
+    hit = cache.get(key)
+    if hit is not None and now - hit[0] < ttl:
+        return hit[1]
+    value = compute()
+    cache[key] = (now, value)
+    return value
+
+
 @app.get("/api/stats")
 def stats(asset: str | None = None, period: int | None = None):
     import db as _db
-    s = _db.get_stats(asset, period)
-    s["muted_theories"] = dict(feed._muted_theories)
-    return s
+
+    def _compute():
+        s = _db.get_stats(asset, period)
+        s["muted_theories"] = dict(feed._muted_theories)
+        return s
+    return _cached(_stats_cache, ("stats", asset, period), _STATS_CACHE_TTL, _compute)
 
 
 @app.get("/api/theory-report")
 def theory_report(asset: str | None = None, period: int | None = None):
     import db as _db
-    return _db.theory_report(asset, period)
+    return _cached(_stats_cache, ("theory-report", asset, period), _STATS_CACHE_TTL,
+                   lambda: _db.theory_report(asset, period))
 
 
 @app.get("/api/signals")

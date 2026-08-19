@@ -338,9 +338,15 @@ def _market_state(candles: list[dict], regime: str, zone: str,
             add("EXHAUSTION", 1, -cand_dir)
 
     # REVERSAL — pin bar shapes
-    if a["upper"] / a["range"] > 0.55 if a["range"] else False and a["brr"] < 0.25:
+    # NOTE: candle_anatomy() floors "range" to 1e-9, so it's never falsy —
+    # the old `X if a["range"] else False and Y` form parsed (by Python's
+    # conditional-expression precedence) as `X if range else (False and Y)`,
+    # silently dropping the `and a["brr"] < 0.25` body-size filter entirely.
+    # Any large-bodied candle with a merely-large wick was wrongly counted
+    # as a pin-bar REVERSAL. Parenthesized correctly below.
+    if a["range"] and a["upper"] / a["range"] > 0.55 and a["brr"] < 0.25:
         add("REVERSAL", 3 if zone == "RESISTANCE" else 2, -1)
-    elif a["lower"] / a["range"] > 0.55 if a["range"] else False and a["brr"] < 0.25:
+    elif a["range"] and a["lower"] / a["range"] > 0.55 and a["brr"] < 0.25:
         add("REVERSAL", 3 if zone == "SUPPORT" else 2, +1)
 
     # absorption reversal
@@ -430,6 +436,25 @@ def run_strategy(candles: list[dict],
     # Filter out muted patterns
     if muted:
         fired = [s for s in fired if s.name not in muted]
+
+    # Context-gate the hammer/shooting-star family. HAMMER/HANGING_MAN (and
+    # SHOOTING_STAR/INVERTED_HAMMER) share byte-identical anatomy checks —
+    # the same small-body-long-wick shape means the OPPOSITE thing depending
+    # on whether it follows a down-move (bullish reversal) or an up-move
+    # (bearish reversal). Both docstrings in patterns.py say this context
+    # check is "the caller's job", but detect_all() runs unconditionally and
+    # nothing downstream ever applied it — so both fired together on every
+    # hammer-shaped candle and their opposite-signed votes partially
+    # cancelled regardless of the real context. regime/zone are already
+    # computed above (_market_regime).
+    _CONTEXT_GATE = {
+        "HAMMER":          lambda: regime == "DOWNTREND" or zone == "SUPPORT",
+        "INVERTED_HAMMER": lambda: regime == "DOWNTREND" or zone == "SUPPORT",
+        "HANGING_MAN":     lambda: regime == "UPTREND" or zone == "RESISTANCE",
+        "SHOOTING_STAR":   lambda: regime == "UPTREND" or zone == "RESISTANCE",
+    }
+    fired = [s for s in fired
+             if s.name not in _CONTEXT_GATE or _CONTEXT_GATE[s.name]()]
 
     # Compose score
     score = 0
@@ -595,10 +620,19 @@ def run_strategy(candles: list[dict],
 
 
 def _empty_signal(reason: str) -> dict:
+    # "Every candle gets CALL/PUT, never NEUTRAL" is a hard product
+    # requirement (README's "Signal guarantee", enforced by an assertion in
+    # tools/backtest_strategies.py). feed.py intercepts truly-empty calls
+    # before they reach run_strategy so this path is currently unreachable
+    # in production, but run_strategy is also this package's public entry
+    # point (re-exported by strategies/__init__.py) — any other/future
+    # caller invoking it directly with an empty candle list would silently
+    # get NEUTRAL and violate the guarantee. Default to CALL (a coin-flip
+    # pick, same fallback analyze_eoc.py uses) instead.
     return {
-        "signal": "NEUTRAL", "score": 0, "confidence": 0.0,
-        "agree": 0, "agree_weight": 0, "strength": "NONE",
-        "reasons": [f"EMPTY: {reason}"],
+        "signal": "CALL", "score": 0, "confidence": 0.0,
+        "agree": 0, "agree_weight": 0, "strength": "WEAK",
+        "reasons": [f"TIEBREAK: {reason} -> CALL (default pick)"],
         "patterns_fired": [], "key_levels": [],
         "wick_walls": {"support": [], "resistance": []},
         "regime": {"trend": "SIDEWAYS", "zone": "NEUTRAL"},

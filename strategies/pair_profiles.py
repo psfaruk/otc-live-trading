@@ -59,9 +59,10 @@ _PROFILES: dict[str, PairProfile] = {
             "TWEEZER_BOTTOM": 1.30, "TWEEZER_TOP": 1.30,
             "BULLISH_ENGULFING": 1.20, "BEARISH_ENGULFING": 1.20,
             "PIN_BAR_BULL": 1.25, "PIN_BAR_BEAR": 1.25,
-            # Breakout strategies fail (trap wick pierces levels)
-            "BREAKOUT": 0.60,
-            # Trend continuation has slight positive edge (OTC trend feed)
+            # Breakout strategies fail (trap wick pierces levels) — no
+            # detector is named "BREAKOUT" (removed a dead weight entry
+            # for it that never matched anything); the closest real
+            # breakout-like continuation patterns are dampened directly:
             "THREE_WHITE_SOLDIERS": 0.80, "THREE_BLACK_CROWS": 0.80,
         },
         trap_wick_sensitivity=1.30,     # Quotex amplifies trap wicks here
@@ -150,7 +151,8 @@ _PROFILES: dict[str, PairProfile] = {
             "PIN_BAR_BULL": 1.30, "PIN_BAR_BEAR": 1.30,
             "TWEEZER_BOTTOM": 1.25, "TWEEZER_TOP": 1.25,
             "BULLISH_ENGULFING": 1.20, "BEARISH_ENGULFING": 1.20,
-            "BREAKOUT": 0.60,
+            # No detector is named "BREAKOUT" (see USDINR_otc's note) — the
+            # dampen intent lands on the real continuation patterns instead:
             "THREE_WHITE_SOLDIERS": 0.80, "THREE_BLACK_CROWS": 0.80,
         },
         trap_wick_sensitivity=1.50,

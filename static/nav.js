@@ -39,13 +39,39 @@ const Nav = (() => {
   });
   if (sidebarBg) sidebarBg.addEventListener('click', closeSidebar);
 
-  // ── Side panel toggle (collapse/expand on desktop) ──────────────────────
+  // ── Side panel toggle (collapse/expand on desktop, slide-up sheet on
+  // mobile) ─────────────────────────────────────────────────────────────
+  // Desktop (>=768px) uses .collapsed to slide the always-visible panel off
+  // to the right (style.css:3024-3033). Mobile (<=767px) renders the panel
+  // as a bottom sheet that's hidden by default and needs .active to slide
+  // up (style.css:2144); .collapsed has the SAME off-screen transform as
+  // the default hidden state there, so toggling it on mobile was a no-op —
+  // the button did nothing on any phone/tablet under 768px.
   const sidePanel = document.getElementById('side-panel');
   const sidePanelToggle = document.getElementById('side-panel-toggle');
-  if (sidePanelToggle && sidePanel) {
-    sidePanelToggle.addEventListener('click', () => {
+  // Mobile-only floating trigger — lives OUTSIDE #side-panel in the DOM
+  // (index.html) so it isn't dragged off-screen by the panel's own
+  // show/hide transform the way #side-panel-toggle (nested inside) is
+  // while the sheet is closed. See index.html's comment on this element.
+  const sidePanelToggleMobile = document.getElementById('side-panel-toggle-mobile');
+  const _mobileNavQuery = window.matchMedia('(max-width: 767px)');
+
+  function toggleSidePanel() {
+    if (_mobileNavQuery.matches) {
+      const nowActive = sidePanel.classList.toggle('active');
+      if (sidePanelToggleMobile) {
+        sidePanelToggleMobile.classList.toggle('open', nowActive);
+      }
+    } else {
       sidePanel.classList.toggle('collapsed');
-    });
+    }
+  }
+
+  if (sidePanelToggle && sidePanel) {
+    sidePanelToggle.addEventListener('click', toggleSidePanel);
+  }
+  if (sidePanelToggleMobile && sidePanel) {
+    sidePanelToggleMobile.addEventListener('click', toggleSidePanel);
   }
 
   // ── Page switching ─────────────────────────────────────────────────────
@@ -71,6 +97,15 @@ const Nav = (() => {
       } else {
         el.classList.remove('page-enter');
       }
+    }
+
+    // The Deep Analysis panel only exists on the Chart tab — the floating
+    // mobile toggle that opens it (a sibling of #bottom-tabs, not scoped
+    // inside #tab-advance — see index.html) has to be shown/hidden by JS
+    // here rather than by nesting/CSS, since it deliberately lives outside
+    // that page's DOM subtree.
+    if (sidePanelToggleMobile) {
+      sidePanelToggleMobile.classList.toggle('hidden', tabKey !== 'chart');
     }
 
     // Update sidebar active

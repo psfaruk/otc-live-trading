@@ -972,11 +972,18 @@ function updateSignalUI(pred) {
     badge.classList.add('signal-pop');
     setTimeout(() => badge.classList.remove('signal-pop'), 300);
   }
+  // Direction and strength are separate child spans (not one text string)
+  // so they can be styled independently — a bold direction word plus a
+  // small strength chip beside it, instead of one flat run of text.
+  // className was reassigned above, which does NOT touch these children.
+  const dirEl = badge.querySelector('.signal-dir');
+  const strEl = badge.querySelector('.signal-strength');
   if (isNeutral) {
-    badge.textContent = '– NO TRADE';
+    if (dirEl) dirEl.textContent = '– NO TRADE';
+    if (strEl) strEl.textContent = '';
   } else {
-    const tag = strength === 'STRONG' ? '★ ' : strength === 'WEAK' ? '· ' : '';
-    badge.textContent = (pred.signal === 'CALL' ? '▲ CALL' : '▼ PUT') + `  ${tag}${strength}`;
+    if (dirEl) dirEl.textContent = pred.signal === 'CALL' ? '▲ CALL' : '▼ PUT';
+    if (strEl) strEl.textContent = strength;
   }
 
   const agreeCount = pred.agree || 0;
@@ -1689,8 +1696,22 @@ document.querySelectorAll('.tab-btn').forEach((b) => {
 // Expose _setActiveTab globally so nav.js (sidebar clicks) can route through
 // it instead of bypassing the per-tab loaders. The `chart` global holds the
 // LightweightCharts instance, so we can't hang this off `chart`.
-window._setActiveTab = _setActiveTab;
-_setActiveTab(_activeTab);   // apply the restored/default tab on load
+//
+// This MUST be a proxy, not a direct reference: _setActiveTab is later
+// reassigned (see the token-status-polling wrapper below) to point at a
+// new function object. Capturing `_setActiveTab` by value here would have
+// frozen window._setActiveTab on the pre-wrap original forever — which is
+// exactly what happened before this fix: nav.js's sidebar clicks (desktop,
+// >=768px) call window._setActiveTab and so never started/stopped the
+// Settings tab's 5s token-status poll, while bottom-tab clicks (mobile)
+// call the bare identifier and picked up the wrapper correctly via normal
+// closure lookup. The proxy re-reads the current `_setActiveTab` binding
+// on every call, so both nav paths always get the latest wrapper.
+window._setActiveTab = (tab) => _setActiveTab(tab);
+// NOTE: do NOT call _setActiveTab(_activeTab) here — the token-status
+// wrapper below does that once it's fully wired up. Calling it here too
+// just fires every per-tab loader (share-signals, home-stats) twice on
+// every page load for no benefit.
 
 // ── Settings: Preferences card ← userPrefs (localStorage) ────────────────
 for (const [id, key] of [['pref-popup', 'popup'], ['pref-klines', 'klines'],

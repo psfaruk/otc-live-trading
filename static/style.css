@@ -423,6 +423,19 @@ img { max-width: 100%; display: block; }
   padding: 0 16px;
   flex-shrink: 0;
   z-index: 10;
+  /* Safety net: .topbar-left/.topbar-right never shrink (flex-shrink:0) and
+     only .mkt-badge/.regime-badge get hidden, and only below 480px. Common
+     390-428px phones (iPhone 12-15, Pixel, etc.) can still exceed the
+     available width with the hamburger + pair button + timeframe select +
+     badges all visible. #main-wrapper/html/body are all overflow:hidden,
+     so without this the overflow would silently clip content off-screen
+     (most likely the refresh button on the right) instead of scrolling. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+#topbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* NEW: Topbar depth shadow for visual separation */
@@ -468,6 +481,12 @@ img { max-width: 100%; display: block; }
   color: var(--text2);
   cursor: pointer;
   padding: 6px;
+  /* min-width/height, not just padding: this is the ONLY way to open the
+     mobile drawer nav below 768px. 20px icon + 6px padding was 32x32px,
+     under the ~44px touch-target minimum recommended for a primary nav
+     control (WCAG 2.5.5 / Apple HIG). */
+  min-width: 44px;
+  min-height: 44px;
   border-radius: 6px;
   transition: all 0.15s ease;
   align-items: center;
@@ -612,6 +631,10 @@ img { max-width: 100%; display: block; }
   color: var(--text2);
   cursor: pointer;
   padding: 6px;
+  /* 14px icon + 6px padding was 26x26px — under the ~40-44px touch-target
+     minimum, and this is the chart page's refresh control on mobile. */
+  min-width: 40px;
+  min-height: 40px;
   border-radius: 6px;
   transition: all 0.15s ease;
   display: flex;
@@ -703,63 +726,96 @@ img { max-width: 100%; display: block; }
   height: 100%;
 }
 
-/* ── 9. Chart Page Layout ───────────────────────────────────────────────────── */
+/* ── 9. Chart Page Layout — Signal Bar ─────────────────────────────────────── */
+/* Two-tier card. Row 1 (.signal-primary) is the primary focal point: the
+   call/put read as one prominent pill plus the confidence meter beside it.
+   Row 2 (.signal-detail) is secondary: the score caption plus a set of
+   transient state chips (entry timing / tick confirmation / strength gate)
+   that wrap together as a unit instead of interleaving with row 1's
+   elements — that interleaving in one flat wrapping row was the original
+   design's problem: badges, plain text, and a meter all competing on the
+   same line with no grouping, worst on narrow screens where it wrapped
+   unpredictably. */
 
-/* Signal bar — flex-shrink 0, glass card */
 #signal-bar {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
   margin: 0 8px 6px;
-  background: var(--glass);
+  background: linear-gradient(135deg, rgba(13, 17, 23, 0.92) 0%, rgba(22, 27, 34, 0.88) 100%);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border);
   border-radius: var(--r);
-  flex-wrap: wrap;
 }
 
-/* NEW: Signal bar subtle gradient overlay */
-#signal-bar {
-  background: linear-gradient(135deg, rgba(13, 17, 23, 0.9) 0%, rgba(22, 27, 34, 0.85) 100%);
+.signal-primary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 
-.signal-meta {
+.signal-confidence {
   flex: 1;
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 64px;
+}
+
+.signal-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
   min-width: 0;
 }
 
 #signal-score {
-  font-weight: 700;
-  font-size: 16px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3);
   font-variant-numeric: tabular-nums;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* display:contents (not flex) — .signal-chips is a grouping element for
+   markup/selector purposes only. Nesting a second flex-wrap container
+   inside .signal-detail's flex-wrap caused the chips to overflow instead
+   of wrapping: as a flex ITEM, .signal-chips' own preferred width was
+   computed from its children's un-shrinkable (flex-shrink:0) combined
+   width BEFORE .signal-detail decided whether to wrap it, so it never
+   actually deferred to the outer wrap. display:contents removes it from
+   the box model entirely — its children become direct flex items of
+   .signal-detail, so the whole row wraps in one single, predictable pass. */
+.signal-chips {
+  display: contents;
 }
 
 .conf-bar-wrap {
-  width: 80px;
+  flex: 1;
+  min-width: 40px;
   height: 6px;
   background: var(--bg4);
   border-radius: 3px;
   overflow: hidden;
-  flex-shrink: 0;
 }
 
 .conf-bar {
   height: 100%;
+  width: 0%;
   border-radius: 3px;
-  transition: width 0.4s ease;
+  background: var(--text3);
+  position: relative;
+  transition: width 0.6s var(--ease-out-expo), background 0.3s ease;
 }
 
-/* NEW: Conf bar smooth glow transition */
-.conf-bar {
-  transition: width 0.6s var(--ease-out-expo);
-  position: relative;
-}
+.conf-bar.call { background: var(--green); }
+.conf-bar.put  { background: var(--red); }
 
 .conf-bar::after {
   content: '';
@@ -772,6 +828,15 @@ img { max-width: 100%; display: block; }
   background: inherit;
   filter: brightness(1.4);
   opacity: 0.7;
+}
+
+#signal-conf {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Accuracy strip */
@@ -924,7 +989,15 @@ img { max-width: 100%; display: block; }
   background: var(--bg);
 }
 
-@media (max-width: 899px) {
+/* 767px, not 899, to match the sidebar/bottom-tabs mobile-nav split used
+   everywhere else (#sidebar goes permanent at min-width:768px, #bottom-tabs
+   only shows at max-width:767px). The old 899px cutoff left a 768-899px
+   dead zone where the desktop sidebar nav was already active (so the
+   mobile bottom-sheet toggle never applies) yet the panel was still
+   display:none with no way to open it — even though the 768-1023px tablet
+   rule below explicitly gives it a 190px width, implying it was always
+   meant to be visible there. */
+@media (max-width: 767px) {
   #side-panel {
     display: none;
   }
@@ -1231,7 +1304,8 @@ img { max-width: 100%; display: block; }
   color: var(--text2);
 }
 
-/* ── 13. Signal Badge (reusable) ────────────────────────────────────────────── */
+/* ── 13. Signal Badge (reusable — shared by #signal-bar and the auto-popup
+   toast) ───────────────────────────────────────────────────────────────── */
 
 .signal-badge {
   display: inline-flex;
@@ -1258,6 +1332,48 @@ img { max-width: 100%; display: block; }
 .signal-badge.neutral {
   background: rgba(139, 148, 158, 0.1);
   color: var(--text3);
+}
+
+/* #signal-bar's badge specifically (not the popup's) is the page's primary
+   focal point — bigger, with the direction and strength as two visually
+   distinct pieces instead of one run of text, and strength encoded as
+   color intensity (weak = muted outline, strong = full glow) so it reads
+   at a glance without parsing the label. */
+#signal-badge {
+  padding: 9px 16px;
+  border-radius: 14px;
+  gap: 9px;
+}
+
+.signal-dir {
+  font-weight: 800;
+  font-size: 17px;
+  letter-spacing: 0.3px;
+}
+
+.signal-strength {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.10);
+}
+
+#signal-badge.str-weak {
+  box-shadow: none;
+  border: 1px solid var(--border);
+}
+
+#signal-badge.call.str-strong {
+  box-shadow: 0 0 16px rgba(0, 230, 118, 0.4), 0 0 32px rgba(0, 230, 118, 0.15);
+  border: 1px solid rgba(0, 230, 118, 0.4);
+}
+
+#signal-badge.put.str-strong {
+  box-shadow: 0 0 16px rgba(255, 23, 68, 0.4), 0 0 32px rgba(255, 23, 68, 0.15);
+  border: 1px solid rgba(255, 23, 68, 0.4);
 }
 
 /* NEW: Signal badge pulse animation when signal changes */
@@ -1314,27 +1430,30 @@ img { max-width: 100%; display: block; }
   font-weight: 700;
 }
 
-/* ── 15. Entry Timing ───────────────────────────────────────────────────────── */
+/* ── 15. Signal-bar status chips ───────────────────────────────────────────────
+   .entry-timing / .runconf-badge / .running-conf are three independent
+   pieces of transient state (entry-quality hint, strength-gate change, tick
+   confirmation) that used to have three different visual treatments — one
+   pill, one smaller pill, and one bare italic text fragment with no
+   container at all. Unified here into one shared chip shape so the trio
+   reads as a coherent status row instead of unrelated fragments. */
 
-.entry-timing {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 12px;
-}
-
-/* ── RUNCONF badge (Method B strength gate, 2026-07-10, untested) ─────────── */
-.runconf-badge {
+.entry-timing,
+.runconf-badge,
+.running-conf {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.3px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  margin-left: 6px;
-  flex-shrink: 0;
-  white-space: nowrap;
+  padding: 3px 9px;
+  border-radius: 999px;
   border: 1px solid transparent;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+
 .runconf-badge.hidden { display: none; }
 .runconf-badge.up   { color: var(--green); background: rgba(0,230,118,0.10); border-color: rgba(0,230,118,0.28); }
 .runconf-badge.down { color: var(--red);   background: rgba(255,23,68,0.10); border-color: rgba(255,23,68,0.28); }
@@ -1359,12 +1478,13 @@ img { max-width: 100%; display: block; }
 }
 
 /* ── 16. Running Confidence ─────────────────────────────────────────────────── */
+/* Base shape now comes from the shared chip rule above (── 15 ──); this just
+   adds the confirming/opposing color states — previously unstyled, so the
+   chip showed the same muted tone regardless of which way ticks were
+   leaning. */
 
-.running-conf {
-  font-size: 11px;
-  color: var(--text3);
-  font-style: italic;
-}
+.running-conf.confirming { color: var(--green); background: rgba(0,230,118,0.10); border-color: rgba(0,230,118,0.28); }
+.running-conf.opposing   { color: var(--yellow); background: rgba(255,215,64,0.10); border-color: rgba(255,215,64,0.28); }
 
 /* ── 17. Bottom Tabs (mobile) ───────────────────────────────────────────────── */
 
@@ -2059,6 +2179,13 @@ img { max-width: 100%; display: block; }
 
 /* ── 39. Responsive Adjustments ─────────────────────────────────────────────── */
 
+/* Hidden by default (desktop) — the mobile FAB that opens/closes the Deep
+   Analysis bottom sheet. Only shown inside the max-width:767px block below;
+   desktop keeps using the in-panel #side-panel-toggle instead. */
+#side-panel-toggle-mobile {
+  display: none;
+}
+
 /* Mobile (< 768px): bottom tabs take over, side panel becomes a bottom sheet,
    chart stacks vertically, page-scroll gets bottom padding for the tab bar. */
 @media (max-width: 767px) {
@@ -2077,6 +2204,17 @@ img { max-width: 100%; display: block; }
     margin: 0 4px 4px;
     padding: 8px 10px;
     gap: 8px;
+  }
+
+  /* Score caption takes its own full-width line on mobile, so the status
+     chips after it get the ENTIRE row width to wrap within instead of
+     whatever's left over after the score text — narrow phones can have as
+     many as 3 chips visible at once (strength-gate change + entry timing +
+     tick confirmation), and sharing a line with the score caption left too
+     little room, causing the last chip to sit right at the edge instead of
+     wrapping cleanly. */
+  #signal-score {
+    flex-basis: 100%;
   }
 
   /* Accuracy strip tighter */
@@ -2121,8 +2259,14 @@ img { max-width: 100%; display: block; }
   }
 
   /* Side panel: bottom sheet on mobile. Hidden by default (translated down).
-     When .active is added (via #side-panel-toggle), it slides up. */
+     When .active is added (via #side-panel-toggle), it slides up.
+     display MUST be reset here — the 899px breakpoint above sets
+     `display: none` on #side-panel, and since both media conditions are
+     true simultaneously at <=767px, that display:none otherwise wins the
+     cascade and the entire bottom-sheet panel (with it) never renders,
+     no matter what transform/position is set below. */
   #side-panel {
+    display: block;
     position: fixed;
     left: 0;
     right: 0;
@@ -2148,11 +2292,53 @@ img { max-width: 100%; display: block; }
     transform: translateY(calc(100% + var(--bottomtab-h)));
   }
 
-  /* Side-panel toggle button: floats at top-right of the bottom sheet. */
+  /* Side-panel toggle button: floats at top-right of the bottom sheet.
+     Only reachable while the sheet is already open (.active) — it can't be
+     what OPENS the sheet, since it's a child of #side-panel and gets
+     dragged off-screen right along with it while closed. That's what
+     #side-panel-toggle-mobile below is for. */
   #side-panel-toggle {
     top: 8px;
     right: 8px;
     left: auto;
+  }
+
+  /* Floating action button — the actual mobile open/close trigger. Lives
+     outside #side-panel in the DOM (see index.html) so it's never affected
+     by the panel's own show/hide transform. */
+  #side-panel-toggle-mobile {
+    display: flex;
+    position: fixed;
+    right: 14px;
+    bottom: calc(var(--bottomtab-h) + 14px);
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    align-items: center;
+    justify-content: center;
+    background: var(--blue);
+    color: #fff;
+    border: none;
+    box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.35));
+    z-index: 41;
+    cursor: pointer;
+    transition: transform var(--duration-fast) ease,
+                background var(--duration-fast) ease;
+  }
+
+  #side-panel-toggle-mobile:active {
+    transform: scale(0.92);
+  }
+
+  /* When the sheet is open, swap to a neutral color and rotate the icon
+     180° so it reads as "close" instead of "open". */
+  #side-panel-toggle-mobile.open {
+    background: var(--bg3);
+    color: var(--text2);
+  }
+
+  #side-panel-toggle-mobile.open svg {
+    transform: rotate(180deg);
   }
 
   /* Chart page stacks: chart on top (min height so it's usable), side panel
@@ -2181,7 +2367,7 @@ img { max-width: 100%; display: block; }
   }
 }
 
-/* Very small mobile (≤ 380px): collapse signal bar to vertical stack. */
+/* Very small mobile (<= 380px): collapse signal bar to vertical stack. */
 @media (max-width: 380px) {
   .topbar-btn {
     padding: 5px 8px;
@@ -2193,17 +2379,23 @@ img { max-width: 100%; display: block; }
     font-size: 11px;
   }
 
-  #signal-bar {
-    flex-direction: column;
-    align-items: flex-start;
+  /* .signal-primary (badge + confidence meter) stays a row down to phone
+     widths — it's only two elements and reads better side-by-side than
+     stacked. If the badge's strength chip ever makes it too tight on the
+     narrowest phones, the meter's min-width:40px (── 9 ──) lets it compress
+     rather than force a wrap. */
+  .signal-dir {
+    font-size: 15px;
   }
+}
 
-  .signal-meta {
-    flex-wrap: wrap;
-  }
-
-  /* Hide the regime/mkt badge on very narrow screens — pair + timeframe +
-     ticker already fill the topbar. */
+/* Hide the regime/mkt badge below 480px (was 380px) — pair + timeframe +
+   ticker + hamburger already crowd the topbar on the common 390-428px
+   phone widths (iPhone 12-15, Pixel, etc.), which sat between the old
+   380px cutoff and the 767px mobile-nav breakpoint with nothing shedding
+   width. #topbar's own overflow-x:auto (above) is the safety net if it
+   still doesn't fit at some width; this cuts how often that's needed. */
+@media (max-width: 480px) {
   .mkt-badge,
   .regime-badge {
     display: none;
@@ -2247,16 +2439,6 @@ img { max-width: 100%; display: block; }
   .page-scroll {
     padding: 20px 24px;
     max-width: 1200px;
-  }
-}
-
-/* History page table responsive — hide "Why" column under 640px (also
-   covered by the broader < 768px rule above, but this catches tablet
-   portrait sizes if the layout shifts). */
-@media (max-width: 640px) {
-  #history-table th:nth-child(6),
-  #history-table td:nth-child(6) {
-    display: none;
   }
 }
 
@@ -3051,16 +3233,23 @@ img { max-width: 100%; display: block; }
   min-width: 0;
 }
 
-/* Generic history-btn style — used by the Refresh button on the history page
-   and the Close button on the signal popup. */
+/* Generic history-btn style — used by the Refresh button on the History/Home
+   pages, Connect/Clear on Settings, and Close on the signal popup. */
 .history-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--text2);
-  padding: 6px 12px;
+  padding: 8px 14px;
+  /* 12px font + 6px padding was ~30px tall — under the ~40px touch-target
+     minimum. min-height (not just padding) keeps it consistent regardless
+     of font-metric rounding, including the Settings page's Connect/Clear
+     buttons, which go full-width on mobile (max-width:640px below) but
+     previously stayed the same ~30px height there too. */
+  min-height: 40px;
   border-radius: 8px;
   font-size: 12px;
   font-weight: 600;
@@ -3400,7 +3589,14 @@ input:focus-visible {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  overflow: hidden;
+  /* overflow-x:auto (not plain `hidden`) — on a narrow viewport the table's
+     remaining columns (Pair/Type/Buyer/Seller/Signal after Time/Prediction
+     Candle are hidden below 640px) can still not fit a ~360px screen.
+     `hidden` on both axes silently clipped that content instead of letting
+     it scroll; overflow-y stays hidden so the rounded corners still clip
+     correctly, only the horizontal axis gains a scrollbar when needed. */
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .share-signal-table {

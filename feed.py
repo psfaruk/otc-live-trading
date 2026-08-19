@@ -115,6 +115,20 @@ _WANTED_PAIRS = {
 # filter the live Quotex instrument list (kept as a set for O(1) lookup).
 _FOREX_BASES = set(_WANTED_PAIRS.keys())
 
+# The only (asset, period) combinations /api/subscribe is allowed to create a
+# brand-new stream for. Without this, POST /api/subscribe (public, unauth'd
+# per server.py) accepts ANY asset string and ANY period: an unknown asset
+# skips the payout-lock check entirely (it only runs `if pair and ...`) and
+# consumes a slot out of the hard _max_streams cap on pure garbage, while
+# period=0 reaches the boundary-flooring math as a division by zero, which
+# the stream loop's blanket except/sleep(2)/retry turns into a permanent,
+# CPU-burning crash loop for that one stream.
+_VALID_ASSETS = frozenset(
+    base + ("_otc" if variant == "otc" else "")
+    for base, variant in _WANTED_PAIRS.items()
+)
+_VALID_PERIODS = frozenset({30, 60, 300, 900})  # matches static/index.html's tf-select
+
 # Fallback pair list (shown while Quotex instruments load) — built from the
 # same whitelist so the dropdown matches what _load_pairs serves once
 # connected. Status is the variant the user wants ("otc"/"real"); Quotex
@@ -336,6 +350,24 @@ class QuotexFeed:
         self._muted_theories: dict[str, str] = {}
         self._last_perf_refresh: float = 0.0
 
+        # get_share_signals() computes all 16 pairs (one DB round-trip each)
+        # and is hit by the Share Signal tab's 10s poll from every visitor
+        # PLUS every /api/v1/signals* call, including single-asset lookups
+        # that only needed one of the 16 rows. Values only actually change
+        # once per candle close (60s) per pair, so a short TTL cache
+        # collapses concurrent/rapid callers onto one computation instead of
+        # each paying the full 16x DB-connection cost.
+        self._share_signals_cache: tuple[float, list[dict]] | None = None
+        self._SHARE_SIGNALS_TTL: float = 2.0
+
+        # Strong references for fire-and-forget background tasks (client
+        # teardown on token swap, per-stream rearm on stale-client rebuild).
+        # asyncio only holds a WEAK reference to a task via create_task — with
+        # nothing else referencing it, the task can be garbage-collected
+        # mid-execution before its cleanup/re-subscribe logic finishes. See
+        # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+        self._bg_tasks: set[asyncio.Task] = set()
+
         # DB row-count housekeeping. Was startup-only for a long time (see
         # run()'s initial _db.cleanup() call) — this service can stay up for
         # weeks without a redeploy, so unbounded growth between restarts
@@ -361,6 +393,15 @@ class QuotexFeed:
         # explicit "try again" signal from the operator.
         self._login_failed_permanently: bool = False
         self._login_fail_reason: str = ""
+
+    def _spawn(self, coro) -> asyncio.Task:
+        """Fire-and-forget a coroutine while keeping a strong reference to
+        the resulting Task, so it can't be garbage-collected mid-execution
+        (see self._bg_tasks docstring in __init__)."""
+        task = asyncio.get_event_loop().create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -405,8 +446,7 @@ class QuotexFeed:
             self._client = None
             if old_client:
                 try:
-                    loop = asyncio.get_event_loop()
-                    loop.create_task(self._close_client(old_client))
+                    self._spawn(self._close_client(old_client))
                 except RuntimeError:
                     pass  # no event loop yet — will be cleaned up on next connect
 
@@ -574,6 +614,11 @@ class QuotexFeed:
         Pairs with no stream or no closed candle yet return a row with
         signal=None so the table always shows all 16 rows.
         """
+        if self._share_signals_cache is not None:
+            ts, cached_rows = self._share_signals_cache
+            if time.time() - ts < self._SHARE_SIGNALS_TTL:
+                return cached_rows
+
         rows = []
         # Build a quick lookup of asset → Quotex-supplied display name (so the
         # share table matches the rest of the app, not the reconstructed
@@ -632,6 +677,7 @@ class QuotexFeed:
                     except Exception:
                         pass
             rows.append(row)
+        self._share_signals_cache = (time.time(), rows)
         return rows
 
 
@@ -643,6 +689,10 @@ class QuotexFeed:
         An already-running stream is NEVER rejected or torn down here — those
         guards only gate the creation of a brand-new stream.
         """
+        if asset not in _VALID_ASSETS or period not in _VALID_PERIODS:
+            return {"ok": False, "status": "invalid",
+                    "reason": f"Unknown asset/period {asset}@{period}s"}
+
         key = (asset, period)
         stream = self._streams.get(key)
         if stream is not None:
@@ -718,9 +768,18 @@ class QuotexFeed:
         }
 
     async def shutdown(self) -> None:
-        for s in list(self._streams.values()):
-            if s.task:
-                s.task.cancel()
+        tasks = [s.task for s in self._streams.values() if s.task]
+        for t in tasks:
+            t.cancel()
+        # Await cancellation so each stream's finally block (broker
+        # unsubscribe, see stop_candles_stream) actually runs before the
+        # process exits. Without this, cancel() only requests cancellation —
+        # the caller (server.py's lifespan) only awaited the manager loop
+        # task, not individual stream tasks, so on every Railway redeploy
+        # these unsubscribes raced process exit and often never ran, leaving
+        # subscriptions to expire on the broker's own timeout instead.
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     # ── Connection (shared across all streams) ──────────────────────────────
 
@@ -1656,11 +1715,24 @@ class QuotexFeed:
         """Sleep until next tick poll, but wake up early at candle boundary.
         Uses the broker's server timestamp (not the local clock) so the
         sleep aligns exactly with the broker's candle period rollover —
-        no ms drift from local NTP skew."""
+        no ms drift from local NTP skew.
+
+        Poll rate is scaled by how far we are from the boundary: fine-grained
+        (10-50ms) only in the last ~2s where exact boundary timing matters,
+        coarser (150-350ms) otherwise. Every always-on stream (16-45 of them)
+        runs this loop for its entire life, so polling at a flat 20-100Hz
+        regardless of proximity to close was pure wasted CPU/broadcast churn
+        for the ~98% of each candle's life spent far from the boundary.
+        """
         if stream.candle_open_time > 0:
             close_at     = stream.candle_open_time + stream.period
             until_close  = close_at - self._broker_time()
-            sleep_dur    = max(0.01, min(0.05, until_close))
+            if until_close > 2.0:
+                sleep_dur = 0.35
+            elif until_close > 0.5:
+                sleep_dur = 0.15
+            else:
+                sleep_dur = max(0.01, min(0.05, until_close))
         else:
             sleep_dur = 0.05
         await asyncio.sleep(sleep_dur)
@@ -1845,37 +1917,49 @@ class QuotexFeed:
                 stream.last_tick_ts = float(new_ticks[-1]["time"])
                 stream.last_real_tick_wall = time.time()   # feed is alive
 
-                # ── Find if any tick crossed a candle boundary ────────────────
-                boundary_idx = None
+                # ── Find every tick that crossed a candle boundary ─────────────
+                # Walk ALL crossings in this batch, not just the first. A
+                # single _smart_sleep gap only ever spans one boundary, but
+                # after a stall/rearm (90s per-stream stale re-arm, or the
+                # global stale-client rebuild) a batch can span two or more
+                # closed periods — treating only the first crossing folds
+                # every candle after it into the next one's OHLC, silently
+                # dropping it from stream.candles/DB/grading entirely.
+                boundaries: list[tuple[int, float]] = []
+                _last_open = stream.candle_open_time
                 for i, t in enumerate(new_ticks):
                     t_open = _floor_to_period(float(t["time"]), stream.period)
-                    if stream.candle_open_time > 0 and t_open != stream.candle_open_time:
-                        boundary_idx = i
-                        break
+                    if _last_open > 0 and t_open != _last_open:
+                        boundaries.append((i, t_open))
+                        _last_open = t_open
+                boundary_idx = boundaries[0][0] if boundaries else None
 
                 if boundary_idx is not None:
                     # ── TICK-BASED CANDLE CLOSE ───────────────────────────────
                     # A tick crossed the period boundary — use its price as open.
                     # (Timer-close may have already fired; skip if so.)
-                    boundary_tick = new_ticks[boundary_idx]
-                    tick_new_open = _floor_to_period(
-                        float(boundary_tick["time"]), stream.period)
+                    tick_new_open = boundaries[0][1]
 
                     if tick_new_open > stream.candle_open_time:
-                        # Timer hasn't fired yet — do a tick-based close.
-                        # boundary_tick is a REAL first tick → open_is_real=True.
-                        for t in new_ticks[:boundary_idx]:
-                            stream.ticks.append(float(t["price"]))
+                        # Timer hasn't fired yet — do a tick-based close, once
+                        # per boundary crossed in this batch (normally exactly
+                        # one; only >1 after a stall recovery — see above).
+                        seg_start = 0
+                        accuracy = None
+                        for idx, new_open in boundaries:
+                            for t in new_ticks[seg_start:idx]:
+                                stream.ticks.append(float(t["price"]))
 
-                        first_px = float(boundary_tick["price"])
-                        print(f"[feed] tick-close  {stream.asset}@{stream.period}s "
-                              f"{stream.candle_open_time} -> {tick_new_open}  "
-                              f"(ticks: {len(stream.ticks)})")
+                            first_px = float(new_ticks[idx]["price"])
+                            print(f"[feed] tick-close  {stream.asset}@{stream.period}s "
+                                  f"{stream.candle_open_time} -> {new_open}  "
+                                  f"(ticks: {len(stream.ticks)})")
 
-                        accuracy = self._close_running_and_start_new(
-                            stream, tick_new_open, first_px, open_is_real=True)
+                            accuracy = self._close_running_and_start_new(
+                                stream, new_open, first_px, open_is_real=True)
+                            seg_start = idx + 1
 
-                        for t in new_ticks[boundary_idx + 1:]:
+                        for t in new_ticks[seg_start:]:
                             stream.ticks.append(float(t["price"]))
 
                         new_running = self._running_candle(stream)
@@ -1904,8 +1988,11 @@ class QuotexFeed:
                                 "type":          "signal_start",
                                 "asset":         stream.asset,
                                 "period":        stream.period,
-                                "candle_open_time": tick_new_open,
-                                "candle_expires_at": tick_new_open + stream.period,
+                                # Use the FINAL boundary's open time (the candle
+                                # that's actually now running), not the first —
+                                # matters when this batch closed more than one.
+                                "candle_open_time": stream.candle_open_time,
+                                "candle_expires_at": stream.candle_open_time + stream.period,
                                 "signal":        stream.prediction["signal"],
                                 "strength":      stream.prediction.get("strength"),
                                 "confidence":    stream.prediction.get("confidence"),
@@ -2331,7 +2418,7 @@ class QuotexFeed:
                     # re-issued, staggered like any other stream start.
                     for stream in list(self._streams.values()):
                         stream.sub_started = False
-                        asyncio.create_task(self._rearm_stream(stream))
+                        self._spawn(self._rearm_stream(stream))
 
                     # Pre-warm every payout-eligible forex pair's 1m stream —
                     # runs AFTER the rearm loop above so freshly-created
