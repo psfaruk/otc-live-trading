@@ -116,8 +116,8 @@ def _wick_walls(candles: list[dict], lookback: int = 20
         if tw >= 2.5:
             out.append((sum(p * wt for p, wt in zip(grp_p, grp_w)) / tw, tw))
         return out
-    low_tips = [(c["low"], 1.0 - i / n) for i, c in enumerate(recent)]
-    high_tips = [(c["high"], 1.0 - i / n) for i, c in enumerate(recent)]
+    low_tips = [(c["low"], 1.0 - (n - 1 - i) / n) for i, c in enumerate(recent)]
+    high_tips = [(c["high"], 1.0 - (n - 1 - i) / n) for i, c in enumerate(recent)]
     return _cluster(low_tips), _cluster(high_tips), avg_rng
 
 
@@ -305,12 +305,23 @@ def _market_state(candles: list[dict], regime: str, zone: str,
     cur = candles[-1]
     a = candle_anatomy(cur)
     trend_dir = +1 if regime == "UPTREND" else -1 if regime == "DOWNTREND" else 0
-    cand_dir = +1 if a["is_bull"] else -1
+    # FIX: treat doji (close == open) as non-directional so EXHAUSTION
+    # doesn't fire wrongly for a streak of dojis.
+    if a["brr"] < 0.05:
+        cand_dir = 0
+    else:
+        cand_dir = +1 if a["is_bull"] else -1
 
     # streak
+    # FIX: iterate down to index 0 (was 0 exclusive — off-by-one that
+    # suppressed EXHAUSTION for exactly-4 streaks).
     streak = 0
-    for i in range(len(candles) - 1, 0, -1):
-        if (candles[i]["close"] >= candles[i]["open"]) == a["is_bull"]:
+    for i in range(len(candles) - 1, -1, -1):
+        if a["brr"] < 0.05:
+            # doji doesn't extend a directional streak
+            break
+        same_color = (candles[i]["close"] >= candles[i]["open"]) == a["is_bull"]
+        if same_color:
             streak += 1
         else:
             break
@@ -420,8 +431,10 @@ def run_strategy(candles: list[dict],
     regime, zone = _market_regime(candles)
 
     # Per-pair ATR floor — dampen signal if candle range is too small.
+    # FIX: cap multiplier at 1.0 so it ONLY dampens weak signals,
+    # never amplifies strong ones 20x for volatile pairs.
     cur_atr_pct = atr / cur["close"] if cur["close"] else 0
-    atr_floor_mult = max(0.3, cur_atr_pct / max(profile.min_atr_pct, 1e-9))
+    atr_floor_mult = min(1.0, max(0.3, cur_atr_pct / max(profile.min_atr_pct, 1e-9)))
 
     # Hour-based session quality (UTC)
     hour_utc = time.gmtime().tm_hour
@@ -475,14 +488,22 @@ def run_strategy(candles: list[dict],
         w *= sess_q
         # ATR floor
         w *= atr_floor_mult
-        # Convert strength (0..1) to integer vote magnitude (1..4)
-        mag = max(1, round(sig.strength * 4))
+        # Convert strength (0..1) to integer vote magnitude (1..4).
+        # FIX: don't floor mag=1 for marginal matches (strength near 0).
+        # The old `max(1, round(s*4))` cast 0-strength matches as full +1 votes,
+        # defeating the strength gating entirely.
+        mag = round(sig.strength * 4)
+        if mag <= 0:
+            continue
         mag = int(mag * w)
         if mag == 0:
             continue
         score += sig.direction * mag
         if sig.direction != 0:
-            indep_dirs.append((sig.name, sig.direction))
+            # FIX: include magnitude in indep_dirs so agree_weight reflects
+            # conviction (was direction-only, making agree_weight == agree,
+            # making the STRONG gate unreachable).
+            indep_dirs.append((sig.name, sig.direction, mag))
         reasons.append(
             f"{sig.name}  {sig.reason} -> "
             f"{'CALL' if sig.direction > 0 else 'PUT' if sig.direction < 0 else 'NEUTRAL'}"
@@ -495,11 +516,36 @@ def run_strategy(candles: list[dict],
             abs_w = profile.strategy_weights.get("ABSORPTION", 1.0) * sess_q
             abs_mag = max(1, round(0.7 * 4 * abs_w))
             score += abs_dir * abs_mag
-            indep_dirs.append(("ABSORPTION", abs_dir))
+            indep_dirs.append(("ABSORPTION", abs_dir, abs_mag))
             reasons.append(
                 f"ABSORPTION  {abs_reason} -> "
                 f"{'CALL' if abs_dir > 0 else 'PUT'} (x{abs_mag})")
             patterns_fired.append("ABSORPTION")
+
+    # LIVE running-tick vote — uses the CURRENTLY OPEN candle's ticks
+    # (separate from `ticks` which are the JUST-CLOSED candle's ticks).
+    # Without this block the running_ticks parameter was accepted but
+    # never used, making the feed's mid-candle re-eval a complete no-op.
+    if running_ticks and len(running_ticks) >= 15:
+        # Build a synthetic "running candle" from the running ticks so
+        # _absorption sees the right close_pos / anatomy. The just-closed
+        # `cur` candle is NOT what the running ticks describe.
+        _r_open  = running_ticks[0]
+        _r_close = running_ticks[-1]
+        _r_hi    = max(running_ticks)
+        _r_lo    = min(running_ticks)
+        _running_candle = {"open": _r_open, "high": _r_hi,
+                           "low": _r_lo, "close": _r_close, "time": cur["time"]}
+        live_dir, live_reason = _absorption(_running_candle, running_ticks)
+        if live_dir:
+            live_w = profile.strategy_weights.get("LIVE", 1.0) * sess_q
+            live_mag = max(1, round(0.7 * 4 * live_w))
+            score += live_dir * live_mag
+            indep_dirs.append(("LIVE", live_dir, live_mag))
+            reasons.append(
+                f"LIVE  {live_reason} on running candle -> "
+                f"{'CALL' if live_dir > 0 else 'PUT'} (x{live_mag})")
+            patterns_fired.append("LIVE")
 
     # Market-state deep analysis (main predictor)
     ms = _market_state(candles, regime, zone, klevels, atr, ticks)
@@ -510,7 +556,7 @@ def run_strategy(candles: list[dict],
         ms_mag = int(ms_mag * ms_w)
         if ms_mag > 0:
             score += ms_dir * ms_mag
-            indep_dirs.append(("MARKET_STATE", ms_dir))
+            indep_dirs.append(("MARKET_STATE", ms_dir, ms_mag))
             reasons.append(
                 f"MARKET_STATE  {ms['state']} (bias {ms['bias']}, "
                 f"conviction {ms['conviction']}%) -> {ms['bias']} (x{ms_mag})")
@@ -523,25 +569,31 @@ def run_strategy(candles: list[dict],
         score += (1 if score > 0 else -1) * int(conf_bonus)
         reasons.append(f"CONFLUENCE  +{int(conf_bonus)} ({conf_desc})")
 
-    # Information weight dampeners (low ticks, tiny range, dead session)
+    # Information weight dampeners (low ticks, tiny range, dead session).
+    # FIX: scale dampener by min(1, |score|) so a |score|=1 weak signal
+    # is dampened by 0 (not 1) — otherwise a tiny dampener flips the
+    # signal to score=0, which then hits the last-candle-color tiebreak
+    # and can FLIP direction.
     weak_caps: list[str] = []
     if ticks is not None and len(ticks) < 15:
-        d = max(1, int(abs(score) * 0.30))
-        score += -d if score > 0 else d
-        weak_caps.append(f"(low ticks) only {len(ticks)} ticks -> -{d} dampen")
+        d = int(abs(score) * 0.30)  # may be 0 for |score|<=3
+        if d > 0:
+            score += -d if score > 0 else d
+            weak_caps.append(f"(low ticks) only {len(ticks)} ticks -> -{d} dampen")
 
     if atr > 0 and a["range"] < atr * 0.30:
-        d = max(1, int(abs(score) * 0.25))
-        score += -d if score > 0 else d
-        weak_caps.append(
-            f"(tiny range) range {a['range']/atr:.0%} of ATR -> -{d} dampen")
+        d = int(abs(score) * 0.25)
+        if d > 0:
+            score += -d if score > 0 else d
+            weak_caps.append(
+                f"(tiny range) range {a['range']/atr:.0%} of ATR -> -{d} dampen")
 
     if sess_q < 0.6:
         weak_caps.append(
             f"(low-liquidity session) UTC {hour_utc:02d}h -> strength dampened")
 
     # ── Final signal decision ─────────────────────────────────────────────
-    indep_net = sum(d for _, d in indep_dirs)
+    indep_net = sum(d for _, d, _ in indep_dirs)
     signal = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
 
     # Tiebreak for NEUTRAL: every candle emits a CALL/PUT
@@ -556,7 +608,14 @@ def run_strategy(candles: list[dict],
                 f"TIEBREAK: regime={regime} without confirmation -> "
                 f"{signal} (trend-only, WEAK)")
         else:
-            signal = "CALL" if a["is_bull"] else "PUT"
+            # FIX: doji (close == open) should be treated as neutral.
+            # Previously `a["is_bull"]` defaulted doji to CALL, biasing
+            # every doji tiebreak toward CALL.
+            if a["brr"] < 0.05:
+                # doji — pick by close_pos (close > midpoint -> CALL else PUT)
+                signal = "CALL" if a["close_pos"] >= 0.5 else "PUT"
+            else:
+                signal = "CALL" if a["is_bull"] else "PUT"
             weak_caps.append(
                 f"TIEBREAK: no edge -> fallback to last-candle color "
                 f"({'bull' if a['is_bull'] else 'bear'}) -> {signal} (WEAK)")
@@ -567,11 +626,11 @@ def run_strategy(candles: list[dict],
     MAX_SCORE = 12
     confidence = round(min(abs(score) / MAX_SCORE, 1.0), 2)
 
-    # Agreement count
+    # Agreement count — uses the magnitude (third element of the tuple)
+    # so agree_weight reflects conviction, not just distinct-theory count.
     _net_votes: dict[str, int] = {}
-    # parse reasons for vote lines — the pattern names are the theory codes
-    for name, d in indep_dirs:
-        _net_votes[name] = _net_votes.get(name, 0) + d
+    for name, d, mag in indep_dirs:
+        _net_votes[name] = _net_votes.get(name, 0) + d * mag
     want = 1 if signal == "CALL" else -1
     agree = sum(1 for nv in _net_votes.values() if nv * want > 0)
     agree_weight = sum(abs(nv) for nv in _net_votes.values() if nv * want > 0)

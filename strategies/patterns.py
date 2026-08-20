@@ -31,7 +31,8 @@ def candle_anatomy(c: dict) -> dict:
     to 1e-9 so callers never divide by zero.
     """
     o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
-    rng = (h - l) or 1e-9
+    # Use max() instead of `or` to also catch negative (corrupted) ranges.
+    rng = max(h - l, 1e-9)
     body = abs(cl - o)
     upper = h - max(o, cl)
     lower = min(o, cl) - l
@@ -44,7 +45,10 @@ def candle_anatomy(c: dict) -> dict:
         "brr": body / rng,                    # body-to-range ratio
         "upper_ratio": upper / rng,            # upper wick share of range
         "lower_ratio": lower / rng,            # lower wick share of range
-        "is_bull": cl >= o,
+        # Doji (cl == o) must be NEUTRAL, not bull. Otherwise every bearish
+        # reversal pattern (engulfing, dark_cloud_cover, evening_star, ...)
+        # accepts a doji as the prior "green" candle and over-fires.
+        "is_bull": cl > o,
         "close_pos": (cl - l) / rng,          # 0 = closed at low, 1 = at high
         "open_pos":  (o - l) / rng,
     }
@@ -75,19 +79,22 @@ def _no() -> Signal:
 def hammer(c: dict) -> Signal:
     """Hammer — bullish reversal.
 
-    Anatomy: body <= 25% of range near the top; lower wick >= 2x body;
-    little/no upper wick; close in top 25% of range.
+    Anatomy: body <= 25% of range near the top; lower wick >= 50% of range
+    (the textbook "2x body" guard breaks for tiny/doji bodies, so the test
+    is switched to a range-relative threshold); little/no upper wick;
+    close in top 30% of range.
     Win rate (research): ~60–65% at support, ~50% standalone.
     """
     a = candle_anatomy(c)
-    if a["body"] == 0:
-        return _no()
-    if (a["brr"] <= 0.25 and a["lower"] >= 2 * a["body"]
+    # Don't reject doji outright — a perfect dragonfly (body=0) is still a
+    # hammer-shaped candle. Use range-relative wick test instead of `2*body`.
+    if (a["brr"] <= 0.25 and a["lower_ratio"] >= 0.50
             and a["upper_ratio"] <= 0.10 and a["close_pos"] >= 0.70):
-        s = 0.55 + min(0.20, a["lower"] / (4 * a["body"]) * 0.20)
+        # Scale strength by lower-wick share of range (robust to body=0).
+        s = 0.55 + min(0.20, max(0.0, a["lower_ratio"] - 0.50) * 0.40)
         return _ok("HAMMER", +1, min(0.75, s),
                    f"HAMMER: body {a['brr']:.0%} of range, lower wick "
-                   f"{a['lower']/a['body']:.1f}x body -> CALL reversal")
+                   f"{a['lower_ratio']:.0%} of range -> CALL reversal")
     return _no()
 
 
@@ -95,14 +102,16 @@ def hanging_man(c: dict) -> Signal:
     """Hanging Man — bearish reversal (hammer shape after an uptrend).
 
     Context (uptrend) is checked by the caller via confluence; this fn
-    only validates anatomy.
+    only validates anatomy. Mirror of hammer — uses the SAME range-relative
+    wick threshold and the SAME strength scaling so the caller's
+    "pick strongest signal" resolution is balanced (otherwise hammer-shape
+    candles in an uptrend always win as CALL).
     """
     a = candle_anatomy(c)
-    if a["body"] == 0:
-        return _no()
-    if (a["brr"] <= 0.25 and a["lower"] >= 2 * a["body"]
+    if (a["brr"] <= 0.25 and a["lower_ratio"] >= 0.50
             and a["upper_ratio"] <= 0.10 and a["close_pos"] >= 0.70):
-        return _ok("HANGING_MAN", -1, 0.55,
+        s = 0.55 + min(0.20, max(0.0, a["lower_ratio"] - 0.50) * 0.40)
+        return _ok("HANGING_MAN", -1, min(0.75, s),
                    f"HANGING_MAN: hammer-shaped candle at top of up-move "
                    f"-> PUT reversal (needs uptrend context)")
     return _no()
@@ -111,34 +120,35 @@ def hanging_man(c: dict) -> Signal:
 def shooting_star(c: dict) -> Signal:
     """Shooting Star — bearish reversal.
 
-    Body <= 25% of range near the bottom; upper wick >= 2x body;
-    little/no lower wick; close in bottom 25% of range.
+    Body <= 25% of range near the bottom; upper wick >= 50% of range
+    (range-relative, robust to tiny/doji bodies); little/no lower wick;
+    close in bottom 30% of range.
     Win rate (research): ~57%.
     """
     a = candle_anatomy(c)
-    if a["body"] == 0:
-        return _no()
-    if (a["brr"] <= 0.25 and a["upper"] >= 2 * a["body"]
+    if (a["brr"] <= 0.25 and a["upper_ratio"] >= 0.50
             and a["lower_ratio"] <= 0.10 and a["close_pos"] <= 0.30):
-        s = 0.55 + min(0.20, a["upper"] / (4 * a["body"]) * 0.20)
+        s = 0.55 + min(0.20, max(0.0, a["upper_ratio"] - 0.50) * 0.40)
         return _ok("SHOOTING_STAR", -1, min(0.75, s),
                    f"SHOOTING_STAR: body {a['brr']:.0%}, upper wick "
-                   f"{a['upper']/a['body']:.1f}x body -> PUT reversal")
+                   f"{a['upper_ratio']:.0%} of range -> PUT reversal")
     return _no()
 
 
 def inverted_hammer(c: dict) -> Signal:
     """Inverted Hammer — bullish reversal (after downtrend).
 
-    Body <= 25% near low; upper wick >= 2x body; little/no lower wick.
+    Body <= 25% near low; upper wick >= 50% of range (range-relative,
+    robust to tiny/doji bodies); little/no lower wick.
     Win rate: ~53–65% in confirmed downtrend.
     """
     a = candle_anatomy(c)
-    if a["body"] == 0:
-        return _no()
-    if (a["brr"] <= 0.25 and a["upper"] >= 2 * a["body"]
+    if (a["brr"] <= 0.25 and a["upper_ratio"] >= 0.50
             and a["lower_ratio"] <= 0.10 and a["close_pos"] <= 0.30):
-        return _ok("INVERTED_HAMMER", +1, 0.50,
+        # Mirror shooting_star's scaling so the caller's strongest-signal
+        # resolution is balanced (otherwise shooting-star shapes always win).
+        s = 0.55 + min(0.20, max(0.0, a["upper_ratio"] - 0.50) * 0.40)
+        return _ok("INVERTED_HAMMER", +1, min(0.75, s),
                    "INVERTED_HAMMER: upper wick rejection at downtrend bottom "
                    "-> CALL reversal (needs downtrend context)")
     return _no()
@@ -147,13 +157,13 @@ def inverted_hammer(c: dict) -> Signal:
 def dragonfly_doji(c: dict) -> Signal:
     """Dragonfly Doji — bullish reversal.
 
-    Body <= 10% of range, open≈close at top 10%, long lower wick >= 2x body,
-    no upper wick. Win rate: ~55–60%.
+    Body <= 10% of range (open≈close at top 10%), long lower wick >= 50%
+    of range, no upper wick. Win rate: ~55–60%.
     """
     a = candle_anatomy(c)
-    if a["body"] == 0:
-        return _no()
-    if (a["brr"] <= 0.10 and a["lower"] >= 2 * a["body"]
+    # Use range-relative wick threshold so a textbook dragonfly (body=0)
+    # is RECOGNIZED rather than rejected by `2*body` degenerating to 0.
+    if (a["brr"] <= 0.10 and a["lower_ratio"] >= 0.50
             and a["upper_ratio"] <= 0.05 and a["close_pos"] >= 0.90):
         return _ok("DRAGONFLY_DOJI", +1, 0.58,
                    "DRAGONFLY_DOJI: T-shape at bottom -> CALL reversal")
@@ -163,13 +173,12 @@ def dragonfly_doji(c: dict) -> Signal:
 def gravestone_doji(c: dict) -> Signal:
     """Gravestone Doji — bearish reversal.
 
-    Body <= 10%, open≈close at bottom, long upper wick, no lower wick.
-    Win rate: ~55–60%.
+    Body <= 10%, open≈close at bottom, long upper wick >= 50% of range,
+    no lower wick. Win rate: ~55–60%.
     """
     a = candle_anatomy(c)
-    if a["body"] == 0:
-        return _no()
-    if (a["brr"] <= 0.10 and a["upper"] >= 2 * a["body"]
+    # Range-relative wick threshold — see dragonfly_doji comment.
+    if (a["brr"] <= 0.10 and a["upper_ratio"] >= 0.50
             and a["lower_ratio"] <= 0.05 and a["close_pos"] <= 0.10):
         return _ok("GRAVESTONE_DOJI", -1, 0.58,
                    "GRAVESTONE_DOJI: inverted T at top -> PUT reversal")
@@ -187,11 +196,21 @@ def doji(c: dict) -> Signal:
         # subtype
         if a["upper_ratio"] <= 0.05 and a["lower_ratio"] <= 0.05:
             sub = "FOUR_PRICE_DOJI"
-        elif a["lower"] >= 2 * a["body"] and a["upper_ratio"] <= 0.05:
-            return dragonfly_doji(c)
-        elif a["upper"] >= 2 * a["body"] and a["lower_ratio"] <= 0.05:
-            return gravestone_doji(c)
-        elif a["upper"] >= 2 * a["body"] and a["lower"] >= 2 * a["body"]:
+        elif a["lower_ratio"] >= 0.50 and a["upper_ratio"] <= 0.05:
+            # Only return the dragonfly if it actually matched; otherwise
+            # fall through to the default DOJI subtype so a near-dragonfly
+            # that misses the close_pos>=0.90 threshold is still reported
+            # as indecision rather than silently dropped.
+            _sub = dragonfly_doji(c)
+            if _sub.matched:
+                return _sub
+            sub = "DOJI"
+        elif a["upper_ratio"] >= 0.50 and a["lower_ratio"] <= 0.05:
+            _sub = gravestone_doji(c)
+            if _sub.matched:
+                return _sub
+            sub = "DOJI"
+        elif a["upper_ratio"] >= 0.40 and a["lower_ratio"] >= 0.40:
             sub = "LONG_LEGGED_DOJI"
         else:
             sub = "DOJI"
@@ -296,37 +315,50 @@ def high_wave(c: dict) -> Signal:
 
 def bullish_engulfing(c1: dict, c2: dict) -> Signal:
     """Bullish Engulfing — C2 green body fully engulfs C1 red body, C2 body
-    >= 1.3x C1, C2 closes in top 25% of its range, small upper wick.
+    >= 1.3x C1, C2 closes in top 25% of its range, small upper wick, C2 has
+    strong body-to-range (>= 55%). C1 must be a real red candle (body > 0,
+    is_bull=False), not a doji.
 
     Win rate (research): ~65% (U. Michigan backtest).
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    if not a1["is_bull"] and a2["is_bull"]:
-        # C2 body engulfs C1 body
-        if (a2["open"] <= a1["close"] and a2["close"] >= a1["open"]
-                and a2["body"] >= 1.3 * a1["body"]
-                and a2["close_pos"] >= 0.70
-                and a2["upper_ratio"] <= 0.20):
-            s = 0.60 + min(0.15, (a2["body"] / max(a1["body"], 1e-9) - 1.3) * 0.10)
-            return _ok("BULLISH_ENGULFING", +1, min(0.78, s),
-                       f"BULLISH_ENGULFING: C2 body {a2['body']:.5f} engulfs "
-                       f"C1 {a1['body']:.5f} (ratio {a2['body']/max(a1['body'],1e-9):.1f}x) "
-                       f"-> CALL reversal")
+    # Reject doji / tiny-body C1 to avoid strength-formula division blow-up
+    # (1e-9 floor would otherwise saturate strength to 0.78 max).
+    if a1["body"] <= 1e-9 or not a1["is_bull"]:
+        return _no()
+    if (not a1["is_bull"] and a2["is_bull"]
+            # C2 body engulfs C1 body
+            and a2["open"] <= a1["close"] and a2["close"] >= a1["open"]
+            and a2["body"] >= 1.3 * a1["body"]
+            and a2["close_pos"] >= 0.70
+            and a2["upper_ratio"] <= 0.20
+            and a2["brr"] >= 0.55):
+        s = 0.60 + min(0.15, (a2["body"] / a1["body"] - 1.3) * 0.10)
+        return _ok("BULLISH_ENGULFING", +1, min(0.78, s),
+                   f"BULLISH_ENGULFING: C2 body {a2['body']:.5f} engulfs "
+                   f"C1 {a1['body']:.5f} (ratio {a2['body']/a1['body']:.1f}x) "
+                   f"-> CALL reversal")
     return _no()
 
 
 def bearish_engulfing(c1: dict, c2: dict) -> Signal:
-    """Bearish Engulfing — mirror of bullish. Win rate: ~79% (StockCharts)."""
+    """Bearish Engulfing — mirror of bullish. Win rate: ~79% (StockCharts).
+    C1 must be a real green candle (body > 0), not a doji.
+    """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    if a1["is_bull"] and not a2["is_bull"]:
-        if (a2["open"] >= a1["close"] and a2["close"] <= a1["open"]
-                and a2["body"] >= 1.3 * a1["body"]
-                and a2["close_pos"] <= 0.30
-                and a2["lower_ratio"] <= 0.20):
-            s = 0.65 + min(0.15, (a2["body"] / max(a1["body"], 1e-9) - 1.3) * 0.10)
-            return _ok("BEARISH_ENGULFING", -1, min(0.82, s),
-                       f"BEARISH_ENGULFING: C2 engulfs C1 (ratio "
-                       f"{a2['body']/max(a1['body'],1e-9):.1f}x) -> PUT reversal")
+    # Reject doji / tiny-body C1 (see bullish_engulfing comment).
+    if a1["body"] <= 1e-9 or not a1["is_bull"]:
+        return _no()
+    if (a1["is_bull"] and not a2["is_bull"]
+            and a2["open"] >= a1["close"] and a2["close"] <= a1["open"]
+            and a2["body"] >= 1.3 * a1["body"]
+            and a2["close_pos"] <= 0.30
+            and a2["lower_ratio"] <= 0.20
+            and a2["brr"] >= 0.55):
+        s = 0.65 + min(0.15, (a2["body"] / a1["body"] - 1.3) * 0.10)
+        return _ok("BEARISH_ENGULFING", -1, min(0.82, s),
+                   f"BEARISH_ENGULFING: C2 engulfs C1 (ratio "
+                   f"{a2['body']/a1['body']:.1f}x) -> PUT reversal")
     return _no()
 
 
@@ -388,10 +420,16 @@ def dark_cloud_cover(c1: dict, c2: dict) -> Signal:
             and a2["open"] > a1["close"]
             and a2["close"] < (a1["open"] + a1["close"]) / 2
             and a2["close"] > a1["open"]):
-        pen = (a1["open"] - a2["close"]) / max(a1["close"] - a1["open"], 1e-9)
-        s = 0.55 + min(0.20, (pen - 0.50) * 0.20)
+        # FIX: penetration is how far C2's close pushes INTO C1's body,
+        # measured from C1's high (close, since C1 is green) downward.
+        # Previous formula `(a1[open] - a2[close]) / max(a1[close] - a1[open], 1e-9)`
+        # produced a NEGATIVE result for every valid match (a1[open] < a2[close]
+        # by precondition), capping strength near 0.55-0.20 = 0.35.
+        c1_body = max(a1["close"] - a1["open"], 1e-9)  # green C1: close > open
+        pen = (a1["close"] - a2["close"]) / c1_body
+        s = 0.55 + min(0.20, max(0.0, pen - 0.50) * 0.20)
         return _ok("DARK_CLOUD_COVER", -1, min(0.75, s),
-                   f"DARK_CLOUD_COVER: closes {pen:.0%} below C1 midpoint "
+                   f"DARK_CLOUD_COVER: closes {pen:.0%} into C1 body "
                    f"-> PUT reversal")
     return _no()
 
@@ -711,8 +749,9 @@ def ladder_top(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> Signal:
 # ── Four+ candle patterns ────────────────────────────────────────────────────
 
 def rising_three_methods(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> Signal:
-    """Rising Three Methods — C1 long green; C2-C4 small bearish/doji fully
-    inside C1 body; C5 long green closing above C1 high.
+    """Rising Three Methods — C1 long green; C2-C4 small bearish candles fully
+    inside C1 BODY (not just its high-low range); C5 long green closing above
+    C1 high.
 
     Bullish continuation. ~65-70%.
     """
@@ -720,17 +759,23 @@ def rising_three_methods(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> Si
     if not (a1["is_bull"] and a1["brr"] >= 0.55 and a5["is_bull"]
             and a5["brr"] >= 0.55 and a5["close"] > c1["high"]):
         return _no()
-    # C2-C4 must be inside C1 body and small
+    # C2-C4 must be small red candles (counter-trend) inside C1's BODY
+    # (not just its high-low range), and ALL THREE must qualify
+    # (textbook requires 3, the previous `>= 2` accepted false positives).
+    c1_body_lo = min(c1["open"], c1["close"])
+    c1_body_hi = max(c1["open"], c1["close"])
     inside_count = 0
     for c in (c2, c3, c4):
         a = candle_anatomy(c)
-        if (a["body"] <= 0.30 * a1["body"]
-                and c["low"] >= c1["low"]
-                and c["high"] <= c1["high"]):
+        # Counter-trend: rising_three_methods wants small reds inside.
+        if (not a["is_bull"]
+                and a["body"] <= 0.30 * a1["body"]
+                and c["low"] >= c1_body_lo
+                and c["high"] <= c1_body_hi):
             inside_count += 1
-    if inside_count >= 2:
+    if inside_count == 3:
         return _ok("RISING_THREE_METHODS", +1, 0.66,
-                   f"RISING_THREE_METHODS: long green + {inside_count} inside "
+                   f"RISING_THREE_METHODS: long green + {inside_count} small reds inside "
                    f"+ green breakout -> CALL continuation")
     return _no()
 
@@ -741,16 +786,20 @@ def falling_three_methods(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> S
     if not (not a1["is_bull"] and a1["brr"] >= 0.55 and not a5["is_bull"]
             and a5["brr"] >= 0.55 and a5["close"] < c1["low"]):
         return _no()
+    # C2-C4 must be small GREEN candles inside C1's BODY (mirror of rising).
+    c1_body_lo = min(c1["open"], c1["close"])
+    c1_body_hi = max(c1["open"], c1["close"])
     inside_count = 0
     for c in (c2, c3, c4):
         a = candle_anatomy(c)
-        if (a["body"] <= 0.30 * a1["body"]
-                and c["low"] >= c1["low"]
-                and c["high"] <= c1["high"]):
+        if (a["is_bull"]
+                and a["body"] <= 0.30 * a1["body"]
+                and c["low"] >= c1_body_lo
+                and c["high"] <= c1_body_hi):
             inside_count += 1
-    if inside_count >= 2:
+    if inside_count == 3:
         return _ok("FALLING_THREE_METHODS", -1, 0.66,
-                   f"FALLING_THREE_METHODS: long red + {inside_count} inside "
+                   f"FALLING_THREE_METHODS: long red + {inside_count} small greens inside "
                    f"+ red breakdown -> PUT continuation")
     return _no()
 

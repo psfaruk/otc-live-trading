@@ -372,7 +372,11 @@ def api_v1_signals(asset: str | None = None):
         if stream:
             now = feed._broker_time()
             if stream.candle_open_time > 0:
-                candle_expires = max(0, int(stream.candle_open_time + 60 - now))
+                # FIX: hardcoded +60 assumed 1-minute candles. Use the
+                # stream's actual period so 30s/300s/900s candles report
+                # the correct expiry to /api/v1/signals consumers.
+                candle_expires = max(0, int(stream.candle_open_time
+                                            + stream.period - now))
             pred = stream.prediction or {}
             patterns_fired = pred.get("patterns_fired", [])
             ctx = pred.get("context") or {}
@@ -530,15 +534,24 @@ def api_v1_backtest(asset: str | None = None):
     """Open API: return the latest backtest report (if generated).
     Run `python tools/backtest_strategies.py --all` to regenerate."""
     import os, json
-    path = "/home/z/my-project/download/backtest_report.json"
+    # FIX: was a hardcoded absolute path that only works on one dev machine.
+    # On Railway or any other deploy the file never exists there, so the
+    # endpoint always returned {"available": False}. Now respects the
+    # BACKTEST_REPORT_PATH env var and falls back to ./backtest_report.json
+    # (relative to the project root) so it works in any deployment.
+    path = os.environ.get("BACKTEST_REPORT_PATH") or "backtest_report.json"
     if not os.path.exists(path):
         return {"available": False,
                 "message": "Run `python tools/backtest_strategies.py --all` to generate"}
     with open(path) as f:
         data = json.load(f)
     if asset:
-        data["per_pair"] = [p for p in data.get("per_pair", [])
-                            if p["asset"] == asset]
+        # FIX: build a new dict instead of mutating the loaded one in-place.
+        # The old code mutated `data["per_pair"]` which would add an empty
+        # key if it was missing, and would corrupt the cache if caching
+        # was ever added.
+        return {**data, "per_pair": [p for p in data.get("per_pair", [])
+                                       if p["asset"] == asset]}
     return data
 
 

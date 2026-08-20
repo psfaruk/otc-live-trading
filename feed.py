@@ -1840,15 +1840,29 @@ class QuotexFeed:
                 now = self._broker_time()
                 if (stream.candle_open_time > 0
                         and now >= stream.candle_open_time + stream.period + TIMER_GRACE):
-                    expected_new = _floor_to_period(now, stream.period)
-                    # Only ever move FORWARD in time (never reopen an older candle)
-                    if expected_new > stream.candle_open_time:
+                    # FIX: previously only ONE timer-close fired per loop
+                    # iteration. If the stream was silent for 2+ periods
+                    # (network blip, stale re-arm took 90s, etc.), the
+                    # intermediate candles were NEVER closed, NEVER graded,
+                    # NEVER logged, NEVER broadcast — directly violating
+                    # "every candle must signal". Now we loop: while the
+                    # boundary has been crossed by another full period,
+                    # close-and-start a new candle for EACH intermediate one.
+                    while True:
+                        expected_new = _floor_to_period(now, stream.period)
+                        if expected_new <= stream.candle_open_time:
+                            break
+                        # Only close one period at a time — if `now` is
+                        # 2+ periods past the open, we close each candle
+                        # in sequence so all intermediate candles get
+                        # recorded with a proper OHLC + a fresh prediction.
+                        single_target = stream.candle_open_time + stream.period
                         last_px = (list(stream.ticks)[-1] if stream.ticks
                                    else stream.candle_open_price)
                         print(f"[feed] timer-close {stream.asset}@{stream.period}s "
-                              f"{stream.candle_open_time} -> {expected_new}")
+                              f"{stream.candle_open_time} -> {single_target}")
                         accuracy = self._close_running_and_start_new(
-                            stream, expected_new, last_px, open_is_real=False)
+                            stream, single_target, last_px, open_is_real=False)
                         running  = self._running_candle(stream)
                         all_c    = stream.candles + [running]
                         await self._broadcast({
@@ -1870,8 +1884,8 @@ class QuotexFeed:
                                 "type":          "signal_start",
                                 "asset":         stream.asset,
                                 "period":        stream.period,
-                                "candle_open_time": expected_new,
-                                "candle_expires_at": expected_new + stream.period,
+                                "candle_open_time": single_target,
+                                "candle_expires_at": single_target + stream.period,
                                 "signal":        stream.prediction["signal"],
                                 "strength":      stream.prediction.get("strength"),
                                 "confidence":    stream.prediction.get("confidence"),
@@ -1881,6 +1895,13 @@ class QuotexFeed:
                                 "reasons":       stream.prediction.get("reasons", [])[:5],
                                 "prediction_candle": stream.prediction.get("candle"),
                             })
+
+                        # If we've caught up to `now` (within one period),
+                        # exit the multi-period close loop. Otherwise iterate
+                        # again to close the next intermediate candle.
+                        if (stream.candle_open_time + stream.period + TIMER_GRACE
+                                > self._broker_time()):
+                            break
 
                 if self._client is None:
                     await asyncio.sleep(1)

@@ -8,6 +8,22 @@
 
 'use strict';
 
+// ── Pair label formatter ────────────────────────────────────────────────────
+// Convert asset codes ("EURUSD_otc", "EURUSD", "USDJPY") into the conventional
+// XXX/YYY display form. The previous naive `.replace('_otc','').replace('_','/')`
+// only swapped underscores for slashes; for "EURUSD_otc" -> "EURUSD" -> "EURUSD"
+// there was no underscore left to swap, so users saw "EURUSD" not "EUR/USD".
+function _fmtPairLabel(asset) {
+  if (!asset) return '';
+  let base = String(asset);
+  if (base.endsWith('_otc')) base = base.slice(0, -4);
+  if (base.length === 6 && /^[A-Z]{6}$/.test(base)) {
+    return base.slice(0, 3) + '/' + base.slice(3);
+  }
+  // Non-6-letter codes (rare): fall back to swapping any remaining underscore.
+  return base.replace('_', '/');
+}
+
 // ── Chart / WS globals ────────────────────────────────────────────────────
 let chart       = null;
 let mainSeries  = null;
@@ -15,7 +31,10 @@ let predSeries  = null;
 let ws          = null;
 let reconnTimer = null;
 
-let currentAsset   = 'EURUSD_otc';
+let currentAsset   = 'EURUSD';   // FIX: was 'EURUSD_otc' which is NOT in _VALID_ASSETS
+                                  // (EURUSD/GBPUSD/USDJPY/AUDUSD/EURGBP are real, not otc).
+                                  // The old default caused the very first /api/subscribe
+                                  // POST to fail and the chart to stick on "No data".
 let currentPeriod  = 60;
 
 // Restore the last pair/timeframe the user had open — otherwise every
@@ -641,13 +660,20 @@ function handleMsg(msg, perfNow) {
       applySnapshot(msg.candles, msg.prediction);
       break;
 
-    case 'eoc':
+    case 'eoc': {
+      // FIX: capture the OLD prediction BEFORE applySnapshot replaces it.
+      // The accuracy dot is for the candle that just CLOSED — i.e., the
+      // PREVIOUS prediction. applySnapshot then loads the NEW prediction
+      // (for the candle that's just OPENING). Without this fix, the
+      // accuracy strip showed "PUT ✓" when the new prediction was PUT
+      // but the graded (old) prediction was actually CALL — wrong label.
+      const oldPred = lastPrediction;
       if (msg.candles && msg.candles.length) { lastDataAt = Date.now(); showNoData(false); }
       applySnapshot(msg.candles, msg.prediction);
       if (msg.accuracy) {
         showAccuracy(msg.accuracy);
-        if (lastPrediction && lastPrediction.signal !== 'NEUTRAL') {
-          _pushResult(lastPrediction.signal, msg.accuracy);
+        if (oldPred && oldPred.signal !== 'NEUTRAL') {
+          _pushResult(oldPred.signal, msg.accuracy);
         }
       }
       // Share Signal popup is gated by userPrefs.popup and fires from
@@ -655,6 +681,21 @@ function handleMsg(msg, perfNow) {
       loadStats();
       // Refresh the sidebar's "Recent Signals" mini-list after each candle close
       _renderSignalHistoryMini();
+      break;
+    }
+
+    case 'signal_start':
+      // FIX: server emits signal_start on every candle close (per the
+      // user's 0-second-signal requirement). Previously the frontend
+      // didn't handle this message type at all — it was silently dropped.
+      // We capture the broker-locked candle timing so tickCountdown and
+      // updateEntryTiming use the actual broker candle boundary instead
+      // of a free-running local modulo.
+      if (msg.candle_open_time)  _brokerCandleOpen = msg.candle_open_time;
+      if (msg.candle_expires_at) _brokerCandleExpires = msg.candle_expires_at;
+      // The prediction payload is the same shape as `eoc` — apply it
+      // (idempotent if eoc already did, since applyPrediction dedups).
+      if (msg.prediction) applyPrediction(msg.prediction);
       break;
 
     case 'tick':
@@ -951,6 +992,17 @@ function showRunningConf(conf) {
 // one of those would read as constant pulsing rather than "new signal".
 let _lastSignalKey = null;
 
+// Broker-locked candle timing — captured from the `signal_start` WS message
+// (server.py broadcasts these on every candle close). Used by tickCountdown
+// and updateEntryTiming so the countdown is locked to the actual broker
+// candle that the signal was issued for, not a free-running local modulo.
+// When null, the chart falls back to local-clock modulo arithmetic.
+let _brokerCandleOpen    = 0;
+let _brokerCandleExpires = 0;
+
+// Update the next time the broker is expected to close the current candle.
+// Called from `signal_start` handler with the authoritative broker value.
+
 function updateSignalUI(pred) {
   const bar   = document.getElementById('signal-bar');
   const badge = document.getElementById('signal-badge');
@@ -1215,7 +1267,7 @@ async function _renderSignalHistoryMini() {
                     : s.result === 'wrong'   ? '✗' : '·';
       const time = new Date(s.ctime * 1000).toLocaleTimeString(
         [], { hour: '2-digit', minute: '2-digit' });
-      const pair = (s.asset || '').replace('_otc', '').replace('_', '/');
+      const pair = _fmtPairLabel(s.asset || '');
       return `<div class="mini-signal ${sigCls}">
         <div class="mini-signal-top">
           <span class="mini-signal-dir ${sigCls}">${s.signal || '–'}</span>
@@ -1350,9 +1402,11 @@ function _updateTicker(price, asset) {
   }
   _lastTickerPrice = price;
 
-  // Pair label — strip _otc suffix, add / for readability
-  const pairLabel = (asset || currentAsset)
-    .replace('_otc', '').replace('_', '/');
+  // Pair label — strip _otc suffix and pretty-print the conventional
+  // XXXYYY pair code as XXX/YYY. The previous naive `.replace('_','/')`
+  // had no underscore to match after stripping _otc, so EURUSD_otc
+  // rendered as the raw "EURUSD" rather than the user-friendly "EUR/USD".
+  const pairLabel = _fmtPairLabel(asset || currentAsset);
   tPair.textContent  = pairLabel;
   tPrice.textContent = formatted;
   ticker.classList.remove('hidden');
@@ -1428,10 +1482,16 @@ async function loadPairs() {
     pairsList = data.pairs || [];
     if (typeof data.payout_floor === 'number') payoutFloor = data.payout_floor;
   } catch (_) {
+    // FIX: fallback pairs must be REAL variants (EURUSD/GBPUSD/USDJPY
+    // are NOT _otc per _WANTED_PAIRS in feed.py). The old fallback listed
+    // EURUSD_otc / GBPUSD_otc / USDJPY_otc — none of those exist in
+    // _VALID_ASSETS — so /api/subscribe returned {"ok":false,"status":"invalid"}
+    // and the chart was stuck on "No data" until the real /api/pairs fetch
+    // succeeded. Now we use the actual real pair codes.
     pairsList = [
-      { asset: 'EURUSD_otc', display: 'EUR/USD', status: 'otc', payout: null, locked: false },
-      { asset: 'GBPUSD_otc', display: 'GBP/USD', status: 'otc', payout: null, locked: false },
-      { asset: 'USDJPY_otc', display: 'USD/JPY', status: 'otc', payout: null, locked: false },
+      { asset: 'EURUSD', display: 'EUR/USD', status: 'real', payout: null, locked: false },
+      { asset: 'GBPUSD', display: 'GBP/USD', status: 'real', payout: null, locked: false },
+      { asset: 'USDJPY', display: 'USD/JPY', status: 'real', payout: null, locked: false },
     ];
   }
   renderPairSelect();
@@ -1667,12 +1727,21 @@ async function _loadHomeStats() {
     const setWR     = document.getElementById('home-stat-winrate');
     const setActive = document.getElementById('home-stat-active');
     if (ss) {
-      if (setStatus) setStatus.textContent = ss.connected ? '● Live' : '● Offline';
-      if (setStatus) setStatus.className = 'home-stat-value ' + (ss.connected ? 'live' : 'offline');
-      if (setPairs)  setPairs.textContent = (ss.active_streams ?? 0) + ' / 16';
+      // FIX: stream-status returns {active, count, max, cooldown_until, cooldown_reason}.
+      // The old code read `ss.connected` / `ss.active_streams` which DON'T EXIST
+      // in that response — so the Home tab always showed "Offline" + "0 / 16"
+      // regardless of the actual feed state. The `active` field is the live
+      // stream count, and `active > 0` is the de-facto "connected" indicator.
+      const live = (ss.active ?? 0) > 0;
+      if (setStatus) setStatus.textContent = live ? '● Live' : '● Offline';
+      if (setStatus) setStatus.className = 'home-stat-value ' + (live ? 'live' : 'offline');
+      if (setPairs)  setPairs.textContent = (ss.active ?? ss.count ?? 0) + ' / ' + (ss.max ?? pairsList.length ?? 16);
     }
     if (st) {
-      const wr = st.overall_winrate ?? st.winrate ?? null;
+      // FIX: db.get_stats() returns {rate, total, correct, wrong, ...}.
+      // The old code read `st.overall_winrate` / `st.winrate` which DON'T EXIST
+      // — so the Home win-rate card always showed "–".
+      const wr = (typeof st.rate === 'number' && st.total > 0) ? st.rate : null;
       if (setWR && wr != null) setWR.textContent = (wr * 100).toFixed(1) + '%';
       else if (setWR) setWR.textContent = '–';
     }

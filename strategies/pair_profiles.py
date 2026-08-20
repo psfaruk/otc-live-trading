@@ -345,9 +345,17 @@ def get_profile(asset: str) -> PairProfile:
     p = _PROFILES.get(asset)
     if p is not None:
         return p
+    # FIX: previously the unknown-asset fallback used best_windows_utc=[(0, 24)]
+    # which made session_quality return 1.0 (full strength) for EVERY hour —
+    # meaning unknown pairs got NO session dampening while curated pairs did.
+    # If a new pair was added to _WANTED_PAIRS without a matching _PROFILES
+    # entry, it would silently run at full signal strength 24/7. Now the
+    # fallback is NEUTRAL (empty windows -> session_quality falls back to its
+    # 0.45-0.75 dead-session path) so unknown pairs get treated with the
+    # same skepticism as off-window curated pairs.
     return PairProfile(
         asset=asset, display=asset, archetype="MIXED",
-        best_windows_utc=[(0, 24)],
+        best_windows_utc=[],
         strategy_weights={}, trap_wick_sensitivity=1.0,
         continuation_edge=1.0, min_atr_pct=0.00005,
         notes="Unknown asset — neutral MIXED profile applied."

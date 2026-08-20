@@ -385,7 +385,14 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
     body       = abs(c - o)
     upper_wick = h - max(o, c)
     lower_wick = min(o, c) - l
-    is_bull    = c >= o
+    # FIX: doji (c == o) must NOT be classified as bull. The market_state
+    # block uses _cand_dir = +1 if is_bull else -1 to fire EXHAUSTION in
+    # the opposite direction of the just-closed candle. With is_bull=True
+    # for a perfect doji, EXHAUSTION would always fire PUT for any streak
+    # of dojis — even though there's no directional exhaustion to reverse.
+    # The tiebreak at the bottom also uses is_bull to pick the fallback
+    # direction, so doji would bias toward CALL.
+    is_bull    = c > o
 
     score   = 0
     reasons = []
@@ -1229,10 +1236,22 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
         else:
             # Final fallback: the just-closed candle's own color.
             # Every candle emits a signal. No NEUTRAL is ever shown to the user.
-            signal = "CALL" if is_bull else "PUT"
+            # FIX: for doji (c == o) the candle has no real color — pick by
+            # close_pos (close > midpoint -> CALL else PUT) instead of forcing
+            # all dojis to PUT (which is what the old `c >= o` -> False -> PUT
+            # path did). This keeps the doji fallback at coin-flip quality
+            # instead of systematically biased PUT.
+            if body / total_range < 0.05:
+                # doji — pick by close_pos
+                _cp = (c - l) / total_range
+                signal = "CALL" if _cp >= 0.5 else "PUT"
+                _dir_lbl = f"doji (close_pos {_cp:.0%})"
+            else:
+                signal = "CALL" if is_bull else "PUT"
+                _dir_lbl = "bull" if is_bull else "bear"
             _weak_cap_reasons.append(
                 f"TIEBREAK: score 0, no theory vote, no regime — "
-                f"falling back to last-candle color ({'bull' if is_bull else 'bear'})"
+                f"falling back to last-candle color ({_dir_lbl})"
                 f" -> {signal} (no-edge fallback, WEAK)")
     elif abs(score) < 2:
         _weak_cap_reasons.append(
