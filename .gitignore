@@ -17,3 +17,6 @@ candle_micro.backup-*.db
 .vscode/
 .claude/
 candle_micro_test.db
+
+# Backtest output (tools/backtest_strategies.py)
+reports/

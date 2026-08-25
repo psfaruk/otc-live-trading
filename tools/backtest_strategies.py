@@ -11,8 +11,10 @@ Usage:
   python tools/backtest_strategies.py --all
 
 Output:
-  /home/z/my-project/download/backtest_report.json
-  /home/z/my-project/download/backtest_report.md
+  <repo>/reports/backtest_report.json
+  <repo>/reports/backtest_report.md
+
+Override the directory with --out, or the BACKTEST_OUT env var.
 """
 from __future__ import annotations
 import argparse
@@ -352,10 +354,19 @@ def main():
     ap.add_argument("--warmup", type=int, default=41,
                     help="Warmup candles before analysis starts")
     ap.add_argument("--out", default=None,
-                    help="Output directory (default: /home/z/my-project/download)")
+                    help="Output directory (default: <repo>/reports, or "
+                         "$BACKTEST_OUT)")
     args = ap.parse_args()
 
-    out_dir = args.out or "/home/z/my-project/download"
+    # Was hardcoded to one developer's laptop path (/home/z/my-project/
+    # download) — same class of bug as the old hardcoded Windows QX_ROOT.
+    # It happened to work locally and blew up (or silently wrote to a junk
+    # tree) anywhere else, Railway included. Resolve relative to the repo
+    # so the tool works from any checkout and any working directory.
+    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out_dir = (args.out
+               or os.environ.get("BACKTEST_OUT", "").strip()
+               or os.path.join(_repo_root, "reports"))
     os.makedirs(out_dir, exist_ok=True)
 
     profiles = list_profiles()

@@ -148,7 +148,8 @@ endpoint docstrings (see `server.py`).
 Run `python tools/backtest_strategies.py --all` to generate a per-pair
 synthetic-candle backtest that verifies the every-candle signal guarantee
 and reports per-pattern accuracy. Output is saved to
-`/home/z/my-project/download/backtest_report.json` and `.md`.
+`reports/backtest_report.json` and `.md` inside the repo. Override the
+location with `--out DIR` or the `BACKTEST_OUT` env var.
 
 ## Deploy
 
