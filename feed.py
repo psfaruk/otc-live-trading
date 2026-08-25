@@ -284,6 +284,11 @@ class _AssetStream:
     # Server pre-warmed this pair (payout >= PAYOUT_FLOOR) — immune to idle
     # eviction while true. See QuotexFeed._reconcile_always_on.
     always_on: bool = False
+    # A viewer is actively waiting on this pair's chart (created via
+    # ensure_stream, not the bulk pre-warm). Priority streams take the FAST
+    # lane in _run_stream — they never queue behind the ~40-pair always-on
+    # backlog, which used to leave a watched chart blank for minutes.
+    priority: bool = False
     interested_cids: set = field(default_factory=set)   # viewer client-ids watching
     idle_since: float | None = None
     created_at: float = field(default_factory=time.time)
@@ -327,7 +332,18 @@ class QuotexFeed:
         # fetches, closing a real race in pyquotex's Strategy-2 history
         # fallback (a shared, non-asset-keyed scratch attribute).
         self._new_stream_gate = asyncio.Semaphore(1)
+        # Fast lane for viewer-requested streams. The bulk always-on pre-warm
+        # holds _new_stream_gate for ~4s per pair × ~40 pairs; a chart the
+        # user is actually staring at must never sit behind that queue, so
+        # priority streams get their own single-slot gate instead.
+        self._prio_stream_gate = asyncio.Semaphore(1)
         self._stagger_gap     = float(os.environ.get("QX_STAGGER_GAP_SEC", "1.5"))
+        # Priority streams pace much tighter — one viewer switching pairs is
+        # nowhere near the burst risk that the 40-pair pre-warm is.
+        self._prio_stagger    = float(os.environ.get("QX_PRIO_STAGGER_SEC", "0.2"))
+        # Delay the bulk always-on pre-warm after connect so the first
+        # viewer-requested stream(s) win the race to the socket. 0 disables.
+        self._prewarm_delay   = float(os.environ.get("QX_PREWARM_DELAY_SEC", "3"))
         # Rolling error window -> temporary cooldown on starting NEW streams
         # (existing streams are never affected) — the safety net against
         # hammering Quotex if something starts failing repeatedly.
@@ -394,6 +410,27 @@ class QuotexFeed:
         self._login_failed_permanently: bool = False
         self._login_fail_reason: str = ""
 
+        # ── Manager-loop wake signal ────────────────────────────────────────
+        # set_token() used to only flip flags and then wait for the manager
+        # loop to notice on its next 5s housekeeping tick — so every token
+        # paste burned 0-5s doing nothing before the connect even started.
+        # The loop now sleeps on this Event instead of a bare sleep(), so a
+        # paste wakes it within milliseconds.
+        self._wake = asyncio.Event()
+
+        # ── Transient-failure retry budget ──────────────────────────────────
+        # A REJECTED token is final (the credential is genuinely bad) and
+        # still trips the one-shot gate immediately. But a timeout or socket
+        # error says nothing about the token — the old code treated both the
+        # same and left the app dead until a human re-pasted, which is the
+        # single biggest cause of "token দিলাম, কানেক্টই হয় না". Transient
+        # failures now get a small bounded, backed-off retry budget before
+        # the gate trips. Set QX_TRANSIENT_RETRIES=0 to restore the old
+        # strict single-attempt behaviour.
+        self._transient_retries_max = int(
+            os.environ.get("QX_TRANSIENT_RETRIES", "3"))
+        self._transient_retries_used = 0
+
     def _spawn(self, coro) -> asyncio.Task:
         """Fire-and-forget a coroutine while keeping a strong reference to
         the resulting Task, so it can't be garbage-collected mid-execution
@@ -426,6 +463,7 @@ class QuotexFeed:
         # explicit "try again" signal — we honor it unconditionally.
         self._login_failed_permanently = False
         self._login_fail_reason = ""
+        self._transient_retries_used = 0   # fresh paste = fresh retry budget
         if self._user_token:
             print(f"[feed] user token set ({self._user_token[:8]}...) — "
                   "will use on next connect")
@@ -449,6 +487,14 @@ class QuotexFeed:
                     self._spawn(self._close_client(old_client))
                 except RuntimeError:
                     pass  # no event loop yet — will be cleaned up on next connect
+
+        # Kick the manager loop out of its housekeeping sleep NOW instead of
+        # waiting up to HOUSEKEEP_SECS. This is what turns "paste → up to 5s
+        # of dead air → connect starts" into "paste → connect starts".
+        try:
+            self._wake.set()
+        except RuntimeError:
+            pass  # no loop yet (token set before startup) — loop reads flags anyway
 
     def has_token(self) -> bool:
         """True if a user-supplied token is currently stored."""
@@ -741,7 +787,10 @@ class QuotexFeed:
         if len(self._streams) >= self._max_streams:
             return {"ok": False, "status": "at_capacity", "max": self._max_streams}
 
-        stream = _AssetStream(asset=asset, period=period)
+        # priority=True: a real viewer is sitting in front of a blank chart
+        # waiting for this exact pair. It takes the fast lane in _run_stream
+        # rather than queueing behind the always-on pre-warm backlog.
+        stream = _AssetStream(asset=asset, period=period, priority=True)
         if cid:
             stream.interested_cids.add(cid)
         self._streams[key] = stream
@@ -837,8 +886,36 @@ class QuotexFeed:
                     pass
                 return
 
+    def _note_transient_failure(self, detail: str) -> None:
+        """Handle a NON-reject connect failure (timeout, socket error, etc).
+
+        A rejected token is final and trips the one-shot gate straight away —
+        that logic is untouched. This path is for failures that say nothing
+        about the credential. We spend a bounded retry budget first so a
+        single slow handshake doesn't take the whole app down until a human
+        notices and re-pastes.
+        """
+        self._transient_retries_used += 1
+        left = self._transient_retries_max - self._transient_retries_used
+        if left >= 0 and self._transient_retries_max > 0:
+            print(f"[feed] {detail} — transient, retrying "
+                  f"({self._transient_retries_used}/"
+                  f"{self._transient_retries_max})")
+            # Gate stays OPEN — the manager loop retries with backoff.
+            self._login_fail_reason = (
+                f"{detail} — retrying automatically "
+                f"({self._transient_retries_used}/"
+                f"{self._transient_retries_max})")
+            return
+        print(f"[feed] {detail} — transient retry budget exhausted, "
+              "NOT retrying. Paste the token again in the Settings tab.")
+        self._login_failed_permanently = True
+        self._login_fail_reason = (
+            f"{detail}. Tried {self._transient_retries_max} times. "
+            f"Token kept — paste it again to retry.")
+
     async def _connect(self) -> bool:
-        """Single-attempt token-only login.
+        """Token-only login.
 
         The login system tries EXACTLY ONCE per token. There is NO email/
         password fallback (Cloudflare blocks the HTTP sign-in page on every
@@ -922,26 +999,15 @@ class QuotexFeed:
                         "from a fresh browser session and paste it in "
                         "the Settings tab.")
                 else:
-                    # Timeout / transient slowness / network error — the
-                    # token itself is probably fine, but per the user's
-                    # explicit requirement we still don't retry. The operator
-                    # can paste the SAME token again to trigger one more
-                    # attempt; the token is preserved so they don't have to
-                    # re-extract it.
-                    print(f"[feed] connect failed ({reason}) — NOT retrying. "
-                          "Paste the same token again in the Settings tab "
-                          "to retry once, or paste a fresh SSID if the "
-                          "token has expired.")
-                    self._login_failed_permanently = True
-                    self._login_fail_reason = (
-                        f"Connect failed: {reason}. Token kept — paste it "
-                        f"again to retry once.")
+                    # Timeout / transient slowness / network error. The token
+                    # itself is almost certainly fine here — Quotex was slow
+                    # or the socket dropped. Burning the one-shot gate on
+                    # this was the #1 reason the app sat dead with a
+                    # perfectly valid token in memory. Retry a bounded number
+                    # of times with backoff, THEN trip the gate.
+                    self._note_transient_failure(f"Connect failed: {reason}")
             except Exception as _te:
-                print(f"[feed] token attempt error: {_te} — NOT retrying.")
-                self._login_failed_permanently = True
-                self._login_fail_reason = (
-                    f"Network/connect error: {_te}. Token kept — paste it "
-                    f"again to retry once.")
+                self._note_transient_failure(f"Network/connect error: {_te}")
 
             # Best-effort client teardown — the client object is left for
             # the manager loop to clean up if needed, but the connection
@@ -1750,7 +1816,12 @@ class QuotexFeed:
 
         await self._client.start_candles_stream(asset, period)
         stream.sub_started = True
-        await asyncio.sleep(1)  # let first ticks arrive
+        # Brief settle so get_payout_by_asset below sees a populated table.
+        # Was a flat 1s — held INSIDE the start gate, so it cost 1s × every
+        # pair (~40s of pure dead gate time on the always-on pre-warm) for a
+        # value that is display-only and never feeds a signal. The history
+        # fetch right after provides the real settle window anyway.
+        await asyncio.sleep(float(os.environ.get("QX_TICK_SETTLE_SEC", "0.15")))
 
         # Payout is informational only (breakeven display) — never affects
         # signal/score.
@@ -2219,10 +2290,18 @@ class QuotexFeed:
             # blocking every OTHER pair for 2 more minutes. Observed live
             # on Railway as "blank chart for minutes after every deploy".
             while not (self._connected and self._client):
-                await asyncio.sleep(0.5)
-            async with self._new_stream_gate:
+                await asyncio.sleep(0.1)
+            # Two lanes. Bulk always-on pre-warm holds _new_stream_gate for
+            # several seconds per pair, ~40 pairs deep — a viewer-requested
+            # stream that queued behind it used to wait minutes for its first
+            # candle. Priority streams get their own gate and a much tighter
+            # stagger, so a watched chart paints while the pre-warm grinds on
+            # in the background.
+            gate    = self._prio_stream_gate if stream.priority else self._new_stream_gate
+            stagger = self._prio_stagger     if stream.priority else self._stagger_gap
+            async with gate:
                 await self._start_stream(stream)
-                await asyncio.sleep(self._stagger_gap)   # paces the NEXT waiting stream
+                await asyncio.sleep(stagger)   # paces the NEXT waiting stream
             await self._stream_loop(stream)
         except asyncio.CancelledError:
             pass
@@ -2336,7 +2415,18 @@ class QuotexFeed:
             if s.always_on and key not in eligible:
                 s.always_on = False
 
-        for key in eligible:
+        # `eligible` is a set, so iterating it directly started the ~40
+        # pre-warm streams in arbitrary hash order — the pair a viewer was
+        # actually watching could land anywhere in the queue, which is why
+        # "sometimes it connects fast, sometimes it takes minutes" looked
+        # random. Sort deterministically, and float any pair that already has
+        # a viewer (or is already known to the stream table) to the front.
+        watched = {k for k, s in self._streams.items() if s.interested_cids}
+
+        def _rank(key):
+            return (0 if key in watched else 1, key[0])
+
+        for key in sorted(eligible, key=_rank):
             s = self._streams.get(key)
             if s is None:
                 asset, period = key
@@ -2346,6 +2436,18 @@ class QuotexFeed:
             else:
                 s.always_on = True
                 s.idle_since = None
+
+    async def _deferred_prewarm(self) -> None:
+        """Run _reconcile_always_on after a short head start for viewers.
+
+        See the call site in run(). Purely a scheduling nicety — the set of
+        streams that ends up running is identical, they just don't all stampede
+        the socket in the same tick that the viewers' /api/subscribe calls land.
+        """
+        if self._prewarm_delay > 0:
+            await asyncio.sleep(self._prewarm_delay)
+        if self._connected:
+            self._reconcile_always_on()
 
     def _sweep_idle_streams(self) -> None:
         IDLE_TIMEOUT = 300   # 5 minutes with no interested viewers
@@ -2379,6 +2481,23 @@ class QuotexFeed:
             print(f"[feed] error spike ({len(self._recent_errors)}/{WINDOW}s) — "
                   f"cooling down new streams for {DURATION}s")
 
+    async def _idle(self, secs: float) -> None:
+        """Sleep, but wake early if set_token() fires the wake Event.
+
+        Every place the manager loop used to sit on a bare asyncio.sleep()
+        now goes through here. That is the difference between "operator
+        pastes a token and the connect starts within milliseconds" and the
+        old "operator pastes a token, then waits out the rest of a 5s
+        housekeeping tick before anything happens".
+        """
+        self._wake.clear()
+        try:
+            await asyncio.wait_for(self._wake.wait(), timeout=secs)
+        except asyncio.TimeoutError:
+            pass          # normal path: nothing woke us, full sleep elapsed
+        finally:
+            self._wake.clear()
+
     # ── Manager loop ──────────────────────────────────────────────────────────
 
     async def run(self, broadcast) -> None:
@@ -2410,7 +2529,7 @@ class QuotexFeed:
                                   f"for a fresh SSID paste via Settings tab "
                                   f"(reason: {self._login_fail_reason})")
                         self._reconnect_attempts += 1
-                        await asyncio.sleep(HOUSEKEEP_SECS)
+                        await self._idle(HOUSEKEEP_SECS)
                         continue
                     print("[feed] connecting...")
                     self._connected = await self._connect()
@@ -2419,15 +2538,26 @@ class QuotexFeed:
                             # _connect set the fail gate — stop retrying.
                             # The above branch will pick it up next iteration.
                             self._reconnect_attempts += 1
-                            await asyncio.sleep(HOUSEKEEP_SECS)
+                            await self._idle(HOUSEKEEP_SECS)
                             continue
-                        # Soft-fail (e.g. no token yet) — short backoff so
-                        # the moment a token lands, we try immediately.
+                        # Soft-fail: either no token yet, or a transient
+                        # connect error that still has retry budget left.
+                        # Either way we sleep on the wake Event, so a token
+                        # paste cuts the wait short instead of the old fixed
+                        # sleep.
                         self._reconnect_attempts += 1
-                        delay = min(5, 1 * self._reconnect_attempts)
+                        if self._transient_retries_used > 0:
+                            # Exponential backoff on real transient failures:
+                            # 2s, 4s, 8s (capped) — enough to ride out a
+                            # broker hiccup without hammering it.
+                            delay = min(8.0, 2.0 ** self._transient_retries_used)
+                        else:
+                            # No token yet — poll tightly so the instant one
+                            # lands (or the env var appears) we connect.
+                            delay = 1.0
                         print(f"[feed] connect attempt {self._reconnect_attempts} "
                               f"failed (soft) — retrying in {delay}s")
-                        await asyncio.sleep(delay)
+                        await self._idle(delay)
                         continue
                     self._reconnect_attempts = 0          # reset on success
                     print("[feed] connected OK")
@@ -2445,7 +2575,15 @@ class QuotexFeed:
                     # runs AFTER the rearm loop above so freshly-created
                     # streams here don't also get caught by that loop (which
                     # only means to re-issue already-existing subscriptions).
-                    self._reconcile_always_on()
+                    #
+                    # Deferred by QX_PREWARM_DELAY_SEC: right after connect
+                    # the viewers' tabs are firing /api/subscribe for the pair
+                    # they're actually looking at. Kicking off ~40 background
+                    # streams in the same tick made those viewer requests race
+                    # a saturated socket. A few seconds of head start costs
+                    # the pre-warm nothing (it is background work by
+                    # definition) and gets the visible chart painting sooner.
+                    self._spawn(self._deferred_prewarm())
 
                 # ── Global stale watchdog (backstop) ──────────────────────
                 # pyquotex's native ReconnectPolicy handles most drops itself.
@@ -2490,4 +2628,4 @@ class QuotexFeed:
                 print(f"[feed] manager loop error: {exc}")
                 traceback.print_exc()
 
-            await asyncio.sleep(HOUSEKEEP_SECS)
+            await self._idle(HOUSEKEEP_SECS)

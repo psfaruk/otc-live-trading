@@ -1830,6 +1830,11 @@ if (tokenForm) {
         tokenMsg.textContent = d.message || 'Token stored — reconnecting…';
         tokenMsg.classList.add('ok');
         tokenInput.value = '';  // clear the textarea for security
+        // The backend now starts connecting within milliseconds of this
+        // POST, but the badge used to sit on the 5s poll and still read
+        // "Waiting…" long after the socket was actually live. Burst-poll at
+        // 1s for the next 30s so the UI reflects reality immediately.
+        _startTokenBurstPoll();
         // Start polling for connection status
         _pollTokenStatus();
       } else {
@@ -1883,6 +1888,24 @@ async function _pollTokenStatus() {
   } catch (_) {}
 }
 
+// Burst poll: 1s cadence for ~30s straight after a token paste, then the
+// normal 5s tab poll takes back over. Without this the badge lagged the
+// actual connection by up to 5s and made a fast connect look slow.
+let _tokenBurstTimer = null;
+function _startTokenBurstPoll() {
+  if (_tokenBurstTimer) clearInterval(_tokenBurstTimer);
+  let ticks = 0;
+  _tokenBurstTimer = setInterval(async () => {
+    ticks++;
+    await _pollTokenStatus();
+    if (ticks >= 30) {
+      clearInterval(_tokenBurstTimer);
+      _tokenBurstTimer = null;
+    }
+  }, 1000);
+  _pollTokenStatus();
+}
+
 function _renderTokenStatus(d) {
   if (!tokenBadge) return;
   const connected = d.connected;
@@ -1890,6 +1913,19 @@ function _renderTokenStatus(d) {
   if (connected) {
     tokenBadge.textContent = '● Connected';
     tokenBadge.className = 'token-status-badge connected';
+    // Connected — stop the burst early, nothing left to watch for.
+    if (_tokenBurstTimer) { clearInterval(_tokenBurstTimer); _tokenBurstTimer = null; }
+  } else if (d.login_failed) {
+    // Previously this rendered as an indefinite "Connecting…" even though
+    // the backend had given up — the operator had no way to know a re-paste
+    // was required. Surface the actual reason instead.
+    tokenBadge.textContent = '● Failed — paste token again';
+    tokenBadge.className = 'token-status-badge disconnected';
+    if (_tokenBurstTimer) { clearInterval(_tokenBurstTimer); _tokenBurstTimer = null; }
+    if (tokenMsg && d.login_fail_reason) {
+      tokenMsg.className = 'pw-msg err';
+      tokenMsg.textContent = d.login_fail_reason;
+    }
   } else if (hasToken) {
     tokenBadge.textContent = '● Connecting…';
     tokenBadge.className = 'token-status-badge connecting';
