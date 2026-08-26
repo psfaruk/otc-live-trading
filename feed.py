@@ -437,7 +437,23 @@ class QuotexFeed:
         (see self._bg_tasks docstring in __init__)."""
         task = asyncio.get_event_loop().create_task(coro)
         self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
+
+        def _done(t: asyncio.Task) -> None:
+            self._bg_tasks.discard(t)
+            # The old callback only discarded the task, so it never
+            # retrieved the exception — any crash inside a spawned coroutine
+            # disappeared with no traceback anywhere. That is how a broken
+            # pre-warm can look exactly like "the app is fine, there are
+            # just no candles".
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                import traceback
+                print(f"[feed] background task {t.get_name()} crashed: {exc}")
+                traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+        task.add_done_callback(_done)
         return task
 
     # ── Public ────────────────────────────────────────────────────────────────
@@ -2426,6 +2442,7 @@ class QuotexFeed:
         def _rank(key):
             return (0 if key in watched else 1, key[0])
 
+        started = 0
         for key in sorted(eligible, key=_rank):
             s = self._streams.get(key)
             if s is None:
@@ -2433,21 +2450,55 @@ class QuotexFeed:
                 s = _AssetStream(asset=asset, period=period, always_on=True)
                 self._streams[key] = s
                 s.task = asyncio.create_task(self._run_stream(s))
+                started += 1
             else:
                 s.always_on = True
                 s.idle_since = None
 
+        # Single most useful diagnostic line in the whole boot sequence: if
+        # eligible=0 the pairs list never loaded, and no amount of staring at
+        # the frontend will explain the empty charts.
+        print(f"[feed] prewarm: eligible={len(eligible)} "
+              f"newly_started={started} existing={len(eligible) - started} "
+              f"total_streams={len(self._streams)}")
+
     async def _deferred_prewarm(self) -> None:
         """Run _reconcile_always_on after a short head start for viewers.
 
-        See the call site in run(). Purely a scheduling nicety — the set of
-        streams that ends up running is identical, they just don't all stampede
-        the socket in the same tick that the viewers' /api/subscribe calls land.
+        REGRESSION NOTE: the first version of this simply did
+            if self._connected: self._reconcile_always_on()
+        which turned a guaranteed inline call into a fire-and-forget task
+        that SILENTLY did nothing if the socket happened to be mid-blip at
+        the 3s mark. The only recovery was the 300s pairs refresh, so a
+        single unlucky moment meant up to five minutes with zero always-on
+        streams and no log line explaining why. Now it waits for the
+        connection instead of giving up, and always says what it did.
         """
         if self._prewarm_delay > 0:
             await asyncio.sleep(self._prewarm_delay)
-        if self._connected:
+
+        # Wait out a transient blip rather than skipping the pre-warm.
+        deadline = time.time() + 30
+        while not self._connected and time.time() < deadline:
+            await asyncio.sleep(0.5)
+
+        if not self._connected:
+            print("[feed] prewarm: still not connected after 30s — "
+                  "skipping; the 300s pairs refresh will retry")
+            return
+        if not self._pairs_list:
+            print("[feed] prewarm: pairs list is EMPTY — nothing to "
+                  "pre-warm. _load_pairs likely failed; no candles will "
+                  "flow until it succeeds.")
+            return
+        try:
             self._reconcile_always_on()
+        except Exception as exc:
+            # Previously this raised into a fire-and-forget task whose
+            # exception nobody retrieved, so it vanished without a trace.
+            import traceback
+            print(f"[feed] prewarm: _reconcile_always_on FAILED: {exc}")
+            traceback.print_exc()
 
     def _sweep_idle_streams(self) -> None:
         IDLE_TIMEOUT = 300   # 5 minutes with no interested viewers
