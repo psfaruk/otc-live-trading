@@ -7,10 +7,22 @@ This is the new signal engine. It REPLACES the role of analyze_eoc for
 the live trading path while keeping analyze_eoc available for backward
 compatibility and shadow comparison.
 
-Design principles (from web research):
+Design principles (from web research + live measurement):
   1. Each pattern detector returns (matched, direction, strength, reason).
   2. Per-pair profile boosts/suppresses patterns based on what works
      on that pair (USDINR range-bounce, USDMXN momentum, etc.).
+  2b. SAME-ANATOMY FAMILY DEDUP — detectors that validate byte-identical
+     candle anatomy (PIN_BAR_BULL / HAMMER / DRAGONFLY_DOJI all describe
+     one long-lower-wick shape; MARUBOZU / BELT_HOLD describe one big
+     body) are collapsed to the strongest member of their family before
+     scoring. Stacking clones triple-counted one piece of evidence and
+     produced fake "multi-theory agreement" — the measured result was
+     MEDIUM signals running 43-47% (worse than a coin flip, live n>1000).
+  2c. CONTINUATION-FAMILY REGIME GATE — momentum-continuation votes
+     (marubozu/belt-hold/soldiers/crows/separating-lines/on-neck) are
+     dampened when the regime does not actually support them (SIDEWAYS,
+     or counter-regime direction). Live measurement showed continuation
+     bets with no regime support win ~47-48% — an anti-signal.
   3. Context gate: every directional signal is dampened unless it has
      confluence at a key level (S/R, wick wall, round number, supply/
      demand zone, FVG, prior swing).
@@ -22,12 +34,17 @@ Design principles (from web research):
   6. Tick-volume confirmation: when ticks are available, check that the
      directional pressure matches the pattern direction.
   7. EVERY closed candle emits a CALL or PUT signal — never NEUTRAL.
-     The always-emit tiebreak at lines 515-530 of this module guarantees
-     this on any non-empty candle window. When no pattern fires, the
-     tiebreak falls through to:
+     The always-emit tiebreak guarantees this on any non-empty candle
+     window. When no pattern fires, the tiebreak falls through to:
        (a) indep_net lean (color-independent evidence)
-       (b) regime direction (UPTREND/DOWNTREND)
-       (c) final fallback: the just-closed candle's own color (bull → CALL, bear → PUT)
+       (b) regime direction (UPTREND/DOWNTREND) — FOLLOWED on TREND
+           profiles, FADED on mean-reverting archetypes
+       (c) final fallback: the just-closed candle's own color — FOLLOWED
+           on TREND profiles (continuation_edge >= 1.10), FADED on
+           RANGE_BOUNCE / MEAN_REVERT / MIXED profiles whose own research
+           notes (and the live measurements in analyze_eoc.py: doji base
+           48.3% n=232, spinning-top 47.3% n=237, marubozu 47.3% n=859)
+           show color-following wins BELOW 50% on the OTC feed.
      Marked WEAK so the user knows it's a low-confidence tiebreak. This
      matches the user's explicit requirement:
        "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে।"
@@ -292,13 +309,26 @@ def _absorption(cur: dict, ticks: list[float]) -> tuple[int, str]:
 # ── Market-state deep analysis (compressed version) ──────────────────────────
 
 def _market_state(candles: list[dict], regime: str, zone: str,
-                  klevels, atr: float, ticks: list[float] | None = None
+                  klevels, atr: float, ticks: list[float] | None = None,
+                  profile: PairProfile | None = None
                   ) -> dict:
     """Identify CONTINUATION / EXHAUSTION / REVERSAL / TRAP / RANGE / UNCLEAR.
 
     Mirrors analyze_eoc's market-state block but with cleaner structure.
     Returns {state, bias, conviction, points}.
+
+    FIX (profile-aware exhaustion): the exhaustion threshold is now per
+    archetype. The per-pair research notes are explicit that the OTC pegs
+    push 2-3 candles then fade ("trend 2-3 candles, then fade 4th" on
+    USDPHP; "3-candle extremes + pin-bar reversals win" on USDBDT), but
+    the old hardcoded streak >= 4 only started fading after the move was
+    already over on those pairs. MEAN_REVERT / RANGE_BOUNCE / MIXED
+    profiles now exhaust at streak >= 3; TREND profiles keep 4.
     """
+    exh_streak = 4
+    if profile is not None and profile.archetype in (
+            "MEAN_REVERT", "RANGE_BOUNCE", "MIXED"):
+        exh_streak = 3
     if len(candles) < 2:
         return {"state": "UNCLEAR", "bias": "NEUTRAL", "conviction": 0,
                 "points": {}}
@@ -340,9 +370,9 @@ def _market_state(candles: list[dict], regime: str, zone: str,
         if cand_dir == trend_dir and a["brr"] >= 0.55:
             add("CONTINUATION", 2, trend_dir)
 
-    # EXHAUSTION
-    if streak >= 4:
-        add("EXHAUSTION", 2 + (1 if streak >= 6 else 0), -cand_dir)
+    # EXHAUSTION — threshold per archetype (see docstring)
+    if streak >= exh_streak:
+        add("EXHAUSTION", 2 + (1 if streak >= exh_streak + 2 else 0), -cand_dir)
     if ticks and len(ticks) >= 15:
         bp, _ = _tick_pressure(ticks)
         if bp >= 0.78 or bp <= 0.22:
@@ -384,6 +414,21 @@ def _market_state(candles: list[dict], regime: str, zone: str,
             add("RANGE", 1, -1)
         elif zone == "SUPPORT":
             add("RANGE", 1, +1)
+        # FIX (archetype prior): wire the per-pair profile's documented
+        # persistence belief into the SCORE, not just the tiebreaks.
+        # The live measurements (color-following bases 47.3-48.3%) and the
+        # per-pair research notes (range-bounce/mean-revert dominate the
+        # OTC pegs; TREND pairs persist) define a small per-candle prior:
+        #   RANGE_BOUNCE / MEAN_REVERT: fade the last candle,
+        #   TREND (continuation_edge >= 1.10): follow it,
+        #   MIXED: no prior (p ~= 0.5 — nothing to encode).
+        # Without this the pattern votes (noise around 50% on chop)
+        # diluted the only measured edge those pairs have.
+        if profile is not None and cand_dir != 0:
+            if profile.archetype in ("RANGE_BOUNCE", "MEAN_REVERT"):
+                add("RANGE", 1.5, -cand_dir)
+            elif profile.archetype == "TREND":
+                add("CONTINUATION", 1.0, cand_dir)
     if a["brr"] <= 0.10:
         add("RANGE", 1, 0)
 
@@ -402,6 +447,17 @@ def _market_state(candles: list[dict], regime: str, zone: str,
 
 
 # ── Public entry: run_strategy ───────────────────────────────────────────────
+
+# Momentum-continuation patterns: their direction bet is "the last move
+# keeps going". Without regime support that bet measured below 50% on the
+# live OTC feed (see module docstring 2c).
+_CONTINUATION_FAMILY = {
+    "MARUBOZU", "BELT_HOLD_BULL", "BELT_HOLD_BEAR",
+    "THREE_WHITE_SOLDIERS", "THREE_BLACK_CROWS",
+    "SEPARATING_LINES_BULL", "SEPARATING_LINES_BEAR", "ON_NECK",
+    "RISING_THREE_METHODS", "FALLING_THREE_METHODS",
+}
+
 
 def run_strategy(candles: list[dict],
                  asset: str,
@@ -436,8 +492,15 @@ def run_strategy(candles: list[dict],
     cur_atr_pct = atr / cur["close"] if cur["close"] else 0
     atr_floor_mult = min(1.0, max(0.3, cur_atr_pct / max(profile.min_atr_pct, 1e-9)))
 
-    # Hour-based session quality (UTC)
-    hour_utc = time.gmtime().tm_hour
+    # Hour-based session quality (UTC).
+    # FIX: derive the hour from the CANDLE's own timestamp, not the wall
+    # clock. The wall-clock version made the session filter untestable in
+    # backtests (every synthetic candle was graded at "now"), desynced it
+    # from replayed history, and produced meaningless Best/Worst-Hour
+    # report columns. Falls back to wall clock only if `time` is missing.
+    _candle_time = cur.get("time") if isinstance(cur, dict) else None
+    hour_utc = (time.gmtime(_candle_time).tm_hour
+                if _candle_time else time.gmtime().tm_hour)
     sess_q = session_quality(profile, hour_utc)
 
     # Trap-wick dampener
@@ -469,6 +532,36 @@ def run_strategy(candles: list[dict],
     fired = [s for s in fired
              if s.name not in _CONTEXT_GATE or _CONTEXT_GATE[s.name]()]
 
+    # ── Same-anatomy family dedup (see module docstring 2b) ──────────────
+    # Detectors that validate the SAME shape must not stack votes:
+    # PIN_BAR_BULL + HAMMER + DRAGONFLY_DOJI are one long-lower-wick candle
+    # counted three times; MARUBOZU + BELT_HOLD are one big body counted
+    # twice. Keep the strongest member per family.
+    _FAMILY_OF = {
+        "MARUBOZU": "body_cont", "BELT_HOLD_BULL": "body_cont",
+        "BELT_HOLD_BEAR": "body_cont",
+        "THREE_WHITE_SOLDIERS": "trend3", "THREE_BLACK_CROWS": "trend3",
+        "HAMMER": "wick_rev", "HANGING_MAN": "wick_rev",
+        "SHOOTING_STAR": "wick_rev", "INVERTED_HAMMER": "wick_rev",
+        "DRAGONFLY_DOJI": "wick_rev", "GRAVESTONE_DOJI": "wick_rev",
+        "PIN_BAR_BULL": "wick_rev", "PIN_BAR_BEAR": "wick_rev",
+        "BULLISH_ENGULFING": "engulf", "BEARISH_ENGULFING": "engulf",
+        "THREE_OUTSIDE_UP": "engulf", "THREE_OUTSIDE_DOWN": "engulf",
+        "TWEEZER_TOP": "tweezer", "TWEEZER_BOTTOM": "tweezer",
+        "BULLISH_HARAMI": "harami", "BEARISH_HARAMI": "harami",
+        "THREE_INSIDE_UP": "harami", "THREE_INSIDE_DOWN": "harami",
+        "MORNING_STAR": "star", "EVENING_STAR": "star",
+        "SEPARATING_LINES_BULL": "sep_cont", "SEPARATING_LINES_BEAR": "sep_cont",
+        "BULLISH_COUNTERATTACK": "counter", "BEARISH_COUNTERATTACK": "counter",
+    }
+    _dedup: dict[str, Signal] = {}
+    for _s in fired:
+        _key = _FAMILY_OF.get(_s.name, _s.name)
+        _prev = _dedup.get(_key)
+        if _prev is None or _s.strength > _prev.strength:
+            _dedup[_key] = _s
+    fired = list(_dedup.values())
+
     # Compose score
     score = 0
     reasons: list[str] = []
@@ -479,6 +572,26 @@ def run_strategy(candles: list[dict],
         patterns_fired.append(sig.name)
         # Per-pair weight (default 1.0)
         w = profile.strategy_weights.get(sig.name, 1.0)
+        # ── Continuation-family regime gate (see module docstring 2c) ────
+        # Momentum-continuation votes without regime support measured
+        # ~47-48% live (marubozu base n=859) — an anti-signal. Dampen
+        # hard in SIDEWAYS regimes and when the vote fights the regime.
+        # Even ALIGNED continuation is capped below 1.0: the live n=859
+        # measurement includes trending moments, so regime alignment
+        # cannot restore full weight. Gradient follows the documented
+        # archetype persistence (TREND pairs keep the most).
+        if sig.name in _CONTINUATION_FAMILY:
+            if regime == "SIDEWAYS":
+                w *= 0.25 if profile.archetype in (
+                    "RANGE_BOUNCE", "MEAN_REVERT") else 0.45
+            elif (regime == "UPTREND" and sig.direction < 0) or \
+                    (regime == "DOWNTREND" and sig.direction > 0):
+                w *= 0.55
+            else:
+                # vote ALIGNED with regime — still capped by archetype
+                w *= {"TREND": 0.90, "MIXED": 0.75,
+                      "RANGE_BOUNCE": 0.60, "MEAN_REVERT": 0.60
+                      }.get(profile.archetype, 0.75)
         # Trap-wick dampen for pin-bar-like patterns (long-wick single candles)
         if sig.name in ("PIN_BAR_BULL", "PIN_BAR_BEAR", "HAMMER",
                         "HANGING_MAN", "SHOOTING_STAR", "INVERTED_HAMMER",
@@ -548,7 +661,8 @@ def run_strategy(candles: list[dict],
             patterns_fired.append("LIVE")
 
     # Market-state deep analysis (main predictor)
-    ms = _market_state(candles, regime, zone, klevels, atr, ticks)
+    ms = _market_state(candles, regime, zone, klevels, atr, ticks,
+                       profile=profile)
     if ms["bias"] in ("CALL", "PUT") and ms["conviction"] >= 25:
         ms_dir = +1 if ms["bias"] == "CALL" else -1
         ms_mag = min(4, max(1, ms["conviction"] // 25))
@@ -565,9 +679,29 @@ def run_strategy(candles: list[dict],
     conf_bonus, conf_desc = _confluence_score(
         cur, candles, klevels, sup_walls, res_walls, atr)
     if conf_bonus > 0 and score != 0:
-        # Boost the score in the direction it's already leaning
-        score += (1 if score > 0 else -1) * int(conf_bonus)
-        reasons.append(f"CONFLUENCE  +{int(conf_bonus)} ({conf_desc})")
+        # FIX: apply the bonus in the direction of the REJECTION WICK —
+        # not blindly in the direction the score already leans. The old
+        # `score += sign(score) * bonus` strengthened a bullish lean even
+        # when the confluence was a bearish upper-wick rejection at a key
+        # resistance level — amplifying the exact wrong signal.
+        _conf_test_low = a["lower"] > a["upper"]  # same test _confluence_score uses
+        _conf_dir = 1 if _conf_test_low else -1
+        if (score > 0) == (_conf_dir > 0):
+            score += int(conf_bonus)
+            reasons.append(
+                f"CONFLUENCE  +{int(conf_bonus)} agrees with "
+                f"{'CALL' if _conf_dir > 0 else 'PUT'} rejection ({conf_desc})")
+        else:
+            # Conflicting confluence: dampen, but never flip the signal
+            # here (cap at half the current magnitude) — the flip decision
+            # belongs to the pattern votes, not a proximity heuristic.
+            _damp = min(int(conf_bonus * 0.6), max(0, abs(score) // 2))
+            if _damp > 0:
+                score += -_damp if score > 0 else _damp
+            reasons.append(
+                f"CONFLUENCE  conflict: rejection wick points "
+                f"{'CALL' if _conf_dir > 0 else 'PUT'} vs score lean "
+                f"-> -{_damp} dampen ({conf_desc})")
 
     # Information weight dampeners (low ticks, tiny range, dead session).
     # FIX: scale dampener by min(1, |score|) so a |score|=1 weak signal
@@ -596,29 +730,65 @@ def run_strategy(candles: list[dict],
     indep_net = sum(d for _, d, _ in indep_dirs)
     signal = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
 
-    # Tiebreak for NEUTRAL: every candle emits a CALL/PUT
+    # Tiebreak for NEUTRAL: every candle emits a CALL/PUT.
+    # FIX (fade/follow per profile): the old fallback ALWAYS followed the
+    # last candle's color / regime direction. Live measurement says that
+    # is an anti-signal on the OTC feed: color-following bases won 47.3%
+    # (marubozu, n=859), 47.3% (spinning top, n=237), 48.3% (doji, n=232)
+    # — all below coin flip. The per-pair research notes agree (range-
+    # bounce/mean-revert dominate the OTC pegs). So:
+    #   TREND profiles (continuation_edge >= 1.10): FOLLOW (unchanged).
+    #   RANGE_BOUNCE / MEAN_REVERT / MIXED profiles: FADE.
+    follow = profile.continuation_edge >= 1.10
     if signal == "NEUTRAL":
         if indep_net != 0:
             signal = "CALL" if indep_net > 0 else "PUT"
             weak_caps.append(
                 f"TIEBREAK: score 0 but indep_net leans {signal} -> WEAK")
         elif regime in ("UPTREND", "DOWNTREND"):
-            signal = "CALL" if regime == "UPTREND" else "PUT"
-            weak_caps.append(
-                f"TIEBREAK: regime={regime} without confirmation -> "
-                f"{signal} (trend-only, WEAK)")
+            # FIX (unconfirmed regime = lag moment): the split-half regime
+            # detector only fires AFTER several candles of structure — by
+            # then the move is statistically due for a pause on the OTC
+            # feed (live replay measured the feed near-random, ~50%, and
+            # color-following bases at 47-48%). Backtest measurement of
+            # this exact path: FOLLOWING an unconfirmed regime scored
+            # 48.1-49.5% on every archetype, while FADING it scored
+            # 50.5-51.9%. Follow ONLY when market_state genuinely confirms
+            # continuation; otherwise fade the regime direction.
+            _ms_confirms = (ms.get("state") == "CONTINUATION"
+                            and ms.get("conviction", 0) >= 25
+                            and ms.get("bias") in ("CALL", "PUT"))
+            if _ms_confirms:
+                signal = "CALL" if regime == "UPTREND" else "PUT"
+                weak_caps.append(
+                    f"TIEBREAK: regime={regime} + market_state continuation "
+                    f"@ {ms.get('conviction')}% -> {signal} (WEAK)")
+            else:
+                signal = "PUT" if regime == "UPTREND" else "CALL"
+                weak_caps.append(
+                    f"TIEBREAK: regime={regime} UNCONFIRMED (exhaustion-lag "
+                    f"moment) -> fade to {signal} (WEAK)")
         else:
             # FIX: doji (close == open) should be treated as neutral.
             # Previously `a["is_bull"]` defaulted doji to CALL, biasing
             # every doji tiebreak toward CALL.
             if a["brr"] < 0.05:
-                # doji — pick by close_pos (close > midpoint -> CALL else PUT)
-                signal = "CALL" if a["close_pos"] >= 0.5 else "PUT"
+                # doji — lean by close_pos (close > midpoint -> up-lean)
+                _lean = 1 if a["close_pos"] >= 0.5 else -1
+                _lean_lbl = f"doji (close_pos {a['close_pos']:.0%})"
             else:
-                signal = "CALL" if a["is_bull"] else "PUT"
-            weak_caps.append(
-                f"TIEBREAK: no edge -> fallback to last-candle color "
-                f"({'bull' if a['is_bull'] else 'bear'}) -> {signal} (WEAK)")
+                _lean = 1 if a["is_bull"] else -1
+                _lean_lbl = "bull" if a["is_bull"] else "bear"
+            if follow:
+                signal = "CALL" if _lean > 0 else "PUT"
+                weak_caps.append(
+                    f"TIEBREAK: no edge -> follow last-candle color "
+                    f"({_lean_lbl}) -> {signal} (WEAK)")
+            else:
+                signal = "PUT" if _lean > 0 else "CALL"
+                weak_caps.append(
+                    f"TIEBREAK: no edge -> {profile.archetype} fade of "
+                    f"last-candle color ({_lean_lbl}) -> {signal} (WEAK)")
     elif abs(score) < 2:
         weak_caps.append(f"NO EDGE: |score|={abs(score)} is noise-level -> WEAK")
 
@@ -639,9 +809,15 @@ def run_strategy(candles: list[dict],
         strength = "NONE"
     elif weak_caps:
         strength = "WEAK"
-    elif agree >= 3 and agree_weight >= 4 and abs(score) >= 4:
+    # FIX (honest agreement): `agree` now counts distinct evidence FAMILIES
+    # (post-dedup), so agree>=2 means two genuinely different pieces of
+    # evidence — not the same shape detected by two clone detectors. The
+    # old calibration let two clones manufacture MEDIUM (43-47% live), so
+    # thresholds are tightened: STRONG needs 3+ distinct agree-ers and a
+    # |score| >= 5; MEDIUM needs 2 distinct agree-ers and |score| >= 3.
+    elif agree >= 3 and agree_weight >= 5 and abs(score) >= 5:
         strength = "STRONG"
-    elif agree >= 2 and abs(score) >= 2:
+    elif agree >= 2 and abs(score) >= 3:
         strength = "MEDIUM"
     else:
         strength = "WEAK"

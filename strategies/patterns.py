@@ -322,11 +322,18 @@ def bullish_engulfing(c1: dict, c2: dict) -> Signal:
     Win rate (research): ~65% (U. Michigan backtest).
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    # Reject doji / tiny-body C1 to avoid strength-formula division blow-up
-    # (1e-9 floor would otherwise saturate strength to 0.78 max).
-    if a1["body"] <= 1e-9 or not a1["is_bull"]:
+    # C1 must be a real RED candle (body > 0, is_bull=False) — bullish
+    # engulfing means a green C2 body swallows a red C1 body.
+    # FIX: the old guard `if a1["body"] <= 1e-9 or not a1["is_bull"]`
+    # rejected C1 when it was NOT bullish — i.e. it rejected exactly the
+    # candles this pattern requires — so BULLISH_ENGULFING could never fire
+    # (and THREE_OUTSIDE_UP, which reuses it, was dead too). While
+    # BEARISH_ENGULFING fired normally this silently biased every
+    # engulfing-weighted pair (USDINR/USDBDT/USDDZD/EURGBP/BRLUSD profiles
+    # weight engulfing 1.20-1.30) toward PUT-side signals only.
+    if a1["body"] <= 1e-9 or a1["is_bull"]:
         return _no()
-    if (not a1["is_bull"] and a2["is_bull"]
+    if (a2["is_bull"]
             # C2 body engulfs C1 body
             and a2["open"] <= a1["close"] and a2["close"] >= a1["open"]
             and a2["body"] >= 1.3 * a1["body"]
@@ -346,7 +353,9 @@ def bearish_engulfing(c1: dict, c2: dict) -> Signal:
     C1 must be a real green candle (body > 0), not a doji.
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    # Reject doji / tiny-body C1 (see bullish_engulfing comment).
+    # Reject doji / tiny-body GREEN C1 (correct here: bearish engulfing
+    # needs C1 green). The bullish mirror had this guard inverted — see
+    # the FIX note in bullish_engulfing.
     if a1["body"] <= 1e-9 or not a1["is_bull"]:
         return _no()
     if (a1["is_bull"] and not a2["is_bull"]

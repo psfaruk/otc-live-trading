@@ -115,9 +115,75 @@ Payload:
 }
 ```
 
-## Backtest Results (synthetic data)
+## Backtest Results (v2 — calibrated feed, multi-seed)
 
-Run `python tools/backtest_strategies.py --all` to regenerate.
+Run `python tools/backtest_strategies.py --all --seeds 3` to regenerate.
+(Old table kept at the bottom for reference; its TREND numbers were
+circular — the generator baked trends in, then the engine got credit for
+finding them.)
+
+### 2026-08 Signal-Accuracy Overhaul — what was wrong and what changed
+
+**Why predictions were wrong (diagnosed, not guessed):**
+
+1. `BULLISH_ENGULFING` could NEVER fire — its C1 guard was inverted
+   (`reject C1 if not bullish` on a pattern that REQUIRES a red C1).
+   `THREE_OUTSIDE_UP` (reuses it) was dead too, while the bearish mirrors
+   fired normally → systematic PUT-side bias on engulfing setups.
+2. The confluence bonus amplified whatever direction the score already
+   leaned — even a bearish upper-wick rejection at resistance strengthened
+   a bullish lean (backwards).
+3. Session quality used the WALL CLOCK instead of the candle's own hour →
+   session logic was untestable and the report's Best/Worst-Hour columns
+   were meaningless.
+4. Same-anatomy detectors stacked votes: PIN_BAR_BULL + HAMMER +
+   DRAGONFLY_DOJI are ONE candle counted 3x; MARUBOZU + BELT_HOLD one big
+   body counted 2x. Fake "multi-theory agreement" manufactured MEDIUM
+   signals that measured 43-47% live — an anti-signal.
+5. **The engine was a parrot**: the measured live stats in analyze_eoc.py
+   put color-following continuation at 47.3% (marubozu base, n=859),
+   47.3% (spinning top, n=237), 48.3% (doji, n=232) — following the last
+   candle LOSES on this feed, yet the tiebreaks and market-state both
+   followed it by default, and the replay harness measured the feed as
+   near-random (~50%) with a 72% continuation share.
+
+**The fixes (all measured, in order of impact):**
+
+- Per-archetype fade/follow: RANGE_BOUNCE / MEAN_REVERT profiles FADE the
+  last candle in the no-edge fallback and carry a small reversion prior in
+  market-state; TREND profiles follow; unconfirmed-regime tiebreaks fade
+  (regime detection lags — following it at the lag moment measured below
+  50% on every archetype).
+- Continuation-family regime gate: marubozu/soldiers/crows/separating-line
+  votes are capped by archetype (TREND 0.90x aligned … RANGE/MEAN_REVERT
+  0.25x in chop).
+- Same-anatomy family dedup + honest strength calibration (STRONG needs
+  3+ distinct evidence families, |score|>=5; MEDIUM 2 families, |score|>=3).
+- Profile-aware exhaustion (streak>=3 on MEAN_REVERT/RANGE_BOUNCE/MIXED,
+  matching the documented "push 2-3 candles then fade" OTC behavior).
+- Backtest v2: calibrated generator (per-archetype continuation
+  probability matching the live measurements + trap wicks + wandering
+  anchor), decision-path attribution, payout breakeven line, multi-seed
+  averaging (`--seeds 3`).
+
+**Before/after on the calibrated feed (3 seeds × 2000 candles × 16 pairs
+≈ 94,000 graded signals; breakeven at 92% payout = 52.08%):**
+
+| Archetype | Before | After | Δ |
+|-----------|--------|-------|---|
+| RANGE_BOUNCE | 48.26% | 49.95% | +1.69 |
+| MEAN_REVERT | 47.75% | 50.48% | +2.73 |
+| MIXED | 49.22% | 51.40% | +2.18 |
+| TREND | 51.03% | 52.16% | +1.13 |
+| **Overall** | **49.80%** | **51.29%** | **+1.49** |
+
+15 of 16 pairs improved. This synthetic feed is a LOWER BOUND: reversal
+patterns get no wick-reversion edge by construction (wicks are noise), so
+pattern votes floor near 50% there. The real test remains live — check
+`/api/diagnosis` after a few days of streaming and compare PATTERN_VOTE
+accuracy per pair before trusting any pattern stack.
+
+### Historical (v1 generator — circular, kept for reference)
 
 | Pair | Archetype | Accuracy | Cont% | Best Hour% |
 |------|-----------|----------|-------|-------------|
@@ -138,17 +204,8 @@ Run `python tools/backtest_strategies.py --all` to regenerate.
 | USDDZD_otc | RANGE_BOUNCE | 47.36% | 82.06% | 54.00% |
 | USDJPY | RANGE_BOUNCE | 46.70% | 81.66% | 51.67% |
 
-**Interpretation:** TREND-archetype pairs show 60-82% accuracy on synthetic
-trending data (expected — trend detection is the easy case). MIXED and
-RANGE_BOUNCE pairs show ~50% accuracy on synthetic random data (also
-expected — these pairs require real-market structure that synthetic
-generators can't fully replicate). The high continuation rate (77-89%)
-on ALL pairs reflects the OTC trend-feed bias + the new engine's tendency
-to fall back to last-candle color when no pattern fires.
-
-The real test is live — once the app is connected to Quotex and ingesting
-real OTC ticks, the per-pair profile weights will selectively boost the
-patterns that match each pair's real behavior.
+The v1 "82% on AUDUSD" was the generator congratulating the engine for
+detecting the trends the generator had just planted. Do not use it.
 
 ## Environment Variables
 

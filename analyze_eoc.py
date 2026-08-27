@@ -90,6 +90,13 @@ import os
 import re
 import time
 
+# Profile lookup for the per-archetype fade/follow tiebreak (FIX below).
+# Safe against circular imports: strategies.* never imports analyze_eoc.
+try:
+    from strategies.pair_profiles import get_profile as _get_pair_profile
+except Exception:    # pragma: no cover — legacy fallback if strategies is broken
+    _get_pair_profile = None
+
 
 ENABLE_LIVE_THEORY = os.environ.get('ENABLE_LIVE_THEORY', '1') == '1'
 # Running-candle reaction theories (Phase 2, 2026-07-10). Each detects a
@@ -1178,7 +1185,10 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             f" -> -{_tr_damp} dampen")
 
     # (c) Low-liquidity session dampen (22:00-07:00 UTC)
-    _hour_utc = time.gmtime().tm_hour
+    # FIX: use the CANDLE's own UTC hour (same fix as strategies/runner.py) —
+    # the wall-clock version made replay/backtest session logic meaningless.
+    _ct = candles[-1].get("time") if isinstance(candles[-1], dict) else None
+    _hour_utc = (time.gmtime(_ct).tm_hour if _ct else time.gmtime().tm_hour)
     if _hour_utc >= 22 or _hour_utc < 7:
         _ss_damp = max(1, int(abs(score) * 0.20))
         score += -_ss_damp if score > 0 else _ss_damp
@@ -1228,7 +1238,11 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
                 f" continuation @ {market_state.get('conviction')}%"
                 f" -> {signal} (trend-confirmed, WEAK)")
         elif _regime in ("UPTREND", "DOWNTREND"):
-            # Weaker trend-only fallback — regime detected but no CONTINUATION confirmation.
+            # Weaker trend-only fallback — regime detected but no CONTINUATION
+            # confirmation. Regime = actually detected structure, so it is
+            # always FOLLOWED here (the replay harness shows regime-following
+            # holds ~51-52% even on mean-reverting pairs). The fade treatment
+            # is reserved for the pure color fallback below.
             signal = "CALL" if _regime == "UPTREND" else "PUT"
             _weak_cap_reasons.append(
                 f"TIEBREAK: score 0, regime={_regime} without state confirmation"
@@ -1244,14 +1258,30 @@ def analyze_eoc(candles: list[dict], ticks: list[float] | None = None,
             if body / total_range < 0.05:
                 # doji — pick by close_pos
                 _cp = (c - l) / total_range
-                signal = "CALL" if _cp >= 0.5 else "PUT"
+                _lean = 1 if _cp >= 0.5 else -1
                 _dir_lbl = f"doji (close_pos {_cp:.0%})"
             else:
-                signal = "CALL" if is_bull else "PUT"
+                _lean = 1 if is_bull else -1
                 _dir_lbl = "bull" if is_bull else "bear"
+            # FIX (fade/follow, mirrors strategies/runner.py): color-following
+            # bases measured 47.3-48.3% live (n=1328 combined) — an
+            # anti-signal on the OTC feed. TREND profiles (continuation_edge
+            # >= 1.10) keep the follow; mean-reverting archetypes fade.
+            _follow = True
+            if _get_pair_profile is not None and asset:
+                try:
+                    _follow = _get_pair_profile(asset).continuation_edge >= 1.10
+                except Exception:
+                    _follow = True
+            if _follow:
+                signal = "CALL" if _lean > 0 else "PUT"
+                _dir_lbl += " -> follow"
+            else:
+                signal = "PUT" if _lean > 0 else "CALL"
+                _dir_lbl += " -> fade (mean-revert archetype)"
             _weak_cap_reasons.append(
                 f"TIEBREAK: score 0, no theory vote, no regime — "
-                f"falling back to last-candle color ({_dir_lbl})"
+                f"last-candle color ({_dir_lbl})"
                 f" -> {signal} (no-edge fallback, WEAK)")
     elif abs(score) < 2:
         _weak_cap_reasons.append(
