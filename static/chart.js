@@ -1245,6 +1245,27 @@ function _hideSignalPopup() {
 // Fetches the last 5 resolved signals from /api/signals and renders compact
 // cards. Called on boot and after every EOC (candle close) to stay current.
 let _lastHistoryMiniKey = '';
+// ── Visibility-aware polling ────────────────────────────────────────────────
+// Every poll timer below used to keep firing while the tab sat in the
+// background, which is how an idle app still produced ~95k requests/day.
+// _pollGuard skips the network call when the tab is hidden and fires one
+// immediate catch-up refresh the moment it becomes visible again, so coming
+// back to the tab still feels instant.
+const _visibilityCatchUp = [];
+function _pollGuard(fn) {
+  _visibilityCatchUp.push(fn);
+  return () => {
+    if (document.hidden) return;   // tab backgrounded: skip this tick
+    fn();
+  };
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  for (const fn of _visibilityCatchUp) {
+    try { fn(); } catch (e) { console.error('catch-up poll failed', e); }
+  }
+});
+
 async function _renderSignalHistoryMini() {
   const wrap = document.getElementById('signal-history-mini');
   if (!wrap) return;
@@ -1701,10 +1722,10 @@ let _setActiveTab = function(tab) {
     _loadShareSignals();
     _loadHomeStats();
     if (_sharePollTimer) clearInterval(_sharePollTimer);
-    _sharePollTimer = setInterval(() => {
+    _sharePollTimer = setInterval(_pollGuard(() => {
       _loadShareSignals();
       _loadHomeStats();
-    }, 10000);  // 10s poll
+    }), 10000);  // 10s poll, paused while the tab is hidden
   } else {
     if (_sharePollTimer) {
       clearInterval(_sharePollTimer);
@@ -1954,7 +1975,7 @@ _setActiveTab = function(tab) {
   if (tab === 'settings') {
     _pollTokenStatus();
     if (_tokenPollTimer) clearInterval(_tokenPollTimer);
-    _tokenPollTimer = setInterval(_pollTokenStatus, 5000);
+    _tokenPollTimer = setInterval(_pollGuard(_pollTokenStatus), 5000);
   } else {
     if (_tokenPollTimer) {
       clearInterval(_tokenPollTimer);
@@ -2144,10 +2165,10 @@ function bootChart(attempt) {
     setTimeout(() => location.reload(), 2500);
   });
   loadStats();
-  setInterval(loadStats, 30000);
+  setInterval(_pollGuard(loadStats), 30000);
   // Initial load of the sidebar's "Recent Signals" mini-list + periodic refresh
   _renderSignalHistoryMini();
-  setInterval(_renderSignalHistoryMini, 60000);  // refresh every 60s
+  setInterval(_pollGuard(_renderSignalHistoryMini), 60000);  // refresh every 60s
 }
 bootChart();
 
