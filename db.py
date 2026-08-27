@@ -523,3 +523,123 @@ def theory_report(asset: str | None = None, period: int | None = None) -> dict:
         out[code] = {"right": r, "wrong": w, "n": n,
                      "rate": round(r / n * 100, 1) if n else 0.0}
     return dict(sorted(out.items(), key=lambda x: -x[1]["n"]))
+
+
+def diagnosis(days: int = 7, asset: str | None = None) -> dict:
+    """Answer 'why are the predictions wrong' directly from signal_log.
+
+    Slices resolved signals along every axis the signal itself already
+    records, so the answer is measured rather than argued:
+
+      by_strength  — does STRONG actually beat WEAK? This is the decisive
+                     one. If STRONG is not clearly above break-even while
+                     WEAK sits at ~50%, the confidence calibration carries
+                     no information and filtering by it cannot help.
+      by_tag       — NOISE_CANDLE / COUNTER_REGIME / WITH_REGIME etc. The
+                     code already flags noise candles as coin flips; this
+                     shows whether that flag is right.
+      by_regime    — trend-following logic should do better in UPTREND /
+                     DOWNTREND than in SIDEWAYS. If it doesn't, the regime
+                     detector is not working.
+      by_asset     — separates 'the strategy is weak' from 'two exotic OTC
+                     pairs are dragging the average down'.
+      by_hour      — session quality effects.
+
+    `break_even` is included on every bucket because raw accuracy is
+    misleading for binary options: at an 85% payout, 50% accuracy is not
+    break-even, it is a steady loss.
+    """
+    cutoff = int(time.time()) - days * 86400
+    where  = ["ctime >= ?", "result IN ('correct','wrong')"]
+    params: list = [cutoff]
+    if asset:
+        where.append("asset=?"); params.append(asset)
+    wsql = " WHERE " + " AND ".join(where)
+
+    def _rate(rows):
+        out = []
+        for key, n, r in rows:
+            if not n:
+                continue
+            out.append({
+                "key": key if key is not None else "(none)",
+                "n": n,
+                "correct": r,
+                "accuracy": round(100.0 * r / n, 2),
+            })
+        return sorted(out, key=lambda d: -d["n"])
+
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            return _diagnosis_query(con, wsql, params, cutoff, days, asset)
+        finally:
+            con.close()
+
+
+def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
+    def _rate(rows):
+        out = []
+        for key, n, r in rows:
+            if not n:
+                continue
+            out.append({
+                "key": key if key is not None else "(none)",
+                "n": n,
+                "correct": r or 0,
+                "accuracy": round(100.0 * (r or 0) / n, 2),
+            })
+        return sorted(out, key=lambda d: -d["n"])
+
+    if True:
+        def q(expr):
+            return con.execute(
+                f"SELECT {expr} AS k, COUNT(*), SUM(result='correct') "
+                f"FROM signal_log{wsql} GROUP BY k", params).fetchall()
+
+        total_n, total_r = con.execute(
+            f"SELECT COUNT(*), SUM(result='correct') "
+            f"FROM signal_log{wsql}", params).fetchone()
+        draws = con.execute(
+            "SELECT COUNT(*) FROM signal_log WHERE ctime >= ? AND result='draw'",
+            [cutoff]).fetchone()[0]
+
+        by_strength = _rate(q("strength"))
+        by_regime   = _rate(q("regime"))
+        by_zone     = _rate(q("zone"))
+        by_asset    = _rate(q("asset"))
+        by_signal   = _rate(q("signal"))
+        by_hour     = _rate(q("CAST(strftime('%H', ctime, 'unixepoch') AS INTEGER)"))
+
+        # Tags are a comma-joined list, so they need one LIKE pass each.
+        tag_rows = []
+        for tag in ("NOISE_CANDLE", "BIG_MOVE", "WITH_REGIME", "COUNTER_REGIME",
+                    "LATE_FLIP", "MAJORITY_WRONG"):
+            n, r = con.execute(
+                f"SELECT COUNT(*), SUM(result='correct') FROM signal_log"
+                f"{wsql} AND tags LIKE ?", params + [f"%{tag}%"]).fetchone()
+            if n:
+                tag_rows.append((tag, n, r or 0))
+        by_tag = _rate(tag_rows)
+
+    overall = round(100.0 * (total_r or 0) / total_n, 2) if total_n else None
+    return {
+        "days": days,
+        "asset": asset,
+        "graded": total_n,
+        "draws": draws,
+        "overall_accuracy": overall,
+        # 85% is Quotex's typical payout; 100/(100+85) = 54.05%.
+        "break_even_at_85pct_payout": 54.05,
+        "verdict": (
+            None if not total_n else
+            "PROFITABLE" if overall >= 54.05 else
+            "LOSING — accuracy is below the payout break-even"),
+        "by_strength": by_strength,
+        "by_tag": by_tag,
+        "by_regime": by_regime,
+        "by_zone": by_zone,
+        "by_signal": by_signal,
+        "by_asset": by_asset,
+        "by_hour": by_hour,
+    }

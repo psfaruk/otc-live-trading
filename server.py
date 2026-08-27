@@ -58,11 +58,40 @@ async def _broadcast(data: dict) -> None:
               f"(total now {len(_clients)})")
 
 
+async def _periodic_diagnosis(interval: int = 900) -> None:
+    """Print the accuracy diagnosis to stdout every 15 minutes.
+
+    The same data /api/diagnosis serves, but pushed to the logs so the
+    performance picture is visible without a browser -- and so it survives
+    in the log history even after the DB is rotated or the app restarts.
+    """
+    import db as _db
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            d = _db.diagnosis(days=7)
+            if not d["graded"]:
+                print("[diag] no graded signals yet")
+                continue
+            print(f"[diag] === {d['graded']} graded / {d['draws']} draws | "
+                  f"overall {d['overall_accuracy']}% | "
+                  f"break-even {d['break_even_at_85pct_payout']}% | "
+                  f"{d['verdict']} ===")
+            for axis in ("by_strength", "by_tag", "by_regime", "by_signal"):
+                parts = [f"{r['key']}={r['accuracy']}%(n={r['n']})"
+                         for r in d[axis][:8]]
+                print(f"[diag] {axis}: " + "  ".join(parts))
+        except Exception as exc:
+            print(f"[diag] failed: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(feed.run(_broadcast))
+    diag = asyncio.create_task(_periodic_diagnosis())
     yield
     await feed.shutdown()
+    diag.cancel()
     task.cancel()
     try:
         await task
@@ -553,6 +582,15 @@ def api_v1_backtest(asset: str | None = None):
         return {**data, "per_pair": [p for p in data.get("per_pair", [])
                                        if p["asset"] == asset]}
     return data
+
+
+@app.get("/api/diagnosis")
+def diagnosis(days: int = 7, asset: str | None = None):
+    """Why are the predictions wrong — accuracy sliced by strength, tag,
+    regime, zone, asset and hour, with the payout break-even included."""
+    import db as _db
+    return _cached(_stats_cache, ("diagnosis", days, asset),
+                   _STATS_CACHE_TTL, lambda: _db.diagnosis(days, asset))
 
 
 @app.get("/api/theory-perf")
