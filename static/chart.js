@@ -1802,32 +1802,51 @@ let _setActiveTab = function(tab) {
 // /api/stats (overall win-rate). Cheap calls, run alongside share-signals.
 async function _loadHomeStats() {
   try {
-    const [ss, st] = await Promise.all([
+    const [ss, st, ts] = await Promise.all([
       fetch('/api/stream-status').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/stats').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/token-status').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     const setStatus = document.getElementById('home-stat-status');
     const setPairs  = document.getElementById('home-stat-pairs');
     const setWR     = document.getElementById('home-stat-winrate');
     const setActive = document.getElementById('home-stat-active');
     if (ss) {
-      // FIX: stream-status returns {active, count, max, cooldown_until, cooldown_reason}.
-      // The old code read `ss.connected` / `ss.active_streams` which DON'T EXIST
-      // in that response — so the Home tab always showed "Offline" + "0 / 16"
-      // regardless of the actual feed state. The `active` field is the live
-      // stream count, and `active > 0` is the de-facto "connected" indicator.
-      const live = (ss.active ?? 0) > 0;
-      if (setStatus) setStatus.textContent = live ? '● Live' : '● Offline';
-      if (setStatus) setStatus.className = 'home-stat-value ' + (live ? 'live' : 'offline');
-      if (setPairs)  setPairs.textContent = (ss.active ?? ss.count ?? 0) + ' / ' + (ss.max ?? pairsList.length ?? 16);
+      // stream_status() returns:
+      //   active = ARRAY of {asset, period, viewers, age_sec}
+      //   count  = number of streams   max = stream cap
+      //
+      // A previous "FIX" assumed `active` was the live stream COUNT. It is
+      // not, and that single wrong assumption produced three visible bugs:
+      //   1. `(ss.active ?? 0) > 0` compared an Array to 0 -> NaN -> false,
+      //      so STATUS read "Offline" while 45 pairs were streaming.
+      //   2. `ss.active + ' / ' + ss.max` stringified the array, printing
+      //      "[object Object],[object Object],... / 45".
+      // Use `count` for the number and the array's length as the fallback.
+      const streamCount = (typeof ss.count === 'number')
+        ? ss.count
+        : (Array.isArray(ss.active) ? ss.active.length : 0);
+      // "Live" should mean the feed socket is actually up. Stream objects can
+      // linger after a disconnect, so counting them would keep claiming Live
+      // while no candle had arrived for minutes. token-status carries the
+      // real flag; fall back to the stream count only if it is unavailable.
+      const live = (ts && typeof ts.connected === 'boolean')
+        ? ts.connected
+        : streamCount > 0;
+      if (setStatus) {
+        setStatus.textContent = live ? '● Live' : '● Offline';
+        setStatus.className = 'home-stat-value ' + (live ? 'live' : 'offline');
+      }
+      if (setPairs) {
+        setPairs.textContent = streamCount + ' / ' + (ss.max ?? pairsList.length ?? 16);
+      }
     }
     if (st) {
-      // FIX: db.get_stats() returns {rate, total, correct, wrong, ...}.
-      // The old code read `st.overall_winrate` / `st.winrate` which DON'T EXIST
-      // — so the Home win-rate card always showed "–".
+      // db.get_stats() returns rate ALREADY IN PERCENT:
+      //   "rate": round((correct or 0) / decided * 100, 1)
+      // Multiplying by 100 again turned 54.1% into "5410.0%".
       const wr = (typeof st.rate === 'number' && st.total > 0) ? st.rate : null;
-      if (setWR && wr != null) setWR.textContent = (wr * 100).toFixed(1) + '%';
-      else if (setWR) setWR.textContent = '–';
+      if (setWR) setWR.textContent = (wr != null) ? wr.toFixed(1) + '%' : '–';
     }
     // Active CALL/PUT signals count — read from the share-signal rows
     // rendered by _loadShareSignals (re-uses the same fetch result).
