@@ -72,7 +72,12 @@ CREATE TABLE IF NOT EXISTS signal_log (
     codes       TEXT,              -- theory codes that fired, e.g. "RUN,T7"
     actual      TEXT,              -- UP / DOWN (actual candle colour)
     result      TEXT,              -- correct / wrong
-    strength    TEXT,              -- STRONG / MEDIUM / WEAK
+    strength    TEXT,              -- STRONG/MEDIUM/WEAK AS OF SIGNAL TIME.
+                                   -- Safe to filter and backtest on.
+    strength_live TEXT,            -- strength after the running-candle tick
+                                   -- confirmation (_apply_runconf) folded in.
+                                   -- Contains LOOKAHEAD: it partly encodes the
+                                   -- outcome. Display only -- never a filter.
     agree       INTEGER,           -- # distinct theories backing the signal
     right_codes TEXT,              -- theories that CALLED IT RIGHT this candle
     wrong_codes TEXT,              -- theories that were WRONG this candle
@@ -131,7 +136,8 @@ def init() -> None:
                     con.execute(f"ALTER TABLE candle_micro ADD COLUMN {col} {decl}")
 
             for col, decl in [
-                ("strength", "TEXT"), ("agree", "INTEGER"),
+                ("strength", "TEXT"), ("strength_live", "TEXT"),
+                ("agree", "INTEGER"),
                 ("right_codes", "TEXT"), ("wrong_codes", "TEXT"),
                 ("reasons", "TEXT"), ("a_open", "REAL"), ("a_close", "REAL"),
                 ("regime", "TEXT"), ("zone", "TEXT"),
@@ -283,7 +289,9 @@ def cleanup(keep_days: int = 7) -> None:
 def log_signal(asset: str, period: int, ctime: int, signal: str,
                score: int, confidence: float, codes: str,
                actual: str, result: str,
-               strength: str | None = None, agree: int | None = None,
+               strength: str | None = None,
+               strength_live: str | None = None,
+               agree: int | None = None,
                right_codes: str = "", wrong_codes: str = "",
                reasons: str = "", a_open: float | None = None,
                a_close: float | None = None,
@@ -315,14 +323,14 @@ def log_signal(asset: str, period: int, ctime: int, signal: str,
             con.execute("""
                 INSERT OR REPLACE INTO signal_log
                 (asset, period, ctime, signal, score, confidence,
-                 codes, actual, result, strength, agree,
+                 codes, actual, result, strength, strength_live, agree,
                  right_codes, wrong_codes, reasons, a_open, a_close,
                  regime, zone, tags, postmortem,
                  market, reaction_type, reaction_quality, setup_id,
                  trade_ok, trade_why)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (asset, period, ctime, signal, score, confidence,
-                  codes, actual, result, strength, agree,
+                  codes, actual, result, strength, strength_live, agree,
                   right_codes, wrong_codes, reasons, a_open, a_close,
                   regime, zone, tags, postmortem,
                   market, reaction_type, reaction_quality, setup_id,
@@ -577,18 +585,75 @@ def diagnosis(days: int = 7, asset: str | None = None) -> dict:
             con.close()
 
 
+def _wilson(correct: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson score interval for a proportion, in percent.
+
+    A bare accuracy number is not decidable against the payout break-even:
+    54.07% on n=3037 and 54.07% on n=30 mean completely different things.
+    Wilson is used rather than the normal approximation because it stays
+    correct for small n and for rates near 0 or 100 -- exactly the buckets
+    (STRONG, NOISE_CANDLE) where a naive interval would mislead most.
+    """
+    if n <= 0:
+        return (0.0, 100.0)
+    p = correct / n
+    d = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / d
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return (round(max(0.0, centre - half) * 100, 2),
+            round(min(1.0, centre + half) * 100, 2))
+
+
+# Tags derived from the OUTCOME candle. They describe what happened, not what
+# was knowable when the signal fired, so they can never be used as an entry
+# filter -- MAJORITY_WRONG is the extreme case: it is tagged from the
+# right/wrong vote split, so "it is wrong when the majority was wrong" is a
+# tautology, not an edge.
+_POST_HOC_TAGS = {"NOISE_CANDLE", "BIG_MOVE", "LATE_FLIP", "MAJORITY_WRONG"}
+
+
+def _verdict(correct: int, n: int) -> str:
+    """Honest three-way call against the payout break-even.
+
+    The old version returned "PROFITABLE" whenever the point estimate cleared
+    54.05%. On the first live sample that fired at 54.07% -- a 0.02pp margin
+    on a +/-1.8pp interval -- which is indistinguishable from break-even and
+    exactly the kind of number that talks someone into risking real money.
+    A claim of profit now requires the entire interval to clear the bar.
+    """
+    lo, hi = _wilson(correct, n)
+    if lo > 54.05:
+        return f"PROFITABLE — 95% CI [{lo}%, {hi}%] is entirely above break-even"
+    if hi < 54.05:
+        return f"LOSING — 95% CI [{lo}%, {hi}%] is entirely below break-even"
+    return (f"UNPROVEN — 95% CI [{lo}%, {hi}%] straddles the {54.05}% "
+            f"break-even; no evidence of an edge either way. Need more data.")
+
+
 def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
-    def _rate(rows):
+    def _rate(rows, post_hoc: bool = False):
         out = []
         for key, n, r in rows:
             if not n:
                 continue
-            out.append({
+            r = r or 0
+            lo, hi = _wilson(r, n)
+            row = {
                 "key": key if key is not None else "(none)",
                 "n": n,
-                "correct": r or 0,
-                "accuracy": round(100.0 * (r or 0) / n, 2),
-            })
+                "correct": r,
+                "accuracy": round(100.0 * r / n, 2),
+                "ci95": [lo, hi],
+                # The only question that matters for a binary payout: is the
+                # WHOLE interval above break-even? If not, this bucket has not
+                # been shown to make money, however good the point estimate.
+                "beats_breakeven": lo > 54.05,
+            }
+            if post_hoc or (isinstance(key, str) and key in _POST_HOC_TAGS):
+                row["post_hoc"] = True
+                row["warning"] = ("derived from the outcome candle -- "
+                                  "NOT usable as an entry filter")
+            out.append(row)
         return sorted(out, key=lambda d: -d["n"])
 
     if True:
@@ -604,7 +669,11 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
             "SELECT COUNT(*) FROM signal_log WHERE ctime >= ? AND result='draw'",
             [cutoff]).fetchone()[0]
 
-        by_strength = _rate(q("strength"))
+        # by_strength reads the FROZEN signal-time column. by_strength_live
+        # reads the runconf-mutated one and is reported separately, flagged,
+        # so its ~100%/0% split is never mistaken for a tradeable filter.
+        by_strength      = _rate(q("strength"))
+        by_strength_live = _rate(q("strength_live"), post_hoc=True)
         by_regime   = _rate(q("regime"))
         by_zone     = _rate(q("zone"))
         by_asset    = _rate(q("asset"))
@@ -622,6 +691,27 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
                 tag_rows.append((tag, n, r or 0))
         by_tag = _rate(tag_rows)
 
+        # Effective sample size. The 15 OTC pairs are broker-synthesised and
+        # move together, so N rows is NOT N independent observations: 3037
+        # rows over 15 pairs and ~200 minutes is closer to 200 independent
+        # draws. Reporting distinct candle timestamps alongside the row count
+        # keeps that honest -- every interval below is computed on rows and is
+        # therefore OPTIMISTIC by roughly sqrt(rows/timestamps).
+        distinct_ct, distinct_assets = con.execute(
+            f"SELECT COUNT(DISTINCT ctime), COUNT(DISTINCT asset) "
+            f"FROM signal_log{wsql}", params).fetchone()
+
+        # Rows written before the lookahead split have strength_live IS NULL
+        # and a `strength` that was mutated by the running-candle ticks. They
+        # cannot be repaired -- the clean value was never stored -- so they
+        # must not be silently averaged in with post-fix rows. NULL is the
+        # marker, no extra column needed.
+        pre_fix = con.execute(
+            f"SELECT COUNT(*) FROM signal_log{wsql} AND strength_live IS NULL"
+            if wsql else
+            "SELECT COUNT(*) FROM signal_log WHERE strength_live IS NULL",
+            params).fetchone()[0]
+
     overall = round(100.0 * (total_r or 0) / total_n, 2) if total_n else None
     return {
         "days": days,
@@ -631,11 +721,24 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
         "overall_accuracy": overall,
         # 85% is Quotex's typical payout; 100/(100+85) = 54.05%.
         "break_even_at_85pct_payout": 54.05,
-        "verdict": (
-            None if not total_n else
-            "PROFITABLE" if overall >= 54.05 else
-            "LOSING — accuracy is below the payout break-even"),
+        "overall_ci95": list(_wilson(total_r or 0, total_n)) if total_n else None,
+        "verdict": _verdict(total_r or 0, total_n) if total_n else None,
+        "effective_sample": {
+            "rows": total_n,
+            "distinct_timestamps": distinct_ct,
+            "distinct_assets": distinct_assets,
+            "pre_lookahead_fix_rows": pre_fix,
+            "note": ("Correlated pairs mean the independent sample size is "
+                     "nearer distinct_timestamps than rows; treat every "
+                     "interval here as optimistic."),
+            "warning": (
+                f"{pre_fix} of {total_n} rows predate the strength lookahead "
+                f"fix; their `strength` column is outcome-contaminated and "
+                f"by_strength is unusable until they age out of the window."
+                if pre_fix else None),
+        },
         "by_strength": by_strength,
+        "by_strength_live": by_strength_live,
         "by_tag": by_tag,
         "by_regime": by_regime,
         "by_zone": by_zone,

@@ -73,14 +73,34 @@ async def _periodic_diagnosis(interval: int = 900) -> None:
             if not d["graded"]:
                 print("[diag] no graded signals yet")
                 continue
+            _es = d.get("effective_sample", {})
             print(f"[diag] === {d['graded']} graded / {d['draws']} draws | "
-                  f"overall {d['overall_accuracy']}% | "
-                  f"break-even {d['break_even_at_85pct_payout']}% | "
-                  f"{d['verdict']} ===")
+                  f"overall {d['overall_accuracy']}% "
+                  f"CI95 {d.get('overall_ci95')} | "
+                  f"break-even {d['break_even_at_85pct_payout']}% ===")
+            print(f"[diag] VERDICT: {d['verdict']}")
+            print(f"[diag] effective sample: {_es.get('rows')} rows across "
+                  f"{_es.get('distinct_timestamps')} timestamps x "
+                  f"{_es.get('distinct_assets')} correlated pairs "
+                  f"-> intervals above are OPTIMISTIC")
+            # Only buckets whose whole interval clears break-even mean
+            # anything. Printing the point estimate alone is what made a
+            # 54.07% coin flip read as "PROFITABLE".
             for axis in ("by_strength", "by_tag", "by_regime", "by_signal"):
-                parts = [f"{r['key']}={r['accuracy']}%(n={r['n']})"
-                         for r in d[axis][:8]]
+                parts = []
+                for r in d[axis][:8]:
+                    mark = "*" if r.get("beats_breakeven") else ""
+                    ph = "!" if r.get("post_hoc") else ""
+                    parts.append(f"{r['key']}{ph}={r['accuracy']}%"
+                                 f"(n={r['n']},CI{r['ci95']}){mark}")
                 print(f"[diag] {axis}: " + "  ".join(parts))
+            print("[diag] legend: * = whole CI beats break-even (tradeable)  "
+                  "! = post-hoc, derived from the outcome, NOT a filter")
+            _live = d.get("by_strength_live") or []
+            if _live:
+                print("[diag] by_strength_live (LOOKAHEAD — display only): "
+                      + "  ".join(f"{r['key']}={r['accuracy']}%(n={r['n']})"
+                                  for r in _live[:8]))
         except Exception as exc:
             print(f"[diag] failed: {exc}")
 

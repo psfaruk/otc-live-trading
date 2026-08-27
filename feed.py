@@ -1185,6 +1185,15 @@ class QuotexFeed:
             running_ticks=None)
         if result is None:
             return None
+        # ── Freeze the signal-time strength ────────────────────────────────
+        # `strength` is later MUTATED by _apply_runconf using the running
+        # candle's own ticks — i.e. using the outcome the prediction is
+        # trying to call. That is legitimate as a live confirmation display,
+        # but recording it as the signal's strength poisoned every
+        # retrospective measurement: by_strength came out MEDIUM/STRONG=100%,
+        # WEAK=0%, because the label had simply absorbed the answer.
+        # This copy is written once, at birth, and never touched again.
+        result["strength_at_signal"] = result.get("strength")
         # Snapshot for the periodic LIVE-theory re-eval (see stream loop).
         stream.base_candles = closed
         stream.base_ticks   = base_ticks
@@ -1386,7 +1395,15 @@ class QuotexFeed:
                     sig, prediction["score"],
                     prediction["confidence"], ",".join(sorted(fired)),
                     _actual_lbl, accuracy,
-                    strength=prediction.get("strength"),
+                    # strength      = what was known WHEN THE SIGNAL FIRED.
+                    #                 Safe to filter/backtest on.
+                    # strength_live = after _apply_runconf folded in the
+                    #                 outcome candle's own ticks. Useful as a
+                    #                 live display, NEVER as a filter — it
+                    #                 knows part of the answer.
+                    strength=(prediction.get("strength_at_signal")
+                              or prediction.get("strength")),
+                    strength_live=prediction.get("strength"),
                     agree=prediction.get("agree"),
                     right_codes=",".join(sorted(right)),
                     wrong_codes=",".join(sorted(wrong)),
@@ -1689,6 +1706,11 @@ class QuotexFeed:
 
         new_pred = dict(prediction)
         new_pred["strength"] = new_strength
+        # Carry the frozen signal-time value through untouched. Without this
+        # the dict() copy would keep whatever `strength` had become, and the
+        # lookahead would leak straight back into the logged row.
+        new_pred["strength_at_signal"] = prediction.get(
+            "strength_at_signal", current)
         new_pred["reasons"] = [*prediction.get("reasons", []), gate_reason]
         new_pred["_runconf_tag"] = gate_tag
         return new_pred
