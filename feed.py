@@ -289,6 +289,12 @@ class _AssetStream:
     # lane in _run_stream — they never queue behind the ~40-pair always-on
     # backlog, which used to leave a watched chart blank for minutes.
     priority: bool = False
+    # Late-tick drop accounting. The drop itself is correct and must stay,
+    # but exotic OTC pairs (USDPKR/USDZAR/USDPHP) deliver lagging timestamps
+    # constantly, so logging every batch emitted several unbuffered lines per
+    # second per pair and buried every real error in the Railway logs.
+    late_drop_count: int = 0
+    late_drop_last_log: float = 0.0
     interested_cids: set = field(default_factory=set)   # viewer client-ids watching
     idle_since: float | None = None
     created_at: float = field(default_factory=time.time)
@@ -2124,8 +2130,23 @@ class QuotexFeed:
                         ]
                         n_drop = len(new_ticks) - len(cur_ticks)
                         if n_drop:
-                            print(f"[feed] dropped {n_drop} late tick(s) from "
-                                  f"closed candle ({stream.asset}@{stream.period}s)")
+                            # Aggregate instead of one line per batch: the
+                            # drop is routine broker behaviour, not an error,
+                            # and at several batches/second/pair it drowned
+                            # the log. One summary line per minute per stream
+                            # keeps the signal without the flood.
+                            stream.late_drop_count += n_drop
+                            _now_l = time.time()
+                            if _now_l - stream.late_drop_last_log >= 60:
+                                if stream.late_drop_last_log:
+                                    print(f"[feed] dropped "
+                                          f"{stream.late_drop_count} late "
+                                          f"tick(s) from closed candles in "
+                                          f"the last "
+                                          f"{int(_now_l - stream.late_drop_last_log)}s "
+                                          f"({stream.asset}@{stream.period}s)")
+                                stream.late_drop_last_log = _now_l
+                                stream.late_drop_count = 0
 
                         # First CURRENT-window tick after a timer-close is the
                         # candle's true open — re-anchor exactly like the
