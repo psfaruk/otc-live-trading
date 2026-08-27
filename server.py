@@ -613,6 +613,18 @@ def diagnosis(days: int = 7, asset: str | None = None):
                    _STATS_CACHE_TTL, lambda: _db.diagnosis(days, asset))
 
 
+@app.get("/api/pair-winrate")
+def pair_winrate(days: int = 7, period: int = 60):
+    """Per-pair win rate for the sidebar, with sample size and a 95% Wilson
+    interval judged against the payout break-even (not 50%).
+
+    Cached like the other stats endpoints: every open tab polls this, and the
+    underlying numbers only move once per closed candle."""
+    import db as _db
+    return _cached(_stats_cache, ("pair_winrate", days, period),
+                   _STATS_CACHE_TTL, lambda: _db.pair_winrate(days, period))
+
+
 @app.get("/api/theory-perf")
 def theory_perf(asset: str | None = None, period: int | None = None,
                 days: int = 7):

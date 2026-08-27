@@ -746,3 +746,83 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
         "by_asset": by_asset,
         "by_hour": by_hour,
     }
+
+
+def pair_winrate(days: int = 7, period: int = 60) -> dict:
+    """Per-pair win rate for the frontend sidebar.
+
+    Deliberately NOT a thin wrapper over diagnosis(): that runs a dozen
+    GROUP BY passes for slices the sidebar never shows, and this is polled
+    every few seconds by every open tab.
+
+    Every row carries n and a 95% Wilson interval, and is judged against the
+    payout break-even rather than 50%. A bare "62%" on n=8 next to a pair
+    name is worse than showing nothing -- it is an invitation to size up on
+    noise. `status` is the only field the UI should colour on:
+
+      proven_win  — the whole interval clears break-even
+      proven_loss — the whole interval sits below it
+      unproven    — the interval straddles it (the normal state)
+      thin        — under MIN_N graded signals; no claim either way
+
+    Draws (zero-move candles) are excluded from n: the broker refunds them,
+    so they are neither a win nor a loss.
+    """
+    MIN_N = 100          # below this, Wilson is so wide the number is noise
+    BREAK_EVEN = 54.05   # 100/(100+85) at Quotex's typical 85% payout
+    cutoff = int(time.time()) - days * 86400
+
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            rows = con.execute(
+                "SELECT asset, "
+                "       COALESCE(SUM(result='correct'),0), "
+                "       COALESCE(SUM(result='wrong'),0), "
+                "       COALESCE(SUM(result='draw'),0) "
+                "FROM signal_log "
+                "WHERE ctime >= ? AND period = ? "
+                "GROUP BY asset", (cutoff, period)).fetchall()
+        finally:
+            con.close()
+
+    out = []
+    for asset, correct, wrong, draws in rows:
+        n = correct + wrong
+        if not n:
+            continue
+        lo, hi = _wilson(correct, n)
+        if n < MIN_N:
+            status = "thin"
+        elif lo > BREAK_EVEN:
+            status = "proven_win"
+        elif hi < BREAK_EVEN:
+            status = "proven_loss"
+        else:
+            status = "unproven"
+        out.append({
+            "asset": asset,
+            "n": n,
+            "correct": correct,
+            "wrong": wrong,
+            "draws": draws,
+            "accuracy": round(100.0 * correct / n, 1),
+            "ci95": [lo, hi],
+            "status": status,
+        })
+
+    out.sort(key=lambda r: -r["accuracy"])
+    total_n = sum(r["n"] for r in out)
+    total_c = sum(r["correct"] for r in out)
+    return {
+        "days": days,
+        "period": period,
+        "break_even": BREAK_EVEN,
+        "min_n": MIN_N,
+        "pairs": out,
+        "overall": {
+            "n": total_n,
+            "accuracy": round(100.0 * total_c / total_n, 1) if total_n else None,
+            "ci95": list(_wilson(total_c, total_n)) if total_n else None,
+        },
+    }

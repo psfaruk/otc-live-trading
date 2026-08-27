@@ -1433,6 +1433,66 @@ function _updateTicker(price, asset) {
   ticker.classList.remove('hidden');
 }
 
+// ── Per-pair win rate ───────────────────────────────────────────────────────
+// Populated by _loadPairWinrate(); keyed by asset. Kept separate from
+// pairsList because /api/pairs comes from the broker and this comes from our
+// own graded signal history — they refresh on different clocks.
+let pairWinrate = {};      // asset -> {n, accuracy, ci95, status}
+let pairWinrateMeta = { break_even: 54.05, min_n: 100, days: 7 };
+
+// Build the sidebar win-rate cell for one asset.
+//
+// Colour is driven by `status`, never by the raw percentage. A pair sitting
+// at 62% on 9 graded signals is noise, and painting it green would be the
+// single most expensive lie this UI could tell — the Wilson interval on n=9
+// spans roughly 31%-86%. Only a bucket whose entire interval clears the
+// payout break-even earns green.
+function _winrateCell(asset) {
+  const w = pairWinrate[asset];
+  if (!w) return { text: '–', cls: 'wr-none', title: 'No graded signals yet' };
+  const be = pairWinrateMeta.break_even;
+  const ci = `95% CI ${w.ci95[0]}%–${w.ci95[1]}% · break-even ${be}%`;
+  const base = `${w.accuracy}% on ${w.n} graded (${w.correct}W/${w.wrong}L`
+             + `${w.draws ? ', ' + w.draws + ' draw' : ''}) · last `
+             + `${pairWinrateMeta.days}d\n${ci}`;
+  const map = {
+    proven_win:  ['wr-win',  'Whole interval beats break-even — the only state worth trading'],
+    proven_loss: ['wr-loss', 'Whole interval is below break-even — losing'],
+    unproven:    ['wr-flat', 'Interval straddles break-even — no proven edge either way'],
+    thin:        ['wr-thin', `Under ${pairWinrateMeta.min_n} graded signals — too few to judge`],
+  };
+  const [cls, note] = map[w.status] || map.unproven;
+  return { text: `${w.accuracy}%`, cls, title: `${base}\n${note}` };
+}
+
+async function _loadPairWinrate() {
+  try {
+    const r = await fetch('/api/pair-winrate?days=7');
+    if (!r.ok) return;
+    const d = await r.json();
+    pairWinrate = {};
+    for (const p of (d.pairs || [])) pairWinrate[p.asset] = p;
+    pairWinrateMeta = {
+      break_even: d.break_even ?? 54.05,
+      min_n: d.min_n ?? 100,
+      days: d.days ?? 7,
+    };
+    _paintWinrateCells();
+  } catch (e) { /* transient — next poll retries */ }
+}
+
+// Repaint in place rather than re-rendering the whole list: a full
+// _renderSidebarPairs() rebuilds every row and drops the click handlers and
+// the live countdown text mid-tick.
+function _paintWinrateCells() {
+  document.querySelectorAll('.sidebar-pair-wr').forEach((el) => {
+    const w = _winrateCell(el.dataset.asset);
+    el.textContent = w.text;
+    el.className = 'sidebar-pair-wr ' + w.cls;
+    el.title = w.title;
+  });
+}
+
 // ── Sidebar pair list — compact pair list in the sidebar ────────────────────
 // Rendered from the same pairsList that loadPairs() populates. Clicking a
 // pair switches to it (same as the topbar pair-btn dropdown).
@@ -1452,11 +1512,14 @@ function _renderSidebarPairs() {
                     : 'closed';
     const lockIcon = p.locked ? '🔒' : '';
     const pay = p.payout ? `${p.payout}%` : '–';
+    const wr = _winrateCell(p.asset);
     // Countdown slot — updated live by _updateSidebarCountdowns()
     return `<button type="button" class="sidebar-pair-row ${isActive ? 'active' : ''}"
             data-asset="${p.asset}">
       <span class="sidebar-pair-dot ${statusDot}"></span>
       <span class="sidebar-pair-name">${p.display}</span>
+      <span class="sidebar-pair-wr ${wr.cls}" data-asset="${p.asset}"
+            title="${wr.title}">${wr.text}</span>
       <span class="sidebar-pair-cd" data-asset="${p.asset}">--</span>
       <span class="sidebar-pair-pay">${pay}</span>
       ${lockIcon ? `<span class="sidebar-pair-lock">${lockIcon}</span>` : ''}
@@ -2166,6 +2229,10 @@ function bootChart(attempt) {
   });
   loadStats();
   setInterval(_pollGuard(loadStats), 30000);
+  // Win rate only changes when a candle closes and is graded, so a 30s
+  // cadence is already generous. _pollGuard pauses it with the tab.
+  _loadPairWinrate();
+  setInterval(_pollGuard(_loadPairWinrate), 30000);
   // Initial load of the sidebar's "Recent Signals" mini-list + periodic refresh
   _renderSignalHistoryMini();
   setInterval(_pollGuard(_renderSignalHistoryMini), 60000);  // refresh every 60s

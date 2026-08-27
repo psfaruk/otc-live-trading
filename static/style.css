@@ -3901,3 +3901,58 @@ input:focus-visible {
     font-size: 18px;
   }
 }
+
+/* ── Per-pair win rate (sidebar) ────────────────────────────────────────────
+   Colour encodes STATISTICAL STATUS, not the raw percentage. A pair showing
+   62% on 9 graded signals is noise (its 95% interval spans ~31-86%), so it
+   renders muted like every other unproven pair. Only a pair whose entire
+   confidence interval clears the payout break-even goes green. */
+.sidebar-pair-wr {
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+  flex-shrink: 0;
+  border-radius: 4px;
+  padding: 1px 4px;
+  cursor: help;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+}
+
+/* Whole interval beats break-even — the only state that justifies a trade. */
+.sidebar-pair-wr.wr-win {
+  color: var(--green);
+  background: rgba(0, 230, 118, 0.10);
+  border: 1px solid rgba(0, 230, 118, 0.28);
+}
+
+/* Whole interval sits below break-even — demonstrably losing. */
+.sidebar-pair-wr.wr-loss {
+  color: var(--red);
+  background: rgba(255, 82, 82, 0.10);
+  border: 1px solid rgba(255, 82, 82, 0.28);
+}
+
+/* Interval straddles break-even — the normal, honest state. Deliberately
+   flat: this must not read as encouragement. */
+.sidebar-pair-wr.wr-flat {
+  color: var(--text2);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Below the minimum sample size — shown, but visibly not a claim. */
+.sidebar-pair-wr.wr-thin {
+  color: var(--text2);
+  background: transparent;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  opacity: 0.65;
+}
+
+.sidebar-pair-wr.wr-none {
+  color: var(--text2);
+  background: transparent;
+  border: none;
+  opacity: 0.4;
+}
