@@ -83,6 +83,11 @@ async def _periodic_diagnosis(interval: int = 900) -> None:
                   f"{_es.get('distinct_timestamps')} timestamps x "
                   f"{_es.get('distinct_assets')} correlated pairs "
                   f"-> intervals above are OPTIMISTIC")
+            # This warning existed in the API payload but was never printed,
+            # so the log kept showing a blended by_strength with no hint that
+            # a third of the rows had a poisoned strength column.
+            if _es.get("warning"):
+                print(f"[diag] WARNING: {_es['warning']}")
             # Only buckets whose whole interval clears break-even mean
             # anything. Printing the point estimate alone is what made a
             # 54.07% coin flip read as "PROFITABLE".

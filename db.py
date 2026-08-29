@@ -647,10 +647,16 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
                 # The only question that matters for a binary payout: is the
                 # WHOLE interval above break-even? If not, this bucket has not
                 # been shown to make money, however good the point estimate.
+                # Whole-interval test. Deliberately overwritten to False for
+                # post-hoc buckets below: NOISE_CANDLE printed 68% with a
+                # "beats break-even" star while being computed from the
+                # outcome candle, which is the most dangerous thing this
+                # report could show -- a green light on an untradeable slice.
                 "beats_breakeven": lo > 54.05,
             }
             if post_hoc or (isinstance(key, str) and key in _POST_HOC_TAGS):
                 row["post_hoc"] = True
+                row["beats_breakeven"] = False   # never tradeable, whatever the rate
                 row["warning"] = ("derived from the outcome candle -- "
                                   "NOT usable as an entry filter")
             out.append(row)
@@ -672,7 +678,17 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
         # by_strength reads the FROZEN signal-time column. by_strength_live
         # reads the runconf-mutated one and is reported separately, flagged,
         # so its ~100%/0% split is never mistaken for a tradeable filter.
-        by_strength      = _rate(q("strength"))
+        # Rows written before the lookahead fix have a `strength` that was
+        # mutated by the outcome candle's own ticks. Averaging them in made
+        # MEDIUM read 79.98% while the clean rows sat at 53% -- the exact
+        # mirage this report exists to prevent. strength_live IS NULL marks
+        # them, so exclude them here rather than reporting a blended number.
+        _clean = (f"{wsql} AND strength_live IS NOT NULL" if wsql
+                  else " WHERE strength_live IS NOT NULL")
+        by_strength = _rate(con.execute(
+            f"SELECT strength, COUNT(*), COALESCE(SUM(result='correct'),0) "
+            f"FROM signal_log{_clean} AND strength IS NOT NULL "
+            f"GROUP BY strength", params).fetchall())
         by_strength_live = _rate(q("strength_live"), post_hoc=True)
         by_regime   = _rate(q("regime"))
         by_zone     = _rate(q("zone"))
