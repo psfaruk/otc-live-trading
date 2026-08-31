@@ -360,10 +360,17 @@ def theory_report(asset: str | None = None, period: int | None = None):
 
 @app.get("/api/signals")
 def signals(asset: str | None = None, period: int | None = None,
-            limit: int = 50):
-    """Recent resolved signals with full postmortem (why won / why lost)."""
+            limit: int = 50, direction: str | None = None,
+            result: str | None = None):
+    """Recent resolved signals with full postmortem (why won / why lost).
+
+    direction: "CALL" or "PUT" — show only that side (the user's explicit
+    requirement: Call ও put সিগন্যালগুলো আলাদা আলাদা দেখা)।
+    result: "correct" | "wrong" | "draw" — outcome filter.
+    """
     import db as _db
-    return _db.get_signals(asset, period, limit)
+    return _db.get_signals(asset, period, limit,
+                           direction=direction, result=result)
 
 
 @app.get("/api/share-signals")
@@ -628,6 +635,20 @@ def pair_winrate(days: int = 7, period: int = 60):
     import db as _db
     return _cached(_stats_cache, ("pair_winrate", days, period),
                    _STATS_CACHE_TTL, lambda: _db.pair_winrate(days, period))
+
+
+@app.get("/api/winrate-calls")
+def winrate_calls(days: int = 7, period: int = 60):
+    """Per-pair CALL vs PUT win rates + overall buckets.
+
+    The user's explicit requirement: "Call ও put কোনো সিগন্যাল গুলো কেমন
+    win রেট দিচ্ছে। সেই গুলো আলাদা আলাদা করে নিজের মতো করে দেখতে পারবো।"
+    Backs the Analytics tab's per-direction breakdown. Cached like the
+    other stats endpoints (numbers only move once per candle close)."""
+    import db as _db
+    return _cached(_stats_cache, ("winrate_calls", days, period),
+                   _STATS_CACHE_TTL,
+                   lambda: _db.direction_winrate(days, period))
 
 
 @app.get("/api/theory-perf")

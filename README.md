@@ -110,31 +110,85 @@ The app streams exactly 16 pairs (whitelist-curated, see `_WANTED_PAIRS` in `fee
 This is the user's explicit requirement:
 > "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে।"
 
-When the multi-theory analyzer returns a zero score (no theory voted, no
-color-independent evidence, no regime continuation), a layered tiebreak
-picks a direction in this order:
-
-1. Color-independent evidence lean (e.g. RUN absorption).
-2. Regime continuation with deep-state conviction ≥ 25%.
-3. Any regime direction (UPTREND/DOWNTREND) even without state confirmation.
-4. Final fallback: the just-closed candle's own color (bull → CALL, bear → PUT).
-
-Every fallback layer is marked WEAK strength so the user knows the
-difference between a strong-agreement signal and a tiebreak. The
-backtest (`tools/backtest_strategies.py`) enforces this invariant with a
+The backtest (`tools/backtest_strategies.py`) enforces this invariant with a
 hard assertion — if any candle returns NEUTRAL, the backtest fails loudly.
+
+## Signal engine architecture (2026-09 overhaul)
+
+The engine was rebuilt around what is actually MEASURABLE on the 1-minute
+OTC feed. The old version summed candlestick-pattern votes as the primary
+signal; the backtest measured those paths at ~50.4% (coin flip) while the
+despised fade-the-color tiebreak was the best path (53.7%), and STRONG
+signals scored WORSE than WEAK (49.4% vs 51.0% — stacked noise patterns
+manufactured false confidence).
+
+The new scoring model is two-layer:
+
+```
+score = STAT base layer (measured statistical bias, always present)
+      + EVIDENCE layer  (patterns / ticks / market state, capped ±2.5,
+                         discounted to 35% when it OPPOSES the base bias)
+```
+
+**STAT base layer** (`_stat_bias` in strategies/runner.py):
+1. Empirical continuation rate — how often THIS pair's next candle repeated
+   the last candle's color over the trailing 120 candles, conditioned on the
+   current run length. A z-test gates when the estimate is significant
+   enough to override the archetype prior (z ≥ 1.6).
+2. Archetype prior — fade on RANGE_BOUNCE/MEAN_REVERT (the measured 47-48%
+   color-following on the OTC pegs means fade is the >50% side), follow on
+   real TREND majors, weak follow on OTC "trenders" (runs documented to
+   exhaust in 2-3 candles).
+3. Streak exhaustion — 3+ same-color candles on range pairs fade.
+4. Extension fade — price stretched ≥ 0.9 ATR from SMA20 fades toward the
+   mean (≥ 2.2 ATR on trenders).
+
+**Other fixes in the same overhaul:**
+- Regime detector rewritten: least-squares slope + R² (trendiness ≥ 0.25,
+  steepness ≥ 0.12 ATR/candle) replaces the split-half high/low test that
+  labelled chop as trend.
+- Strength recalibrated: STRONG now requires STAT+EVIDENCE agreement, so
+  strength is monotonic (backtest: WEAK 52.4% < MEDIUM 53.5% < STRONG 55.9%).
+- ALL graded signals are now logged to signal_log (the old `if fired:` gate
+  silently dropped pure-tiebreak candles, biasing every win-rate report).
+- Pattern votes are capped (±2.5) and discounted when opposing the measured
+  base bias — they can refine conviction, not flip the edge.
+
+**Honest accuracy note:** the 1-minute OTC feed is near-memoryless. The
+engine's measured edge on the calibrated backtest is ~52.5% overall
+(break-even ≈ 52.1% at 92% payout) — above break-even, but nothing close to
+a guarantee. Anyone claiming 80-90% on this feed is selling something.
+
+## Win-rate analytics (per pair, per direction)
+
+The user's explicit requirement:
+> "প্রত্যেক পেয়ার ও সিগন্যাল হিস্টোরি উইন রেট আমি দেখতে পারবো। Call ও put
+> কোনো সিগন্যাল গুলো কেমন win রেট দিচ্ছে। সেই গুলো আলাদা আলাদা করে নিজের
+> মতো করে দেখতে পারবো।"
+
+- **Win Rates tab** — per-pair CALL vs PUT win rates with confidence bars,
+  n counts, direction-bias badges, and a 24h/3d/7d/30d window filter.
+- **History tab** — filter by pair + direction (CALL only / PUT only) +
+  outcome (wins/losses).
+- Endpoints: `GET /api/winrate-calls?days=7` (per-pair CALL/PUT/all buckets
+  with 95% Wilson intervals judged against the payout break-even) and
+  `GET /api/signals?direction=CALL&result=wrong&limit=150`.
+- Sidebar win-rate cells and all buckets stay colour-honest: green requires
+  the whole Wilson interval to clear break-even, never the point estimate.
 
 ## Tab navigation
 
-Four tabs (mobile = bottom bar, desktop = sidebar):
+Five tabs (mobile = bottom bar, desktop = sidebar), "Aurora" dark redesign:
 
 1. **Home** — overview dashboard: connection status, pairs streaming count,
-   overall win-rate, active signals count, plus the live Share Signal table
-   for all 16 pairs.
+   overall win-rate, active signals count, plus a live signal CARD GRID for
+   all 16 pairs (click a card to jump to that chart).
 2. **Chart Signal** — main chart + deep-analysis side panel (market state,
    theory accuracy, key levels, live micro flow, EOC analysis).
-3. **History** — resolved signal log with pair filter + postmortem.
-4. **Settings** — Quotex SSID token input, preferences, legal, about.
+3. **Win Rates** — per-pair CALL vs PUT win rates (the analytics tab).
+4. **History** — resolved signal log with pair / direction / outcome
+   filters + full postmortem.
+5. **Settings** — Quotex SSID token input, preferences, legal, about.
 
 ## Open API
 

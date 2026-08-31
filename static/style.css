@@ -1,3958 +1,1090 @@
-/* ═══════════════════════════════════════════════════════════════════════════════
-   Plybit AI — Dark-Theme Binary Options Trading Signal Dashboard
-   style.css  |  Production build
-   ═══════════════════════════════════════════════════════════════════════════════ */
-
-/* ── 1. CSS Custom Properties ───────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+   PLYBIT AI — "Aurora Terminal" design system
+   Deep-space navy · glass panels · electric blue/violet accents
+   ───────────────────────────────────────────────────────────────────────────
+   Class contract (chart.js / nav.js depend on these):
+     .signal-badge.{call,put,neutral}.str-{STRONG,MEDIUM,WEAK} + .signal-pop
+     .conf-bar.{call,put}          .mstate-*     .ss-* (share grid)
+     .wr-{win,loss,flat,thin,none,low,good,mid,bad}
+     .home-stat-value.{live,offline}             .status.{connected,disconnected,connecting}
+     .regime-badge.{uptrend,downtrend,sideways}.{zone-sup,zone-res,zone-mid}
+     .entry-timing.{et-go,et-warn,et-skip}       .running-conf.{confirming,opposing}
+     .runconf-badge                              .micro-*   .kl-item.kl-{major,minor}
+     .acc-dot.{correct,wrong,draw}.{call,put}    .sidebar-pair-row / -wr / -cd
+     .history-empty  .hist-signal.{call,put}  .hist-result.{correct,wrong,draw}
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 :root {
-  /* Core palette */
-  --bg:       #06080d;
-  --bg2:      #0d1117;
-  --bg3:      #161b22;
-  --bg4:      #1c2333;
-  --border:   #21262d;
-  --border-hover: #30363d;
-  --text:     #e6edf3;
-  --text2:    #8b949e;
-  --text3:    #484f58;
+  /* surfaces */
+  --bg-0: #070a14;            /* app background */
+  --bg-1: #0b1020;            /* panel background */
+  --bg-2: #101731;            /* raised background */
+  --bg-3: #16204a;            /* hover / active fill */
+  --glass: rgba(20, 28, 56, 0.55);
+  --line: rgba(96, 128, 220, 0.14);
+  --line-strong: rgba(110, 145, 240, 0.28);
 
-  /* Accent palette */
-  --green:    #00e676;
-  --red:      #ff1744;
-  --blue:     #448aff;
-  --yellow:   #ffd740;
-  --violet:   #8b5cf6;
+  /* text */
+  --tx-0: #eef2ff;            /* primary */
+  --tx-1: #b7c3e6;            /* secondary */
+  --tx-2: #7483ad;            /* muted */
+  --tx-3: #4a5780;            /* faint */
 
-  /* Layout dimensions */
-  --sidebar-w:   240px;
-  --topbar-h:    52px;
-  --bottomtab-h: 60px;
+  /* brand */
+  --blue: #40c4ff;
+  --violet: #8b5cf6;
+  --grad-brand: linear-gradient(135deg, #40c4ff 0%, #8b5cf6 100%);
 
-  /* Border radii */
-  --r:     10px;
-  --r-lg:  14px;
-  --r-xl:  20px;
+  /* signals */
+  --up: #0ee08f;
+  --up-dim: rgba(14, 224, 143, 0.14);
+  --dn: #ff4d67;
+  --dn-dim: rgba(255, 77, 103, 0.14);
+  --warn: #ffb547;
+  --flat: #8fa1cf;
 
-  /* Glass / shadow system */
-  --glass:            rgba(13, 17, 23, 0.85);
-  --shadow-sm:        0 1px 3px rgba(0, 0, 0, 0.4);
-  --shadow-md:        0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg:        0 8px 32px rgba(0, 0, 0, 0.5);
-  --shadow-glow-green: 0 0 20px rgba(0, 230, 118, 0.2);
-  --shadow-glow-red:   0 0 20px rgba(255, 23, 68, 0.2);
-  --shadow-glow-blue:  0 0 20px rgba(68, 138, 255, 0.2);
+  /* geometry */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 8px 28px rgba(2, 6, 20, 0.55);
+  --sidebar-w: 232px;
+  --topbar-h: 58px;
+  --tabs-h: 62px;
 
-  /* ── NEW: Animation & motion system ── */
-  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-spring:   cubic-bezier(0.34, 1.56, 0.64, 1);
-  --duration-fast: 0.15s;
-  --duration-normal: 0.25s;
-  --duration-slow: 0.4s;
-
-  /* ── NEW: Enhanced shadow / glow system ── */
-  --shadow-card:       0 2px 8px rgba(0, 0, 0, 0.3), 0 0 1px rgba(255, 255, 255, 0.03);
-  --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  --shadow-topbar:     0 1px 12px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.02);
-  --glow-green-soft:   0 0 20px rgba(0, 230, 118, 0.15);
-  --glow-red-soft:     0 0 20px rgba(255, 23, 68, 0.15);
-  --glow-blue-soft:    0 0 20px rgba(68, 138, 255, 0.15);
-
-  /* ── NEW: Card gradient system ── */
-  --card-grad: linear-gradient(145deg, rgba(22, 27, 34, 0.9) 0%, rgba(13, 17, 23, 0.95) 100%);
-  --card-grad-hover: linear-gradient(145deg, rgba(28, 35, 51, 0.95) 0%, rgba(22, 27, 34, 0.98) 100%);
+  --font: "Inter", "SF Pro Display", -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Mono",
+          "Roboto Mono", Menlo, Consolas, monospace;
 }
 
-/* ── 2. Reset & Base ────────────────────────────────────────────────────────── */
-
-*, *::before, *::after {
+/* ── Reset / base ─────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
   margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html, body {
-  height: 100%;
-  overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-               'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--font);
   font-size: 14px;
-  line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
+  line-height: 1.45;
+  color: var(--tx-1);
+  background:
+    radial-gradient(1100px 500px at 85% -10%, rgba(139, 92, 246, 0.10), transparent 60%),
+    radial-gradient(900px 480px at -10% 110%, rgba(64, 196, 255, 0.08), transparent 55%),
+    var(--bg-0);
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
 }
-
-a { color: var(--blue); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-button { font: inherit; }
-select { font: inherit; }
-
-img { max-width: 100%; display: block; }
-
-/* Global .hidden utility — any element toggled by JS via classList.add('hidden')
-   gets display:none. Replaces the per-element .hidden rules that previously
-   scattered this file (and avoids future regressions where a new toggled
-   element forgets its own .hidden rule). */
+h1, h2, h3 { color: var(--tx-0); margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+h2 { font-size: 17px; }
+a { color: var(--blue); }
+kbd {
+  background: var(--bg-3); border: 1px solid var(--line-strong);
+  border-radius: 5px; padding: 1px 6px; font-family: var(--mono); font-size: 11px;
+}
+code { font-family: var(--mono); font-size: 12px; color: var(--tx-1); }
 .hidden { display: none !important; }
+::selection { background: rgba(64, 196, 255, 0.28); }
 
-/* ── 3. Scrollbar Styling ───────────────────────────────────────────────────── */
-
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: var(--bg);
-}
+/* Scrollbars */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-hover);
-  border-radius: 3px;
+  background: rgba(110, 140, 220, 0.22); border-radius: 8px;
+  border: 2px solid transparent; background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text3);
-}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(110, 140, 220, 0.4); }
 
-/* Firefox */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-hover) var(--bg);
-}
-
-/* ── 4. App Shell ───────────────────────────────────────────────────────────── */
-
-#app {
-  display: flex;
-  flex-direction: row;
-  height: 100vh;
-  width: 100vw;
-  overflow: hidden;
-  background: var(--bg);
+/* Tabular numerals everywhere numbers matter */
+.ticker-price, .conf-bar-wrap, #signal-conf, #signal-score,
+.sidebar-pair-wr, .sidebar-pair-cd, .hist-time, .dir-summary-value,
+.analytics-table td, .chart-countdown, .kl-price {
+  font-variant-numeric: tabular-nums;
 }
 
-/* ── 5. Sidebar ─────────────────────────────────────────────────────────────── */
-
-#sidebar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: var(--sidebar-w);
-  background: var(--bg2);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  z-index: 45;
-  transform: translateX(-100%);
-  transition: transform 0.25s ease;
-}
-
-#sidebar.open {
-  transform: translateX(0);
-}
-
-/* Desktop — always visible, pushes layout */
-@media (min-width: 768px) {
-  #sidebar {
-    position: relative;
-    transform: translateX(0);
-    flex-shrink: 0;
-  }
-}
-
-/* ── 5a. Sidebar Brand ──────────────────────────────────────────────────────── */
-
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-}
-
-.sidebar-brand svg {
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-}
-
-.sidebar-brand span,
-.sidebar-brand-text {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: 0.3px;
-  white-space: nowrap;
-}
-
-/* The "AI" suffix in the brand is styled as an italic accent. */
-.sidebar-brand-text em {
-  font-style: italic;
-  font-weight: 700;
-  color: var(--blue);
-  margin-left: 2px;
-}
-
-/* ── 5b. Sidebar Navigation ─────────────────────────────────────────────────── */
-
-.sidebar-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px;
-  list-style: none;
-  position: relative;
-}
-
-/* ── NEW: Sidebar sliding active indicator ── */
-.sidebar-nav::before {
-  content: '';
-  position: absolute;
-  left: 8px;
-  width: calc(100% - 16px);
-  height: 40px;
-  background: rgba(68, 138, 255, 0.1);
-  border-radius: 8px;
-  transition: top var(--duration-normal) var(--ease-out-expo);
-  pointer-events: none;
-  box-shadow: inset 0 0 0 1px rgba(68, 138, 255, 0.08), 0 0 12px rgba(68, 138, 255, 0.06);
-  z-index: 0;
-  top: 8px;
-  opacity: 0;
-}
-
-.sidebar-nav.has-active::before {
-  opacity: 1;
-}
-
-/* ── 5c. Nav Item ───────────────────────────────────────────────────────────── */
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border-radius: 8px;
-  color: var(--text2);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  user-select: none;
-  border: none;
-  background: none;
-  width: 100%;
-  text-align: left;
-  font-size: 13px;
-  line-height: 1.4;
-  position: relative;
-  z-index: 1;
-}
-
-.nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-}
-
-.nav-item.active {
-  background: rgba(68, 138, 255, 0.12);
-  color: var(--blue);
-  font-weight: 600;
-}
-
-/* NEW: Premium active glow on sidebar nav */
-.nav-item.active::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 20px;
-  background: var(--blue);
-  border-radius: 0 3px 3px 0;
-  box-shadow: 0 0 8px rgba(68, 138, 255, 0.5);
-  animation: navIndicatorIn 0.3s var(--ease-spring) forwards;
-}
-
-@keyframes navIndicatorIn {
-  from { height: 0; opacity: 0; }
-  to   { height: 20px; opacity: 1; }
-}
-
-.nav-item .nav-icon {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  transition: transform var(--duration-fast) ease;
-}
-
-.nav-item:hover .nav-icon {
-  transform: scale(1.1);
-}
-
-.nav-item .nav-label {
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ── 5d. Sidebar Footer ─────────────────────────────────────────────────────── */
-
-.sidebar-footer {
-  margin-top: auto;
-  padding: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.sidebar-status {
-  padding: 12px 16px;
-}
-
-#status {
-  font-size: 11px;
-  color: var(--text3);
-  line-height: 1.5;
-}
-
-/* ── NEW: Connection status breathing animation ──
-   chart.js sets `el.className = 'status ' + cls` where cls is one of
-   "connected" / "connecting" / "disconnected" — so the #status div ends up
-   with two classes (e.g. "status connected"). We support BOTH that
-   space-separated form AND the legacy hyphenated form (.status-connected)
-   in case anything else still uses it. */
-.status-connected,
-.status-connecting,
-.status-disconnected,
-.status.connected,
-.status.connecting,
-.status.disconnected,
-#status.connected,
-#status.connecting,
-#status.disconnected {
-  transition: color var(--duration-normal) ease;
-}
-
-.status-connected::before,
-.status.connected::before,
-#status.connected::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
-  margin-right: 6px;
-  vertical-align: middle;
-  animation: breatheGreen 2.5s ease-in-out infinite;
-}
-
-.status-connecting::before,
-.status.connecting::before,
-#status.connecting::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--yellow);
-  margin-right: 6px;
-  vertical-align: middle;
-  animation: breatheYellow 1.5s ease-in-out infinite;
-}
-
-.status-disconnected::before,
-.status.disconnected::before,
-#status.disconnected::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--red);
-  margin-right: 6px;
-  vertical-align: middle;
-}
-
-@keyframes breatheGreen {
-  0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(0, 230, 118, 0.4); }
-  50%      { opacity: 0.6; box-shadow: 0 0 8px rgba(0, 230, 118, 0.7); }
-}
-
-@keyframes breatheYellow {
-  0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(255, 215, 64, 0.4); }
-  50%      { opacity: 0.5; box-shadow: 0 0 8px rgba(255, 215, 64, 0.7); }
-}
-
-/* ── 6. Main Wrapper ────────────────────────────────────────────────────────── */
+/* ═══ APP FRAME ════════════════════════════════════════════════════════ */
+#app { display: flex; height: 100vh; height: 100dvh; }
 
 #main-wrapper {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
 }
 
-/* Desktop offset for sidebar */
-@media (min-width: 768px) {
-  #main-wrapper {
-    margin-left: 0; /* sidebar is in flow */
-  }
-}
-
-/* NEW: Desktop max-width container with breathing room */
-@media (min-width: 1400px) {
-  #main-wrapper {
-    margin-right: auto;
-  }
-}
-
-/* ── 7. Topbar ──────────────────────────────────────────────────────────────── */
-
-#topbar {
-  height: var(--topbar-h);
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
+/* ═══ SIDEBAR ══════════════════════════════════════════════════════════ */
+#sidebar {
+  width: var(--sidebar-w);
   flex-shrink: 0;
-  z-index: 10;
-  /* Safety net: .topbar-left/.topbar-right never shrink (flex-shrink:0) and
-     only .mkt-badge/.regime-badge get hidden, and only below 480px. Common
-     390-428px phones (iPhone 12-15, Pixel, etc.) can still exceed the
-     available width with the hamburger + pair button + timeframe select +
-     badges all visible. #main-wrapper/html/body are all overflow:hidden,
-     so without this the overflow would silently clip content off-screen
-     (most likely the refresh button on the right) instead of scrolling. */
-  overflow-x: auto;
-  scrollbar-width: none;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, rgba(18, 26, 54, 0.75), rgba(10, 15, 32, 0.9));
+  border-right: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  z-index: 60;
+}
+.sidebar-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px 16px 14px;
+}
+.brand-mark { display: grid; place-items: center; }
+.sidebar-brand-text {
+  font-size: 16px; font-weight: 800; letter-spacing: 0.06em; color: var(--tx-0);
+}
+.sidebar-brand-text em {
+  font-style: normal; margin-left: 5px;
+  background: var(--grad-brand);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 
-#topbar::-webkit-scrollbar {
-  display: none;
+.sidebar-nav { padding: 4px 10px; display: grid; gap: 2px; }
+.nav-item {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 9px 12px;
+  background: none; border: 1px solid transparent; border-radius: var(--r-md);
+  color: var(--tx-2); font: inherit; font-weight: 550; font-size: 13px;
+  cursor: pointer; transition: all 0.16s ease;
 }
-
-/* NEW: Topbar depth shadow for visual separation */
-#topbar::after {
-  content: '';
-  position: absolute;
-  bottom: -1px;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(68, 138, 255, 0.08), transparent);
-  pointer-events: none;
-}
-
-.topbar-left,
-.topbar-right {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-/* NEW: Topbar center — sits between the left controls (pair/timeframe) and
-   right stats (refresh). Holds the live price ticker, centered on the screen. */
-.topbar-center {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-/* ── 7a. Sidebar Toggle (hamburger, mobile only) ────────────────────────────── */
-
-#sidebar-toggle,
-.sidebar-toggle {
-  display: flex;
-  background: none;
-  border: none;
-  color: var(--text2);
-  cursor: pointer;
-  padding: 6px;
-  /* min-width/height, not just padding: this is the ONLY way to open the
-     mobile drawer nav below 768px. 20px icon + 6px padding was 32x32px,
-     under the ~44px touch-target minimum recommended for a primary nav
-     control (WCAG 2.5.5 / Apple HIG). */
-  min-width: 44px;
-  min-height: 44px;
-  border-radius: 6px;
-  transition: all 0.15s ease;
-  align-items: center;
-  justify-content: center;
-}
-
-#sidebar-toggle:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-@media (min-width: 768px) {
-  #sidebar-toggle {
-    display: none;
-  }
-}
-
-/* ── 7b. Controls (pair, timeframe, badges) ─────────────────────────────────── */
-
-#controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.topbar-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text2);
-  padding: 6px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 12px;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-}
-
-.topbar-btn:hover {
-  border-color: var(--blue);
-  color: var(--blue);
-  background: rgba(68, 138, 255, 0.08);
-}
-
-/* NEW: Button press micro-interaction */
-.topbar-btn:active {
-  transform: scale(0.97);
-  transition-duration: 0.05s;
-}
-
-.topbar-btn svg {
-  flex-shrink: 0;
-}
-
-/* ── 7c. Pair Selector & Timeframe Controls ───────────────────────────────────
-   .tf-select is the timeframe dropdown (#tf-select in HTML); .ctrl-select is
-   the generic styled-dropdown class used by both the pair selector and the
-   history-page pair filter. Both share the same look. */
-
-.ctrl-select,
-.tf-select {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.15s ease;
-  flex-shrink: 0;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-}
-
-.ctrl-select:hover,
-.tf-select:hover {
-  border-color: var(--border-hover);
-}
-
-.ctrl-select:focus,
-.tf-select:focus {
-  border-color: var(--blue);
-}
-
-/* NEW: Smooth select focus glow transition */
-.ctrl-select:focus,
-.tf-select:focus {
-  border-color: var(--blue);
-  box-shadow: 0 0 0 2px rgba(68, 138, 255, 0.15);
-  transition: border-color var(--duration-normal) ease, box-shadow var(--duration-normal) ease;
-}
-
-.pair-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-
-.pair-caret {
-  font-size: 10px;
-  color: var(--text3);
-}
-
-/* ── 7d. Topbar Accuracy ────────────────────────────────────────────────────── */
-
-#accuracy-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text2);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.topbar-accuracy {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text2);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-/* ── 7e. Header Stats (refresh, history, settings buttons) ──────────────────── */
-
-#header-stats {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-#header-stats button {
-  background: none;
-  border: none;
-  color: var(--text2);
-  cursor: pointer;
-  padding: 6px;
-  /* 14px icon + 6px padding was 26x26px — under the ~40-44px touch-target
-     minimum, and this is the chart page's refresh control on mobile. */
-  min-width: 40px;
-  min-height: 40px;
-  border-radius: 6px;
-  transition: all 0.15s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#header-stats button:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-/* NEW: Press scale on header stat buttons */
-#header-stats button:active {
-  transform: scale(0.92);
-  transition-duration: 0.05s;
-}
-
-/* ── 8. Pages Container ─────────────────────────────────────────────────────── */
-
-#pages {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  overflow: hidden;
-}
-
-.page {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-}
-
-.page.hidden {
-  display: none !important;
-}
-
-.page-enter {
-  animation: pageSlideIn 0.25s ease-out;
-}
-
-@keyframes pageSlideIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* NEW: Enhanced page transition system — fade + slide with slight scale */
-.page {
-  opacity: 0;
-  transform: translateY(6px) scale(0.995);
-}
-
-.page.page-active {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  transition: opacity var(--duration-normal) var(--ease-out-expo),
-              transform var(--duration-normal) var(--ease-out-expo);
-}
-
-/* Override for .page-enter animation class (JS-triggered) */
-.page-enter {
-  animation: fadeSlideInEnhanced 0.35s var(--ease-out-expo) forwards;
-}
-
-@keyframes fadeSlideInEnhanced {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.99);
-    filter: blur(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
-  }
-}
-
-.page-scroll {
-  height: 100%;
-  overflow-y: auto;
-  padding: 16px;
-  scroll-behavior: smooth;
-}
-
-/* Chart page uses its own flex layout, no .page-scroll wrapper */
-#tab-advance {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-/* ── 9. Chart Page Layout — Signal Bar ─────────────────────────────────────── */
-/* Two-tier card. Row 1 (.signal-primary) is the primary focal point: the
-   call/put read as one prominent pill plus the confidence meter beside it.
-   Row 2 (.signal-detail) is secondary: the score caption plus a set of
-   transient state chips (entry timing / tick confirmation / strength gate)
-   that wrap together as a unit instead of interleaving with row 1's
-   elements — that interleaving in one flat wrapping row was the original
-   design's problem: badges, plain text, and a meter all competing on the
-   same line with no grouping, worst on narrow screens where it wrapped
-   unpredictably. */
-
-#signal-bar {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px;
-  margin: 0 8px 6px;
-  background: linear-gradient(135deg, rgba(13, 17, 23, 0.92) 0%, rgba(22, 27, 34, 0.88) 100%);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-}
-
-.signal-primary {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.signal-confidence {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 64px;
-}
-
-.signal-detail {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  width: 100%;
-  min-width: 0;
-}
-
-#signal-score {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text3);
-  font-variant-numeric: tabular-nums;
-  min-width: 0;
-  flex-shrink: 1;
-}
-
-/* display:contents (not flex) — .signal-chips is a grouping element for
-   markup/selector purposes only. Nesting a second flex-wrap container
-   inside .signal-detail's flex-wrap caused the chips to overflow instead
-   of wrapping: as a flex ITEM, .signal-chips' own preferred width was
-   computed from its children's un-shrinkable (flex-shrink:0) combined
-   width BEFORE .signal-detail decided whether to wrap it, so it never
-   actually deferred to the outer wrap. display:contents removes it from
-   the box model entirely — its children become direct flex items of
-   .signal-detail, so the whole row wraps in one single, predictable pass. */
-.signal-chips {
-  display: contents;
-}
-
-.conf-bar-wrap {
-  flex: 1;
-  min-width: 40px;
-  height: 6px;
-  background: var(--bg4);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.conf-bar {
-  height: 100%;
-  width: 0%;
-  border-radius: 3px;
-  background: var(--text3);
-  position: relative;
-  transition: width 0.6s var(--ease-out-expo), background 0.3s ease;
-}
-
-.conf-bar.call { background: var(--green); }
-.conf-bar.put  { background: var(--red); }
-
-.conf-bar::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  top: -1px;
-  bottom: -1px;
-  width: 4px;
-  border-radius: 0 3px 3px 0;
-  background: inherit;
-  filter: brightness(1.4);
-  opacity: 0.7;
-}
-
-#signal-conf {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text2);
-  flex-shrink: 0;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Accuracy strip */
-#accuracy-strip {
-  display: flex;
-  gap: 4px;
-  padding: 6px 8px;
-  margin: 0 8px 4px;
-  flex-shrink: 0;
-  overflow-x: auto;
-}
-
-.acc-dot {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.acc-dot.correct {
-  background: rgba(0, 230, 118, 0.15);
-  color: var(--green);
-}
-
-.acc-dot.wrong {
-  background: rgba(255, 23, 68, 0.15);
-  color: var(--red);
-}
-
-.acc-dot.draw {
-  background: rgba(255, 215, 64, 0.15);
-  color: var(--yellow);
-}
-
-/* NEW: Acc dot entrance animation */
-.acc-dot {
-  animation: accDotIn 0.3s var(--ease-spring) forwards;
-  opacity: 0;
-}
-
-@keyframes accDotIn {
-  from { transform: scale(0); opacity: 0; }
-  to   { transform: scale(1); opacity: 1; }
-}
-
-/* Main chart + side panel row */
-#main {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-  overflow: hidden;
-}
-
-#chart-wrap {
-  flex: 1;
-  min-width: 0;
-  position: relative;
-}
-
-#chart {
-  width: 100%;
-  height: 100%;
-}
-
-/* Chart countdown overlay — LARGE glassmorphism digits, top-left of #chart-wrap.
-   Upgraded from a small 12px pill to a prominent 28px mono readout so traders
-   can read the seconds-to-candle-close from across the room. */
-#chart-countdown,
-.chart-countdown {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 10;
-  background: rgba(6, 8, 13, 0.85);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 14px;
+.nav-item:hover { color: var(--tx-0); background: rgba(80, 110, 200, 0.10); }
+.nav-item.active {
   color: #fff;
-  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-  font-size: 28px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.5px;
-  line-height: 1;
-  text-shadow: 0 0 12px rgba(0, 0, 0, 0.6);
-  box-shadow: var(--shadow-md);
-  user-select: none;
-  pointer-events: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: flex-start;
-}
-
-/* Seconds remaining — the big number */
-#chart-countdown .countdown-time,
-.chart-countdown .countdown-time {
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-/* Broker UTC time — small label below the countdown */
-#chart-countdown .countdown-broker,
-.chart-countdown .countdown-broker {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text2);
-  letter-spacing: 0.8px;
-  line-height: 1;
-  text-shadow: none;
-  opacity: 0.85;
-}
-
-#chart-countdown.warn,
-.chart-countdown.warn {
-  color: var(--yellow);
-  text-shadow: 0 0 12px rgba(255, 215, 64, 0.4);
-}
-
-#chart-countdown.danger,
-.chart-countdown.danger {
-  color: var(--red);
-  text-shadow: 0 0 16px rgba(255, 23, 68, 0.5);
-  animation: countdownPulse 0.8s ease-in-out infinite;
-}
-
-/* Pulse: scale + subtle opacity. The old opacity-only pulse was too subtle
-   for the larger font. Scale draws the eye without being distracting. */
-@keyframes countdownPulse {
-  0%, 100% { transform: scale(1);    opacity: 1; }
-  50%      { transform: scale(1.05); opacity: 0.85; }
-}
-
-/* ── 10. Side Panel ─────────────────────────────────────────────────────────── */
-
-#side-panel {
-  width: 220px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  padding: 8px;
-  border-left: 1px solid var(--border);
-  background: var(--bg);
-}
-
-/* 767px, not 899, to match the sidebar/bottom-tabs mobile-nav split used
-   everywhere else (#sidebar goes permanent at min-width:768px, #bottom-tabs
-   only shows at max-width:767px). The old 899px cutoff left a 768-899px
-   dead zone where the desktop sidebar nav was already active (so the
-   mobile bottom-sheet toggle never applies) yet the panel was still
-   display:none with no way to open it — even though the 768-1023px tablet
-   rule below explicitly gives it a 190px width, implying it was always
-   meant to be visible there. */
-@media (max-width: 767px) {
-  #side-panel {
-    display: none;
-  }
-}
-
-/* NEW: Side panel subtle gradient background */
-#side-panel {
-  background: linear-gradient(180deg, var(--bg) 0%, rgba(13, 17, 23, 0.6) 100%);
-}
-
-.panel-title {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--text3);
-  padding: 8px 4px 4px;
-  font-weight: 700;
-}
-
-/* NEW: Section titles premium feel */
-.panel-title {
-  letter-spacing: 1.5px;
-  font-size: 10px;
-  color: var(--text3);
-  position: relative;
-  padding-bottom: 6px;
-}
-
-.panel-title::after {
-  content: '';
-  position: absolute;
-  left: 4px;
-  bottom: 0;
-  width: 24px;
-  height: 2px;
-  background: var(--blue);
-  border-radius: 1px;
-  opacity: 0.4;
-}
-
-.panel-title-gap {
-  margin-top: 12px;
-}
-
-/* Theory stats list */
-#theory-stats {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.theory-stat {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border-left: 2px solid var(--border);
-}
-
-/* NEW: Theory stat hover interaction */
-.theory-stat {
-  transition: background var(--duration-fast) ease, border-color var(--duration-fast) ease;
-}
-
-.theory-stat:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.ts-code {
-  font-weight: 700;
-  min-width: 44px;
-  color: var(--text2);
-}
-
-.ts-rate {
-  font-weight: 700;
-  min-width: 42px;
-  font-variant-numeric: tabular-nums;
-}
-
-.ts-n {
-  margin-left: auto;
-  color: var(--text3);
-  font-variant-numeric: tabular-nums;
-}
-
-.ts-muted {
-  opacity: 0.55;
-}
-
-.ts-mute-tag {
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-  color: var(--yellow);
-  border: 1px solid rgba(255, 215, 64, 0.4);
-  border-radius: 3px;
-  padding: 0 3px;
-  margin-left: 4px;
-}
-
-/* Key levels */
-.kl-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 3px 8px;
-  font-size: 11px;
-}
-
-/* NEW: Key level hover */
-.kl-item {
-  transition: background var(--duration-fast) ease;
-  border-radius: 4px;
-}
-
-.kl-item:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.kl-price {
-  color: var(--text2);
-  font-variant-numeric: tabular-nums;
-}
-
-.kl-touch {
-  color: var(--text3);
-}
-
-/* ── 11. Microstructure Panel ───────────────────────────────────────────────── */
-
-.micro-wrap {
-  padding: 8px 4px;
-}
-
-/* "Collecting ticks…" placeholder shown when the microstructure panel is
-   still gathering the first tick batch. Muted, italic, low-prominence. */
-.micro-forming {
-  font-size: 11px;
-  color: var(--text3);
-  font-style: italic;
-  padding: 8px 4px;
-  line-height: 1.5;
-}
-
-.micro-pressure-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.micro-buy,
-.micro-sell {
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  min-width: 40px;
-}
-
-.micro-buy {
-  color: var(--green);
-}
-
-.micro-sell {
-  color: var(--red);
-}
-
-.micro-bar-track {
-  flex: 1;
-  height: 6px;
-  background: var(--bg4);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.micro-bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s ease;
-  background: linear-gradient(90deg, var(--green), var(--green) 50%, var(--red) 50%, var(--red));
-}
-
-.micro-bar-init {
-  width: 50%;
-  background: var(--blue);
-}
-
-.micro-tag {
-  font-size: 11px;
-  padding: 2px 0;
-  color: var(--text2);
-}
-
-.micro-phases-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-  font-size: 11px;
-}
-
-.micro-phase-lbl {
-  color: var(--text3);
-}
-
-.micro-phase {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.micro-hold-row {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 6px;
-  font-size: 11px;
-}
-
-.micro-hold-lbl {
-  color: var(--text3);
-}
-
-/* ── 12. Market State (mstate) ──────────────────────────────────────────────── */
-
-.mstate-card {
-  padding: 10px;
-}
-
-.mstate-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.mstate-chip {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-/* NEW: Mstate chip subtle glow */
-.mstate-chip {
-  transition: box-shadow var(--duration-normal) ease, background var(--duration-normal) ease;
-}
-
-.mstate-bias {
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.mstate-meter-track {
-  height: 4px;
-  background: var(--bg4);
-  border-radius: 2px;
-  overflow: hidden;
-  margin-bottom: 8px;
-}
-
-.mstate-meter {
-  height: 100%;
-  border-radius: 2px;
-  transition: width 0.4s ease;
-}
-
-/* NEW: Smoother meter with gradient */
-.mstate-meter {
-  transition: width 0.6s var(--ease-out-expo);
-}
-
-/* In the HTML, the evidence ul uses id="mstate-evidence" with no class — so we
-   target both #id and .class to be safe. */
-#mstate-evidence,
-.mstate-evidence {
-  list-style: none;
-  font-size: 11px;
-  color: var(--text2);
-}
-
-#mstate-evidence li,
-.mstate-evidence li {
-  padding: 2px 0;
-}
-
-#mstate-evidence .empty,
-.mstate-evidence .empty {
-  color: var(--text3);
-  font-style: italic;
-}
-
-/* Auxiliary bars container inside the mstate card (used by chart.js to render
-   small inline bar visualizations). Each child is a flex row. */
-.mstate-bars {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--text2);
-}
-
-/* ── 13. Signal Badge (reusable — shared by #signal-bar and the auto-popup
-   toast) ───────────────────────────────────────────────────────────────── */
-
-.signal-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 16px;
-  border-radius: 20px;
-  font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 1px;
-}
-
-.signal-badge.call {
-  background: rgba(0, 230, 118, 0.15);
-  color: var(--green);
-  box-shadow: var(--shadow-glow-green);
-}
-
-.signal-badge.put {
-  background: rgba(255, 23, 68, 0.15);
-  color: var(--red);
-  box-shadow: var(--shadow-glow-red);
-}
-
-.signal-badge.neutral {
-  background: rgba(139, 148, 158, 0.1);
-  color: var(--text3);
-}
-
-/* #signal-bar's badge specifically (not the popup's) is the page's primary
-   focal point — bigger, with the direction and strength as two visually
-   distinct pieces instead of one run of text, and strength encoded as
-   color intensity (weak = muted outline, strong = full glow) so it reads
-   at a glance without parsing the label. */
-#signal-badge {
-  padding: 9px 16px;
-  border-radius: 14px;
-  gap: 9px;
-}
-
-.signal-dir {
-  font-weight: 800;
-  font-size: 17px;
-  letter-spacing: 0.3px;
-}
-
-.signal-strength {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-  padding: 2px 7px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.10);
-}
-
-#signal-badge.str-weak {
-  box-shadow: none;
-  border: 1px solid var(--border);
-}
-
-#signal-badge.call.str-strong {
-  box-shadow: 0 0 16px rgba(0, 230, 118, 0.4), 0 0 32px rgba(0, 230, 118, 0.15);
-  border: 1px solid rgba(0, 230, 118, 0.4);
-}
-
-#signal-badge.put.str-strong {
-  box-shadow: 0 0 16px rgba(255, 23, 68, 0.4), 0 0 32px rgba(255, 23, 68, 0.15);
-  border: 1px solid rgba(255, 23, 68, 0.4);
-}
-
-/* NEW: Signal badge pulse animation when signal changes */
-.signal-badge.call,
-.signal-badge.put {
-  animation: signalPulseCall 0.6s var(--ease-spring) forwards;
-}
-
-.signal-badge.put {
-  animation-name: signalPulsePut;
-}
-
-@keyframes signalPulseCall {
-  0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.4); }
-  30%  { transform: scale(1.08); box-shadow: 0 0 16px 4px rgba(0, 230, 118, 0.3); }
-  100% { transform: scale(1); box-shadow: 0 0 20px rgba(0, 230, 118, 0.2); }
-}
-
-@keyframes signalPulsePut {
-  0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 23, 68, 0.4); }
-  30%  { transform: scale(1.08); box-shadow: 0 0 16px 4px rgba(255, 23, 68, 0.3); }
-  100% { transform: scale(1); box-shadow: 0 0 20px rgba(255, 23, 68, 0.2); }
-}
-
-/* NEW: Smooth color transition when signal changes */
-.signal-badge {
-  transition: background 0.4s ease, color 0.4s ease, box-shadow 0.4s ease;
-}
-
-/* NEW: Continuous subtle glow for active signals */
-.signal-badge.call {
-  box-shadow: 0 0 12px rgba(0, 230, 118, 0.15), 0 0 24px rgba(0, 230, 118, 0.05);
-}
-
-.signal-badge.put {
-  box-shadow: 0 0 12px rgba(255, 23, 68, 0.15), 0 0 24px rgba(255, 23, 68, 0.05);
-}
-
-/* ── 14. Win Rate ───────────────────────────────────────────────────────────── */
-
-#winrate {
-  font-size: 14px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.wr-good { color: var(--green); }
-.wr-mid  { color: var(--yellow); }
-.wr-bad  { color: var(--red); }
-.wr-low  { color: var(--text3); }
-
-.wr-overall {
-  font-size: 11px;
-  font-weight: 700;
-}
-
-/* ── 15. Signal-bar status chips ───────────────────────────────────────────────
-   .entry-timing / .runconf-badge / .running-conf are three independent
-   pieces of transient state (entry-quality hint, strength-gate change, tick
-   confirmation) that used to have three different visual treatments — one
-   pill, one smaller pill, and one bare italic text fragment with no
-   container at all. Unified here into one shared chip shape so the trio
-   reads as a coherent status row instead of unrelated fragments. */
-
-.entry-timing,
-.runconf-badge,
-.running-conf {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.runconf-badge.hidden { display: none; }
-.runconf-badge.up   { color: var(--green); background: rgba(0,230,118,0.10); border-color: rgba(0,230,118,0.28); }
-.runconf-badge.down { color: var(--red);   background: rgba(255,23,68,0.10); border-color: rgba(255,23,68,0.28); }
-
-/* ── Zigzag micro tag ────────────────────────────────────────────────────── */
-.micro-tag.zz-call { color: var(--green); background: rgba(0,230,118,0.10); border: 1px solid rgba(0,230,118,0.3); border-radius: 4px; }
-.micro-tag.zz-put  { color: var(--red);   background: rgba(255,23,68,0.10);  border: 1px solid rgba(255,23,68,0.3);  border-radius: 4px; }
-
-.et-go   { background: rgba(0, 230, 118, 0.15); color: var(--green); }
-.et-warn { background: rgba(255, 215, 64, 0.15); color: var(--yellow); }
-.et-skip { background: rgba(139, 148, 158, 0.1); color: var(--text3); }
-
-/* NEW: Entry timing glow for go state */
-.et-go {
-  box-shadow: 0 0 8px rgba(0, 230, 118, 0.15);
-  animation: entryGlow 2s ease-in-out infinite;
-}
-
-@keyframes entryGlow {
-  0%, 100% { box-shadow: 0 0 8px rgba(0, 230, 118, 0.1); }
-  50%      { box-shadow: 0 0 14px rgba(0, 230, 118, 0.25); }
-}
-
-/* ── 16. Running Confidence ─────────────────────────────────────────────────── */
-/* Base shape now comes from the shared chip rule above (── 15 ──); this just
-   adds the confirming/opposing color states — previously unstyled, so the
-   chip showed the same muted tone regardless of which way ticks were
-   leaning. */
-
-.running-conf.confirming { color: var(--green); background: rgba(0,230,118,0.10); border-color: rgba(0,230,118,0.28); }
-.running-conf.opposing   { color: var(--yellow); background: rgba(255,215,64,0.10); border-color: rgba(255,215,64,0.28); }
-
-/* ── 17. Bottom Tabs (mobile) ───────────────────────────────────────────────── */
-
-#bottom-tabs {
-  display: none;
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: var(--bottomtab-h);
-  background: var(--bg2);
-  border-top: 1px solid var(--border);
-  z-index: 40;
-  align-items: stretch;
-  justify-content: center;
-}
-
-@media (max-width: 767px) {
-  #bottom-tabs {
-    display: flex;
-  }
-}
-
-/* NEW: Bottom tab glassmorphism + top glow line */
-#bottom-tabs {
-  background: rgba(13, 17, 23, 0.92);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-top: 1px solid var(--border);
-}
-
-#bottom-tabs::before {
-  content: '';
-  position: absolute;
-  top: -1px;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(68, 138, 255, 0.1), transparent);
-}
-
-.tab-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  background: none;
-  border: none;
-  color: var(--text3);
-  cursor: pointer;
-  transition: color 0.2s ease;
-  padding: 0;
-  position: relative;
-}
-
-.tab-btn.active {
-  color: var(--blue);
-}
-
-/* NEW: Bottom tab sliding pill indicator */
-.tab-btn::before {
-  content: '';
-  position: absolute;
-  top: 4px;
-  left: 50%;
-  transform: translateX(-50%) scaleX(0);
-  width: 24px;
-  height: 3px;
-  background: var(--blue);
-  border-radius: 0 0 3px 3px;
-  transition: transform var(--duration-normal) var(--ease-spring),
-              box-shadow var(--duration-normal) ease;
-  box-shadow: 0 2px 8px rgba(68, 138, 255, 0.3);
-}
-
-.tab-btn.active::before {
-  transform: translateX(-50%) scaleX(1);
-}
-
-.tab-btn .tab-icon {
-  width: 22px;
-  height: 22px;
-  transition: transform var(--duration-fast) var(--ease-spring);
-}
-
-/* NEW: Active tab icon subtle bounce */
-.tab-btn.active .tab-icon {
-  transform: scale(1.1);
-}
-
-/* NEW: Tab press feedback */
-.tab-btn:active .tab-icon {
-  transform: scale(0.9);
-  transition-duration: 0.05s;
-}
-
-.tab-btn .tab-btn-label {
-  font-size: 10px;
-  font-weight: 600;
-}
-
-/* NEW: Active tab label color transition */
-.tab-btn .tab-btn-label {
-  transition: color var(--duration-normal) ease;
-}
-
-/* ── 18. Sidebar Backdrop (mobile overlay) ──────────────────────────────────── */
-
-#sidebar-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 44;
-  animation: fadeIn 0.2s ease;
-}
-
-#sidebar-backdrop.hidden {
-  display: none;
-}
-
-@media (min-width: 768px) {
-  #sidebar-backdrop {
-    display: none !important;
-  }
-}
-
-/* ── 19. Pair Panel (dropdown overlay) ──────────────────────────────────────── */
-
-#pair-panel {
-  position: fixed;
-  top: 56px;
-  left: 12px;
-  width: 280px;
-  max-height: 60vh;
-  background: var(--glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-lg);
-  z-index: 55;
-  overflow: hidden;
-  animation: modalIn 0.15s ease-out;
-}
-
-/* NEW: Pair panel enhanced glass + glow border */
-#pair-panel {
-  background: rgba(13, 17, 23, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03);
-}
-
-#pair-panel.hidden {
-  display: none;
-}
-
-.pair-panel-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.pair-panel-search-icon {
-  color: var(--text3);
-  font-size: 16px;
-  flex-shrink: 0;
-}
-
-#pair-search {
-  flex: 1;
-  background: none;
-  border: none;
-  color: var(--text);
-  font-size: 13px;
-  outline: none;
-}
-
-#pair-search::placeholder {
-  color: var(--text3);
-}
-
-.pair-list {
-  list-style: none;
-  max-height: 300px;
-  overflow-y: auto;
-  padding: 4px;
-}
-
-.pair-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.1s ease;
-  font-size: 12px;
-  color: var(--text2);
-}
-
-/* NEW: Smoother pair list hover */
-.pair-list li {
-  transition: background var(--duration-fast) ease, color var(--duration-fast) ease, transform var(--duration-fast) ease;
-}
-
-.pair-list li:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-}
-
-.pair-list li.active {
-  background: rgba(68, 138, 255, 0.1);
-  color: var(--blue);
-}
-
-/* ── 21. Signal Popup ───────────────────────────────────────────────────────── */
-
-#signal-popup,
-.signal-popup {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 55;
-  text-align: center;
-  animation: popIn 0.3s ease-out;
-  /* The popup contains a badge + meta + close button. Let it receive pointer
-     events on its children (the close button needs clicks) but the popup
-     itself is non-interactive so it doesn't block chart interactions. */
-  pointer-events: none;
-}
-
-/* Children of the popup CAN receive pointer events (e.g. the close button). */
-#signal-popup > *,
-.signal-popup > * {
-  pointer-events: auto;
-}
-
-/* Meta line under the signal popup badge — pair + strength summary. */
-.signals-last-meta {
-  margin-top: 8px;
-  font-size: 13px;
-  color: var(--text2);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.3px;
-}
-
-/* The close button on the signal popup uses .history-btn styles (defined
-   later in section F) — it just needs positioning help here. */
-#signal-popup-close {
-  margin-top: 12px;
-}
-
-@keyframes popIn {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.85); }
-  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-}
-
-/* ── 22. Shared Modal Animations ──────────────────────────────────────────────
-   (The history modal, settings backdrop, and notif panel DOM nodes were
-   removed when the app switched to a 3-tab page layout. These keyframes are
-   still used by #pair-panel, #sidebar-backdrop, and the side-panel toggle, so
-   they stay.) */
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes modalIn {
-  from { opacity: 0; transform: translateY(12px) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-/* NEW: Enhanced modal entrance */
-@keyframes modalInEnhanced {
-  from {
-    opacity: 0;
-    transform: translateY(16px) scale(0.96);
-    filter: blur(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
-  }
-}
-
-/* ── 23. History Table ──────────────────────────────────────────────────────── */
-
-#history-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-#history-table th {
-  position: sticky;
-  top: 0;
-  background: var(--bg3);
-  text-align: left;
-  padding: 10px 12px;
-  color: var(--text2);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border);
-  z-index: 1;
-  white-space: nowrap;
-}
-
-#history-table td {
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(33, 38, 45, 0.5);
-  color: var(--text2);
-  vertical-align: top;
-  white-space: nowrap;
-}
-
-#history-table tr:hover td {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-/* NEW: Table row hover smooth transition */
-#history-table tbody tr {
-  transition: background var(--duration-fast) ease;
-}
-
-.hist-signal.call {
-  color: var(--green);
-  font-weight: 700;
-}
-
-.hist-signal.put {
-  color: var(--red);
-  font-weight: 700;
-}
-
-.hist-result.correct {
-  color: var(--green);
-  font-weight: 700;
-}
-
-.hist-result.wrong {
-  color: var(--red);
-  font-weight: 700;
-}
-
-/* ── 25. Info Card (used by Settings + About pages) ───────────────────────────
-   The old .home-* grid/hero/status DOM was deleted when the home and signals
-   pages were collapsed into the new 3-tab layout. Only the generic
-   .info-card rules survive because the Settings page (and About card inside
-   it) still uses them. */
-
-.info-card {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 20px;
-  margin-bottom: 12px;
-}
-
-/* NEW: Info card subtle gradient */
-.info-card {
-  background: linear-gradient(160deg, var(--bg3) 0%, rgba(13, 17, 23, 0.8) 100%);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-card);
-  transition: border-color var(--duration-normal) ease, box-shadow var(--duration-normal) ease;
-}
-
-.info-card:hover {
-  border-color: var(--border-hover);
-  box-shadow: var(--shadow-card-hover);
-}
-
-.info-card h2 {
-  font-size: 15px;
-  margin-bottom: 10px;
-  color: var(--text);
-  font-weight: 600;
-}
-
-.info-card p {
-  color: var(--text2);
-  line-height: 1.6;
-  margin-bottom: 8px;
-}
-
-.info-card ul {
-  padding-left: 20px;
-  color: var(--text2);
-  line-height: 1.8;
-}
-
-/* ── 27. Settings Page ──────────────────────────────────────────────────────── */
-
-.settings-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  color: var(--text2);
-}
-
-.settings-row span:first-child {
-  color: var(--text);
-}
-
-.settings-input {
-  width: 100%;
-  background: var(--bg4);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  padding: 10px 14px;
-  margin-bottom: 8px;
-  font-size: 13px;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.settings-input:focus {
-  border-color: var(--blue);
-}
-
-/* NEW: Settings input focus glow */
-.settings-input:focus {
-  border-color: var(--blue);
-  box-shadow: 0 0 0 2px rgba(68, 138, 255, 0.15);
-  transition: border-color var(--duration-normal) ease, box-shadow var(--duration-normal) ease;
-}
-
-.settings-input::placeholder {
-  color: var(--text3);
-}
-
-.pref-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text2);
-  user-select: none;
-}
-
-/* NEW: Pref row hover */
-.pref-row {
-  transition: background var(--duration-fast) ease;
-  border-radius: 6px;
-  padding: 10px 8px;
-  margin: 0 -8px;
-}
-
-.pref-row:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.pref-row input[type="checkbox"] {
-  accent-color: var(--blue);
-  width: 18px;
-  height: 18px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.logout-btn {
-  width: 100%;
-  margin-top: 12px;
-  padding: 10px;
-  background: rgba(255, 23, 68, 0.1);
-  border: 1px solid rgba(255, 23, 68, 0.3);
-  color: var(--red);
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 13px;
-  transition: all 0.15s ease;
-}
-
-.logout-btn:hover {
-  background: rgba(255, 23, 68, 0.2);
-}
-
-/* NEW: Logout button press + glow */
-.logout-btn:hover {
-  background: rgba(255, 23, 68, 0.2);
-  box-shadow: 0 0 12px rgba(255, 23, 68, 0.1);
-}
-
-.logout-btn:active {
-  transform: scale(0.97);
-  transition-duration: 0.05s;
-}
-
-/* ── 30. Theory Legend ──────────────────────────────────────────────────────── */
-
-#theory-legend {
-  list-style: none;
-  font-size: 11px;
-  color: var(--text2);
-  padding: 4px 0;
-}
-
-#theory-legend li {
-  padding: 2px 0;
-  line-height: 1.5;
-}
-
-.t-num {
-  display: inline-block;
-  width: 52px;
-  font-weight: 700;
-  color: var(--text3);
-  font-size: 10px;
-}
-
-/* ── 31. Market / Regime Badges ─────────────────────────────────────────────── */
-
-.mkt-badge {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-/* NEW: Badge entrance micro-animation */
-.mkt-badge,
-.regime-badge {
-  transition: transform var(--duration-fast) var(--ease-spring), box-shadow var(--duration-fast) ease;
-}
-
-.mkt-badge:hover,
-.regime-badge:hover {
-  transform: scale(1.05);
-}
-
-.regime-badge {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-}
-.regime-badge.hidden { display: none; }
-/* Trend/zone color-coding — set via chart.js's updateSignalUI, dropped by
-   the UI redesign rewrite that consolidated this block; restored here. */
-.regime-badge.uptrend   { color: var(--green); background: rgba(0,230,118,0.10); border-color: rgba(0,230,118,0.28); }
-.regime-badge.downtrend { color: var(--red);   background: rgba(255,23,68,0.10); border-color: rgba(255,23,68,0.28); }
-.regime-badge.sideways  { color: var(--blue);  background: rgba(68,138,255,0.10); border-color: rgba(68,138,255,0.28); }
-.regime-badge.zone-sup { box-shadow: 0 0 0 1px rgba(0,230,118,0.35) inset; }
-.regime-badge.zone-res { box-shadow: 0 0 0 1px rgba(255,23,68,0.35) inset; }
-
-/* ── 34. Disclaimer ─────────────────────────────────────────────────────────── */
-
-.disclaimer-card {
-  border-color: rgba(255, 23, 68, 0.2);
-}
-
-/* NEW: Disclaimer card subtle red glow */
-.disclaimer-card {
-  box-shadow: var(--shadow-card), 0 0 12px rgba(255, 23, 68, 0.05);
-}
-
-/* ── 35. Plan Note (Settings → About card footer) ─────────────────────────────
-   The old .plan-list selectors were deleted when the upgrade/plan picker DOM
-   was removed. .plan-note survives because the Settings page's About card
-   uses it for the copyright line. */
-
-.plan-note {
-  font-size: 11px;
-  color: var(--text3);
-  margin-top: 8px;
-}
-
-/* ── 36. Legal Details ──────────────────────────────────────────────────────── */
-
-.legal-details {
-  margin-top: 8px;
-}
-
-.legal-details summary {
-  cursor: pointer;
-  color: var(--text2);
-  font-size: 13px;
-  padding: 6px 0;
-  list-style: none;
-  user-select: none;
-}
-
-.legal-details summary::-webkit-details-marker {
-  display: none;
-}
-
-.legal-details p {
-  padding: 8px 12px;
-  background: var(--bg4);
-  border-radius: 6px;
-  color: var(--text2);
-  font-size: 12px;
-  line-height: 1.6;
-  margin-top: 4px;
-}
-
-/* ── 37. Loading & Empty States ─────────────────────────────────────────────── */
-
-.loading-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border);
-  border-top-color: var(--blue);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin: 0 auto 12px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* NEW: Modern ring spinner with glow */
-.loading-spinner {
-  border: 2px solid transparent;
-  border-top-color: var(--blue);
-  border-right-color: rgba(68, 138, 255, 0.3);
-  border-radius: 50%;
-  position: relative;
-  box-shadow: 0 0 12px rgba(68, 138, 255, 0.15);
-}
-
-.loading-spinner::after {
-  content: '';
-  position: absolute;
-  inset: 3px;
-  border: 2px solid transparent;
-  border-bottom-color: rgba(68, 138, 255, 0.5);
-  border-radius: 50%;
-  animation: spinReverse 1.2s linear infinite;
-}
-
-@keyframes spinReverse {
-  to { transform: rotate(-360deg); }
-}
-
-.loading-text {
-  color: var(--text3);
-  font-size: 13px;
-  text-align: center;
-}
-
-.no-data-icon,
-.no-data-text {
-  text-align: center;
-}
-
-.no-data-icon {
-  font-size: 40px;
-  margin-bottom: 8px;
-  opacity: 0.4;
-}
-
-.no-data-text {
-  font-size: 14px;
-  color: var(--text2);
-  margin-bottom: 4px;
-}
-
-.no-data-sub {
-  font-size: 12px;
-  color: var(--text3);
-  text-align: center;
-}
-
-/* ── 38. EOC Summary ────────────────────────────────────────────────────────── */
-
-.eoc-summary {
-  font-size: 11px;
-  color: var(--text2);
-  padding: 4px 0;
-  line-height: 1.5;
-}
-
-/* ── 39. Responsive Adjustments ─────────────────────────────────────────────── */
-
-/* Hidden by default (desktop) — the mobile FAB that opens/closes the Deep
-   Analysis bottom sheet. Only shown inside the max-width:767px block below;
-   desktop keeps using the in-panel #side-panel-toggle instead. */
-#side-panel-toggle-mobile {
-  display: none;
-}
-
-/* Mobile (< 768px): bottom tabs take over, side panel becomes a bottom sheet,
-   chart stacks vertically, page-scroll gets bottom padding for the tab bar. */
-@media (max-width: 767px) {
-  .page-scroll {
-    padding: 12px;
-    padding-bottom: calc(var(--bottomtab-h) + 16px);
-  }
-
-  /* Chart page bottom padding for bottom tabs */
-  #tab-advance {
-    padding-bottom: var(--bottomtab-h);
-  }
-
-  /* Signal bar tighter on mobile */
-  #signal-bar {
-    margin: 0 4px 4px;
-    padding: 8px 10px;
-    gap: 8px;
-  }
-
-  /* Score caption takes its own full-width line on mobile, so the status
-     chips after it get the ENTIRE row width to wrap within instead of
-     whatever's left over after the score text — narrow phones can have as
-     many as 3 chips visible at once (strength-gate change + entry timing +
-     tick confirmation), and sharing a line with the score caption left too
-     little room, causing the last chip to sit right at the edge instead of
-     wrapping cleanly. */
-  #signal-score {
-    flex-basis: 100%;
-  }
-
-  /* Accuracy strip tighter */
-  #accuracy-strip {
-    margin: 0 4px 4px;
-  }
-
-  /* Topbar tighter — the live price ticker eats horizontal space, so trim
-     padding and let the controls breathe. */
-  #topbar {
-    padding: 0 8px;
-    gap: 6px;
-  }
-
-  /* Live price ticker takes more visible space on mobile — let it shrink. */
-  .topbar-center {
-    flex: 1 1 0;
-    min-width: 0;
-  }
-
-  .ticker-pair {
-    font-size: 11px;
-  }
-  .ticker-price {
-    font-size: 13px;
-  }
-
-  /* Pair panel full width on small screens */
-  #pair-panel {
-    left: 8px;
-    right: 8px;
-    width: auto;
-  }
-
-  /* Big chart countdown scales down a touch on small screens so it doesn't
-     dominate the chart. Still 22px so it's readable. */
-  #chart-countdown {
-    font-size: 22px;
-    padding: 6px 10px;
-    top: 8px;
-    left: 8px;
-  }
-
-  /* Side panel: bottom sheet on mobile. Hidden by default (translated down).
-     When .active is added (via #side-panel-toggle), it slides up.
-     display MUST be reset here — the 899px breakpoint above sets
-     `display: none` on #side-panel, and since both media conditions are
-     true simultaneously at <=767px, that display:none otherwise wins the
-     cascade and the entire bottom-sheet panel (with it) never renders,
-     no matter what transform/position is set below. */
-  #side-panel {
-    display: block;
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: var(--bottomtab-h);
-    width: 100%;
-    max-height: 50vh;
-    border-left: none;
-    border-top: 1px solid var(--border);
-    border-radius: 16px 16px 0 0;
-    background: var(--bg2);
-    transform: translateY(calc(100% + var(--bottomtab-h)));
-    transition: transform var(--duration-normal) var(--ease-out-expo);
-    z-index: 30;
-    padding: 12px;
-    overflow-y: auto;
-    /* When the panel is .active (user tapped the toggle), slide it into view.
-       When .collapsed is explicitly set, also keep it hidden. */
-  }
-  #side-panel.active {
-    transform: translateY(0);
-  }
-  #side-panel.collapsed {
-    transform: translateY(calc(100% + var(--bottomtab-h)));
-  }
-
-  /* Side-panel toggle button: floats at top-right of the bottom sheet.
-     Only reachable while the sheet is already open (.active) — it can't be
-     what OPENS the sheet, since it's a child of #side-panel and gets
-     dragged off-screen right along with it while closed. That's what
-     #side-panel-toggle-mobile below is for. */
-  #side-panel-toggle {
-    top: 8px;
-    right: 8px;
-    left: auto;
-  }
-
-  /* Floating action button — the actual mobile open/close trigger. Lives
-     outside #side-panel in the DOM (see index.html) so it's never affected
-     by the panel's own show/hide transform. */
-  #side-panel-toggle-mobile {
-    display: flex;
-    position: fixed;
-    right: 14px;
-    bottom: calc(var(--bottomtab-h) + 14px);
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    align-items: center;
-    justify-content: center;
-    background: var(--blue);
-    color: #fff;
-    border: none;
-    box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.35));
-    z-index: 41;
-    cursor: pointer;
-    transition: transform var(--duration-fast) ease,
-                background var(--duration-fast) ease;
-  }
-
-  #side-panel-toggle-mobile:active {
-    transform: scale(0.92);
-  }
-
-  /* When the sheet is open, swap to a neutral color and rotate the icon
-     180° so it reads as "close" instead of "open". */
-  #side-panel-toggle-mobile.open {
-    background: var(--bg3);
-    color: var(--text2);
-  }
-
-  #side-panel-toggle-mobile.open svg {
-    transform: rotate(180deg);
-  }
-
-  /* Chart page stacks: chart on top (min height so it's usable), side panel
-     sheet below as overlay. */
-  #main {
-    flex-direction: column;
-  }
-
-  #chart-wrap {
-    min-height: 280px;
-    flex: 1;
-  }
-
-  /* Settings/About cards: tighter padding on mobile. */
-  .info-card {
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 10px;
-  }
-
-  /* History table: hide the "Why" column (6th) on narrow screens — it's the
-     widest column and the most expendable for at-a-glance scanning. */
-  #history-table th:nth-child(6),
-  #history-table td:nth-child(6) {
-    display: none;
-  }
-}
-
-/* Very small mobile (<= 380px): collapse signal bar to vertical stack. */
-@media (max-width: 380px) {
-  .topbar-btn {
-    padding: 5px 8px;
-    font-size: 11px;
-  }
-
-  .ctrl-select {
-    padding: 5px 8px;
-    font-size: 11px;
-  }
-
-  /* .signal-primary (badge + confidence meter) stays a row down to phone
-     widths — it's only two elements and reads better side-by-side than
-     stacked. If the badge's strength chip ever makes it too tight on the
-     narrowest phones, the meter's min-width:40px (── 9 ──) lets it compress
-     rather than force a wrap. */
-  .signal-dir {
-    font-size: 15px;
-  }
-}
-
-/* Hide the regime/mkt badge below 480px (was 380px) — pair + timeframe +
-   ticker + hamburger already crowd the topbar on the common 390-428px
-   phone widths (iPhone 12-15, Pixel, etc.), which sat between the old
-   380px cutoff and the 767px mobile-nav breakpoint with nothing shedding
-   width. #topbar's own overflow-x:auto (above) is the safety net if it
-   still doesn't fit at some width; this cuts how often that's needed. */
-@media (max-width: 480px) {
-  .mkt-badge,
-  .regime-badge {
-    display: none;
-  }
-}
-
-/* Tablet (768-1023px): sidebar collapses to icons-only so the chart gets
-   more horizontal real estate. The pair list is hidden (it's too wide to
-   fit at 60px); users pick pairs via the topbar dropdown on this size. */
-@media (min-width: 768px) and (max-width: 1023px) {
-  #sidebar {
-    width: 60px;
-  }
-
-  /* Hide labels and pair list — icons only. */
-  .sidebar-brand span,
-  .nav-label,
-  .sidebar-pairs,
-  .sidebar-footer .sidebar-status {
-    display: none;
-  }
-
-  .sidebar-brand {
-    justify-content: center;
-    padding: 16px 0;
-  }
-
-  .nav-item {
-    justify-content: center;
-    padding: 12px 0;
-  }
-
-  /* Side panel narrower on tablet. */
-  #side-panel {
-    width: 190px;
-  }
-}
-
-/* Desktop (≥ 1024px): page-scroll max-width container for breathing room. */
-@media (min-width: 1024px) {
-  .page-scroll {
-    padding: 20px 24px;
-    max-width: 1200px;
-  }
-}
-
-/* ── 40. Reduced Motion ─────────────────────────────────────────────────────── */
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.001ms !important;
-    transition-duration: 0.001ms !important;
-  }
-}
-
-/* ── 41. Utility Classes ────────────────────────────────────────────────────── */
-
-.text-green { color: var(--green); }
-.text-red   { color: var(--red); }
-.text-blue  { color: var(--blue); }
-.text-yellow { color: var(--yellow); }
-.text-violet { color: var(--violet); }
-.text-muted { color: var(--text3); }
-
-.bg-green { background: var(--green); }
-.bg-red   { background: var(--red); }
-.bg-blue  { background: var(--blue); }
-
-.fw-600 { font-weight: 600; }
-.fw-700 { font-weight: 700; }
-
-.tabular-nums { font-variant-numeric: tabular-nums; }
-
-.text-center { text-align: center; }
-.text-left   { text-align: left; }
-.text-right  { text-align: right; }
-
-.flex-center {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.gap-4  { gap: 4px; }
-.gap-6  { gap: 6px; }
-.gap-8  { gap: 8px; }
-.gap-12 { gap: 12px; }
-
-.mt-8  { margin-top: 8px; }
-.mt-12 { margin-top: 12px; }
-.mt-16 { margin-top: 16px; }
-.mb-8  { margin-bottom: 8px; }
-.mb-12 { margin-bottom: 12px; }
-.mb-16 { margin-bottom: 16px; }
-
-.truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════
-   NEW: 42. Animation & Motion System
-   ═══════════════════════════════════════════════════════════════════════════════ */
-
-/* Fade in animation utility */
-.animate-in {
-  opacity: 0;
-  animation: fadeSlideIn 0.3s var(--ease-out-expo) forwards;
-}
-
-@keyframes fadeSlideIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-    filter: blur(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-    filter: blur(0);
-  }
-}
-
-/* Stagger children animations — set --i via inline style */
-.stagger > * {
-  opacity: 0;
-  animation: fadeSlideIn 0.35s var(--ease-out-expo) forwards;
-  animation-delay: calc(var(--i, 0) * 0.05s);
-}
-
-/* Glass card utility */
-.glass {
-  background: rgba(13, 17, 23, 0.75);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: var(--r);
-}
-
-/* Glow effects */
-.glow-green {
-  box-shadow: 0 0 20px rgba(0, 230, 118, 0.15);
-}
-
-.glow-red {
-  box-shadow: 0 0 20px rgba(255, 23, 68, 0.15);
-}
-
-.glow-blue {
-  box-shadow: 0 0 20px rgba(68, 138, 255, 0.15);
-}
-
-/* ── NEW: 43. Skeleton Loading ──────────────────────────────────────────────── */
-
-.skeleton {
-  background: linear-gradient(90deg,
-    var(--bg4) 25%,
-    rgba(48, 54, 61, 0.5) 50%,
-    var(--bg4) 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
-  border-radius: 6px;
-}
-
-@keyframes shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-.skeleton-text {
-  height: 14px;
-  margin-bottom: 8px;
-  width: 100%;
-}
-
-.skeleton-text.short {
-  width: 60%;
-}
-
-.skeleton-text.medium {
-  width: 80%;
-}
-
-.skeleton-heading {
-  height: 20px;
-  margin-bottom: 12px;
-  width: 40%;
-}
-
-.skeleton-card {
-  height: 80px;
-  border-radius: var(--r);
-  margin-bottom: 10px;
-}
-
-.skeleton-circle {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-}
-
-/* ── NEW: 44. Section Title Typography ──────────────────────────────────────── */
-
-.section-title {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  color: var(--text);
-  margin-bottom: 16px;
-  line-height: 1.3;
-}
-
-.section-subtitle {
-  font-size: 13px;
-  color: var(--text2);
-  margin-bottom: 16px;
-  line-height: 1.5;
-}
-
-.section-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  color: var(--text3);
-  font-weight: 700;
-  margin-bottom: 10px;
-}
-
-/* ── NEW: 45. Micro-Interaction Utilities ───────────────────────────────────── */
-
-/* Press scale for any interactive element */
-.press-scale {
-  transition: transform var(--duration-fast) ease;
-}
-
-.press-scale:active {
-  transform: scale(0.97);
-  transition-duration: 0.05s;
-}
-
-/* Hover lift for any card-like element */
-.hover-lift {
-  transition: transform var(--duration-normal) var(--ease-out-expo),
-              box-shadow var(--duration-normal) ease;
-}
-
-.hover-lift:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-card-hover);
-}
-
-/* Border glow on hover */
-.border-glow {
-  border: 1px solid var(--border);
-  transition: border-color var(--duration-normal) ease,
-              box-shadow var(--duration-normal) ease;
-}
-
-.border-glow:hover {
-  border-color: rgba(68, 138, 255, 0.2);
-  box-shadow: 0 0 16px rgba(68, 138, 255, 0.06);
-}
-
-/* ── NEW: 46. Scroll Fade Edges ─────────────────────────────────────────────── */
-
-.scroll-fade {
-  position: relative;
-}
-
-.scroll-fade::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 24px;
-  background: linear-gradient(transparent, var(--bg));
-  pointer-events: none;
-  border-radius: 0 0 var(--r) var(--r);
-}
-
-/* ── NEW: 47. Interactive Card Base ─────────────────────────────────────────── */
-
-.card-interactive {
-  background: var(--card-grad);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  box-shadow: var(--shadow-card);
-  transition: transform var(--duration-normal) var(--ease-out-expo),
-              box-shadow var(--duration-normal) ease,
-              border-color var(--duration-normal) ease;
-  cursor: pointer;
-}
-
-.card-interactive:hover {
-  transform: translateY(-2px);
-  border-color: rgba(68, 138, 255, 0.12);
-  box-shadow: var(--shadow-card-hover), 0 0 20px rgba(68, 138, 255, 0.04);
-}
-
-.card-interactive:active {
-  transform: translateY(-1px) scale(0.98);
-  transition-duration: 0.05s;
-}
-
-/* ── NEW: 48. Tooltip Style ─────────────────────────────────────────────────── */
-
-[data-tooltip] {
-  position: relative;
-}
-
-[data-tooltip]::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%) scale(0.9);
-  background: var(--bg4);
-  color: var(--text);
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity var(--duration-fast) ease, transform var(--duration-fast) var(--ease-spring);
-  z-index: 100;
-  box-shadow: var(--shadow-md);
-  border: 1px solid var(--border);
-}
-
-[data-tooltip]:hover::after {
-  opacity: 1;
-  transform: translateX(-50%) scale(1);
-}
-
-/* ── NEW: 49. Divider ───────────────────────────────────────────────────────── */
-
-.divider {
-  height: 1px;
-  background: var(--border);
-  margin: 12px 0;
-}
-
-.divider-fade {
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--border), transparent);
-  margin: 12px 0;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════
-   NEW: 3-TAB LAYOUT SECTIONS
-   These sections cover the new DOM nodes introduced when the app collapsed
-   from 5 pages (Home, Chart, Signals, History modal, Settings modal) to 3
-   pages (Chart, History, Settings) plus a sidebar pair list, a live price
-   ticker, a big countdown overlay, a signal-history mini-list, and a side-
-   panel collapse toggle.
-   ═══════════════════════════════════════════════════════════════════════════════ */
-
-/* ── A. Sidebar Pair List ──────────────────────────────────────────────────────
-   Lives below .sidebar-nav inside #sidebar. Each row is a button that swaps
-   the active trading pair. Status dot: green=live, blue=OTC, gray=closed. */
-
-.sidebar-pairs {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  padding: 8px 8px 0;
-  border-top: 1px solid var(--border);
-  margin-top: 8px;
-}
+  background: linear-gradient(135deg, rgba(64, 196, 255, 0.16), rgba(139, 92, 246, 0.16));
+  border-color: rgba(96, 150, 255, 0.25);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+.nav-item.active .nav-icon { color: var(--blue); }
+.nav-icon { width: 17px; height: 17px; flex-shrink: 0; }
 
 .sidebar-pairs-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 4px 6px;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px 6px;
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
 }
-
-.sidebar-pairs-head .panel-title {
-  padding: 0;
+.sidebar-pairs-title, .sidebar-pairs-head .panel-title {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--tx-3); margin: 0;
 }
-.sidebar-pairs-head .panel-title::after {
-  /* The pair list header still gets the underline accent. */
-  display: none;
-}
-
-#sidebar-pairs-count,
 .sidebar-pairs-count {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--text3);
-  background: var(--bg4);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1px 6px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.3px;
+  font-family: var(--mono); font-size: 11px; color: var(--tx-2);
+  background: var(--bg-3); border-radius: 999px; padding: 1px 8px;
 }
-
-#sidebar-pair-list,
-.sidebar-pair-list {
-  flex: 1;
-  min-height: 0;
-  max-height: calc(100vh - 280px);
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-bottom: 8px;
-}
+.sidebar-pair-list { flex: 1; overflow-y: auto; padding: 4px 10px 10px; }
+.sidebar-pair-empty { padding: 14px; text-align: center; color: var(--tx-3); font-size: 12px; }
 
 .sidebar-pair-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: none;
-  border: 1px solid transparent;
-  color: var(--text2);
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-  transition: background var(--duration-fast) ease,
-              border-color var(--duration-fast) ease,
-              color var(--duration-fast) ease;
-  user-select: none;
-  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 7px 9px; margin-bottom: 2px;
+  background: none; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--tx-1); font: inherit; font-size: 12.5px;
+  cursor: pointer; text-align: left; transition: all 0.14s ease;
 }
-
-.sidebar-pair-row:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
-}
-
+.sidebar-pair-row:hover { background: rgba(80, 110, 200, 0.10); }
 .sidebar-pair-row.active {
-  background: rgba(68, 138, 255, 0.12);
-  color: var(--blue);
-  border-color: rgba(68, 138, 255, 0.25);
-  font-weight: 600;
+  background: linear-gradient(135deg, rgba(64, 196, 255, 0.13), rgba(139, 92, 246, 0.13));
+  border-color: rgba(96, 150, 255, 0.22);
+  color: var(--tx-0);
 }
-
-/* Active row left accent — same pattern as .nav-item.active */
-.sidebar-pair-row.active::before {
-  content: '';
-  position: absolute;
-  left: -1px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 18px;
-  background: var(--blue);
-  border-radius: 0 3px 3px 0;
-  box-shadow: 0 0 6px rgba(68, 138, 255, 0.5);
+.sp-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--flat);
 }
-
-.sidebar-pair-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--text3);
-  box-shadow: 0 0 6px currentColor;
+.sp-dot.live  { background: var(--up); box-shadow: 0 0 6px rgba(14, 224, 143, 0.8); }
+.sp-dot.otc   { background: var(--warn); }
+.sp-dot.closed{ background: var(--tx-3); }
+.sp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-lock { font-size: 10px; opacity: 0.8; }
+.sp-payout { font-family: var(--mono); font-size: 10.5px; color: var(--tx-3); }
+.sidebar-pair-wr {
+  font-family: var(--mono); font-size: 10.5px; padding: 2px 6px;
+  border-radius: 6px; background: var(--bg-2); color: var(--tx-2);
 }
-
-.sidebar-pair-dot.live {
-  background: var(--green);
-  color: rgba(0, 230, 118, 0.5);
-  animation: breatheGreen 2.5s ease-in-out infinite;
-}
-
-.sidebar-pair-dot.otc {
-  background: var(--blue);
-  color: rgba(68, 138, 255, 0.5);
-}
-
-.sidebar-pair-dot.closed {
-  background: var(--text3);
-  color: transparent;
-  box-shadow: none;
-}
-
-.sidebar-pair-name {
-  flex: 1;
-  min-width: 0;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sidebar-pair-pay {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--green);
-  background: rgba(0, 230, 118, 0.08);
-  border: 1px solid rgba(0, 230, 118, 0.2);
-  border-radius: 4px;
-  padding: 1px 4px;
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
-}
-
-/* Per-pair countdown seconds — live-updating, color shifts as candle nears close */
 .sidebar-pair-cd {
-  font-size: 11px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--text2);
-  min-width: 28px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--tx-3); min-width: 26px;
   text-align: right;
+}
+.sidebar-pair-cd.warn { color: var(--warn); }
+.sidebar-pair-cd.danger { color: var(--dn); }
+
+/* Win-rate cell states */
+.wr-win  { color: var(--up) !important; background: var(--up-dim) !important; }
+.wr-loss { color: var(--dn) !important; background: var(--dn-dim) !important; }
+.wr-flat { color: var(--tx-1) !important; }
+.wr-thin, .wr-none { color: var(--tx-3) !important; }
+.wr-good { color: var(--up); }
+.wr-mid  { color: var(--tx-1); }
+.wr-bad  { color: var(--dn); }
+.wr-low  { color: var(--tx-3); }
+.wr-overall { font-family: var(--mono); font-size: 11px; color: var(--tx-2); margin-left: 6px; }
+
+/* ═══ TOPBAR ═══════════════════════════════════════════════════════════ */
+#topbar {
+  height: var(--topbar-h);
   flex-shrink: 0;
-  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 0 14px;
+  background: rgba(10, 15, 32, 0.72);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  z-index: 50;
+}
+.topbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.topbar-center { flex: 1; display: flex; justify-content: center; min-width: 0; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+
+.sidebar-toggle {
+  display: none;
+  background: none; border: none; color: var(--tx-2);
+  width: 34px; height: 34px; border-radius: var(--r-sm);
+  cursor: pointer; align-items: center; justify-content: center;
+}
+.sidebar-toggle:hover { background: var(--bg-3); color: var(--tx-0); }
+
+.ctrl-select {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--tx-0);
+  border-radius: var(--r-sm);
+  font: inherit; font-size: 12.5px; font-weight: 600;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.ctrl-select:hover, .ctrl-select:focus { border-color: var(--line-strong); outline: none; }
+.pair-btn { display: flex; align-items: center; gap: 8px; min-width: 128px; }
+.pair-caret { color: var(--tx-3); font-size: 10px; }
+.pair-btn-label { font-weight: 700; letter-spacing: 0.02em; }
+
+.mkt-badge {
+  font-size: 10px; font-weight: 800; letter-spacing: 0.08em;
+  padding: 3px 7px; border-radius: 6px;
+  background: rgba(255, 181, 71, 0.14); color: var(--warn);
+  border: 1px solid rgba(255, 181, 71, 0.3);
+}
+.mkt-badge.real {
+  background: rgba(64, 196, 255, 0.12); color: var(--blue);
+  border-color: rgba(64, 196, 255, 0.3);
 }
 
-.sidebar-pair-cd.warn {
-  color: var(--yellow);
+.regime-badge {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em;
+  padding: 4px 9px; border-radius: 999px; border: 1px solid transparent;
 }
+.regime-badge.uptrend   { color: var(--up); background: var(--up-dim); border-color: rgba(14, 224, 143, 0.3); }
+.regime-badge.downtrend { color: var(--dn); background: var(--dn-dim); border-color: rgba(255, 77, 103, 0.3); }
+.regime-badge.sideways  { color: var(--flat); background: rgba(143, 161, 207, 0.12); border-color: rgba(143, 161, 207, 0.28); }
+.regime-badge.zone-sup { box-shadow: 0 0 0 1px rgba(14, 224, 143, 0.22); }
+.regime-badge.zone-res { box-shadow: 0 0 0 1px rgba(255, 77, 103, 0.22); }
 
-.sidebar-pair-cd.danger {
-  color: var(--red);
-  animation: cdPulse 0.8s ease-in-out infinite;
-}
-
-@keyframes cdPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
-.sidebar-pair-lock {
-  width: 12px;
-  height: 12px;
-  color: var(--text3);
-  flex-shrink: 0;
-}
-
-.sidebar-pair-empty {
-  padding: 16px 12px;
-  text-align: center;
-  color: var(--text3);
-  font-size: 11px;
-  font-style: italic;
-}
-
-/* ── B. Live Price Ticker ──────────────────────────────────────────────────────
-   Centered in .topbar-center. Flashes green/red on each tick change. */
-
-#live-price-ticker,
+/* Live price ticker */
 .live-price-ticker {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  font-variant-numeric: tabular-nums;
-  user-select: none;
-  white-space: nowrap;
-  transition: background var(--duration-fast) ease,
-              border-color var(--duration-fast) ease;
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 5px 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
 }
-
-.ticker-pair {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text2);
-  letter-spacing: 0.3px;
-}
-
+.ticker-pair { font-size: 11px; font-weight: 700; color: var(--tx-2); letter-spacing: 0.06em; }
 .ticker-price {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-  letter-spacing: 0.3px;
-  transition: color var(--duration-fast) ease;
+  font-family: var(--mono); font-size: 17px; font-weight: 700; color: var(--tx-0);
+  transition: color 0.12s ease;
 }
+.ticker-price.flash-up { color: var(--up); }
+.ticker-price.flash-down { color: var(--dn); }
 
-/* Tick flash animations — added by chart.js when the price changes. The
-   background pulses briefly green/red so a trader can see at a glance which
-   way the last tick moved without reading the digits. */
-.ticker-price.flash-up {
-  animation: flashUp 0.3s ease-out;
+/* Connection status pill */
+.status {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+  padding: 5px 11px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid transparent;
 }
+.status.connected    { color: var(--up); background: var(--up-dim); border-color: rgba(14, 224, 143, 0.3); }
+.status.disconnected { color: var(--dn); background: var(--dn-dim); border-color: rgba(255, 77, 103, 0.3); }
+.status.connecting   { color: var(--warn); background: rgba(255, 181, 71, 0.12); border-color: rgba(255, 181, 71, 0.3); }
 
-.ticker-price.flash-down {
-  animation: flashDown 0.3s ease-out;
+.topbar-accuracy { font-size: 12px; }
+#accuracy-label { font-weight: 700; }
+#accuracy-label.correct { color: var(--up); }
+#accuracy-label.wrong   { color: var(--dn); }
+#accuracy-label.draw    { color: var(--flat); }
+
+.topbar-btn {
+  background: var(--bg-2); border: 1px solid var(--line); color: var(--tx-2);
+  width: 32px; height: 32px; border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s ease;
 }
+.topbar-btn:hover { color: var(--tx-0); border-color: var(--line-strong); }
 
-@keyframes flashUp {
-  0%   { background: rgba(0, 230, 118, 0.35); color: var(--green); }
-  100% { background: transparent;              color: var(--text);  }
+/* Rolling accuracy strip */
+#accuracy-strip { display: flex; gap: 5px; padding: 8px 16px 0; }
+.acc-dot {
+  width: 10px; height: 10px; border-radius: 3px;
+  background: var(--tx-3); opacity: 0.85;
 }
+.acc-dot.correct { background: var(--up); }
+.acc-dot.wrong   { background: var(--dn); }
+.acc-dot.draw    { background: var(--flat); }
+.acc-dot.call { box-shadow: inset 0 -3px 0 rgba(255, 255, 255, 0.25); }
+.acc-dot.put  { box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.35); }
 
-@keyframes flashDown {
-  0%   { background: rgba(255, 23, 68, 0.35); color: var(--red);  }
-  100% { background: transparent;              color: var(--text); }
+/* ═══ PAGES ════════════════════════════════════════════════════════════ */
+#pages { flex: 1; min-height: 0; position: relative; }
+.page {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  overflow-y: auto;
 }
-
-/* ── C. Big Chart Countdown — see section 9 (#chart-countdown) ────────────────
-   The countdown styles live in section 9 alongside #chart-wrap because they
-   are part of the chart page layout, not a standalone component. */
-
-/* ── D. Signal History Mini-list ──────────────────────────────────────────────
-   Lives inside #side-panel below the Theory Accuracy section. Shows the last
-   5 signals as compact cards. */
-
-#signal-history-mini,
-.signal-history-mini {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 4px 0 8px;
-}
-
-.mini-empty {
-  padding: 12px 8px;
-  text-align: center;
-  color: var(--text3);
-  font-size: 11px;
-  font-style: italic;
-}
-
-.mini-signal {
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-left-width: 3px;
-  font-size: 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transition: background var(--duration-fast) ease,
-              border-color var(--duration-fast) ease;
-}
-
-.mini-signal:hover {
-  background: var(--bg4);
-}
-
-.mini-signal.call {
-  border-left-color: var(--green);
-}
-
-.mini-signal.put {
-  border-left-color: var(--red);
-}
-
-.mini-signal-top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.mini-signal-dir {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  flex-shrink: 0;
-}
-
-.mini-signal-dir.call {
-  color: var(--green);
-  background: rgba(0, 230, 118, 0.12);
-}
-
-.mini-signal-dir.put {
-  color: var(--red);
-  background: rgba(255, 23, 68, 0.12);
-}
-
-.mini-signal-pair {
-  flex: 1;
-  min-width: 0;
-  color: var(--text);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.mini-signal-result {
-  font-size: 12px;
-  font-weight: 700;
-  flex-shrink: 0;
-  width: 16px;
-  text-align: center;
-}
-
-.mini-signal-result.correct { color: var(--green); }
-.mini-signal-result.wrong   { color: var(--red);   }
-.mini-signal-result.draw    { color: var(--yellow); }
-
-.mini-signal-bottom {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  color: var(--text3);
-  font-size: 10px;
-}
-
-.mini-signal-time {
-  font-variant-numeric: tabular-nums;
-}
-
-.mini-signal-strength {
-  font-weight: 600;
-  color: var(--text2);
-  font-variant-numeric: tabular-nums;
-}
-
-/* ── E. Side Panel Toggle + Collapsed State ───────────────────────────────────
-   Small circular chevron button on the panel's left edge. Clicking it adds
-   .collapsed to #side-panel, which slides the panel off-screen (desktop) or
-   pins it to the bottom (mobile — see responsive section). The chevron
-   rotates 180° when collapsed so it always points the right way. */
-
-.side-panel-toggle {
-  position: absolute;
-  top: 12px;
-  left: -14px;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  color: var(--text2);
-  cursor: pointer;
-  z-index: 10;
-  box-shadow: var(--shadow-sm);
-  transition: background var(--duration-fast) ease,
-              color var(--duration-fast) ease,
-              transform var(--duration-normal) var(--ease-out-expo);
-}
-
-.side-panel-toggle:hover {
-  background: var(--bg4);
-  color: var(--text);
-}
-
-.side-panel-toggle:active {
-  transform: scale(0.92);
-  transition-duration: 0.05s;
-}
-
-/* Chevron convention: the base SVG `<polyline points="9 18 15 12 9 6"/>` is a
-   right-pointing chevron (>). When the panel is OPEN we rotate it 180° so it
-   points LEFT (←) — "click to collapse, panel will slide left out of view".
-   When the panel is COLLAPSED we keep the default right-pointing chevron (>)
-   — "click to expand, panel will slide right back into view". The task spec
-   calls for rotate(180deg) on the collapsed state, but that interpretation
-   would point the chevron AWAY from where the panel will appear; we follow
-   the more common "indicates direction of next motion" convention. */
-.side-panel-toggle svg {
-  transition: transform var(--duration-normal) var(--ease-out-expo);
-}
-
-/* Open panel: chevron points left (toward the chart, where the panel will
-   slide back into when expanded). User reads "click to collapse to the right"
-   because the panel is on the right edge of the chart. */
-#side-panel:not(.collapsed) .side-panel-toggle svg {
-  transform: rotate(180deg);
-}
-
-/* Desktop collapsed state — slide the whole panel off to the right, leaving
-   just the toggle button visible so the user can bring it back. */
-@media (min-width: 768px) {
-  #side-panel {
-    position: relative;
-    transition: transform var(--duration-normal) var(--ease-out-expo);
-  }
-
-  #side-panel.collapsed {
-    transform: translateX(calc(100% + 10px));
-    margin-right: -28px; /* leave room for the toggle button to stay visible */
-  }
-
-  /* When collapsed, the toggle button itself stays in place (it's positioned
-     absolutely relative to #side-panel, so it slides with the panel — but we
-     counter-translate it so it sits at the chart's right edge). */
-  #side-panel.collapsed .side-panel-toggle {
-    transform: translateX(calc(-100% - 14px));
-  }
-
-  /* Collapsed: chevron points right (default 0°) — "click to expand, panel
-     will slide back left into view from the right edge". */
-  #side-panel.collapsed .side-panel-toggle svg {
-    transform: rotate(0deg);
-  }
-}
-
-/* ── F. History Page (full-page replacement for the old history modal) ──────── */
-
-.history-page-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-.history-page-head h2 {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 0.3px;
-  flex: 1;
-  min-width: 0;
-}
-
-/* Generic history-btn style — used by the Refresh button on the History/Home
-   pages, Connect/Clear on Settings, and Close on the signal popup. */
-.history-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text2);
-  padding: 8px 14px;
-  /* 12px font + 6px padding was ~30px tall — under the ~40px touch-target
-     minimum. min-height (not just padding) keeps it consistent regardless
-     of font-metric rounding, including the Settings page's Connect/Clear
-     buttons, which go full-width on mobile (max-width:640px below) but
-     previously stayed the same ~30px height there too. */
-  min-height: 40px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--duration-fast) ease,
-              border-color var(--duration-fast) ease,
-              color var(--duration-fast) ease;
-  white-space: nowrap;
-}
-
-.history-btn:hover {
-  background: var(--bg4);
-  border-color: var(--border-hover);
-  color: var(--text);
-}
-
-.history-btn:active {
-  transform: scale(0.97);
-  transition-duration: 0.05s;
-}
-
-#history-body {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  overflow: auto;
-  max-height: calc(100vh - 220px);
-  box-shadow: var(--shadow-card);
-}
-
-/* The history table already has its own styles in section 23 — these ensure
-   the body container has padding and the table fills the available width. */
-#history-body #history-table {
+.page-scroll {
+  padding: 18px 20px 90px;
+  max-width: 1280px;
   width: 100%;
+  margin: 0 auto;
 }
-
-#history-body #history-table th,
-#history-body #history-table td {
-  padding: 10px 14px;
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
 }
+.page.page-active { animation: page-enter 0.22s ease; }
 
-/* Empty/loading state for the history table body. */
-#history-table .history-empty {
-  text-align: center;
-  color: var(--text3);
-  font-style: italic;
-  padding: 32px 12px;
-}
-
-/* ── NEW: 50. Focus Visible for Accessibility ───────────────────────────────── */
-
-*:focus-visible {
-  outline: 2px solid rgba(68, 138, 255, 0.5);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-button:focus-visible,
-select:focus-visible,
-input:focus-visible {
-  outline: 2px solid rgba(68, 138, 255, 0.5);
-  outline-offset: 2px;
-}
-/* ── 51. Quotex Connection Card (Session Token) ──────────────────────────────
-   Settings page card for pasting an SSID cookie directly into the UI.
-   Bypasses the need to redeploy on Railway every time the token expires. */
-
-.token-card {
-  border: 1px solid rgba(68, 138, 255, 0.15);
-  background: linear-gradient(135deg, rgba(13, 17, 23, 0.95), rgba(22, 27, 34, 0.9));
-}
-
-.token-card h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.token-card h2::before {
-  content: "🔗";
-  font-size: 16px;
-}
-
-.token-status-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.page-head, .history-page-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-bottom: 16px;
-  padding: 10px 12px;
-  background: var(--bg);
-  border-radius: 8px;
-  border: 1px solid var(--border);
 }
+.history-page-head h2 { margin-right: auto; }
 
-.token-status-label {
-  color: var(--text2);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
+.ghost-btn {
+  background: var(--bg-2); border: 1px solid var(--line); color: var(--tx-1);
+  font: inherit; font-size: 12.5px; font-weight: 600;
+  padding: 7px 13px; border-radius: var(--r-sm);
+  cursor: pointer; transition: all 0.15s ease;
 }
+.ghost-btn:hover { color: var(--tx-0); border-color: var(--line-strong); background: var(--bg-3); }
 
-.token-status-badge {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.token-status-badge.connected {
-  color: var(--green);
-  background: rgba(0, 230, 118, 0.1);
-  border: 1px solid rgba(0, 230, 118, 0.3);
-}
-
-.token-status-badge.connecting {
-  color: var(--yellow);
-  background: rgba(255, 215, 64, 0.1);
-  border: 1px solid rgba(255, 215, 64, 0.3);
-  animation: tokenPulse 1.2s ease-in-out infinite;
-}
-
-.token-status-badge.disconnected {
-  color: var(--red);
-  background: rgba(255, 23, 68, 0.1);
-  border: 1px solid rgba(255, 23, 68, 0.3);
-}
-
-@keyframes tokenPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
-.token-source-label {
-  color: var(--text3);
-  font-size: 11px;
-  margin-left: auto;
-}
-
-.token-input-label {
-  display: block;
-  font-size: 12px;
-  color: var(--text2);
-  margin-bottom: 6px;
-  font-weight: 500;
-}
-
-.token-input {
-  width: 100%;
-  min-height: 72px;
-  padding: 10px 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  resize: vertical;
-  transition: border-color var(--duration-fast) var(--ease-out-expo),
-              box-shadow var(--duration-fast) var(--ease-out-expo);
-}
-
-.token-input:focus {
-  outline: none;
-  border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgba(68, 138, 255, 0.15);
-}
-
-.token-input::placeholder {
-  color: var(--text3);
-  font-style: italic;
-}
-
-.token-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.token-submit-btn {
-  flex: 1;
-  background: linear-gradient(135deg, var(--blue), #2a5fd0);
-  color: #fff;
-  border: none;
-  font-weight: 600;
-}
-
-.token-submit-btn:hover {
-  background: linear-gradient(135deg, #5a9eff, var(--blue));
-  box-shadow: 0 2px 8px rgba(68, 138, 255, 0.3);
-}
-
-.token-clear-btn {
-  background: var(--bg3);
-  color: var(--text2);
-  border: 1px solid var(--border);
-}
-
-.token-clear-btn:hover {
-  background: var(--bg4);
-  color: var(--text);
-  border-color: var(--border-hover);
-}
-
-.token-help {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-.token-help summary {
-  cursor: pointer;
-  color: var(--text2);
-  font-size: 13px;
-  font-weight: 500;
-  padding: 4px 0;
-  user-select: none;
-  transition: color var(--duration-fast) var(--ease-out-expo);
-}
-
-.token-help summary:hover {
-  color: var(--text);
-}
-
-.token-help ol {
-  margin: 12px 0 8px 0;
-  padding-left: 20px;
-  color: var(--text2);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.token-help ol li {
-  margin-bottom: 4px;
-}
-
-.token-help ol li a {
-  color: var(--blue);
-  text-decoration: none;
-}
-
-.token-help ol li a:hover {
-  text-decoration: underline;
-}
-
-.token-help code,
-.token-help kbd {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-family: 'SF Mono', 'Monaco', Consolas, monospace;
-  font-size: 11px;
-  color: var(--green);
-}
-
-.token-help kbd {
-  color: var(--text);
-  box-shadow: 0 1px 0 var(--border);
-}
-
-.token-help .plan-note {
-  margin-top: 10px;
-  font-size: 11px;
-  color: var(--text3);
-  font-style: italic;
-}
-
-/* ── Token message (success/error feedback) ───────────────────────────────── */
-
-.pw-msg {
-  margin-top: 8px;
-  font-size: 12px;
-  min-height: 16px;
-  padding: 0;
-}
-
-.pw-msg.ok {
-  color: var(--green);
-}
-
-.pw-msg.err {
-  color: var(--red);
-}
-
-/* ── Mobile responsive for token card ──────────────────────────────────────── */
-
-@media (max-width: 640px) {
-  .token-input {
-    font-size: 11px;
-    min-height: 64px;
-  }
-  .token-actions {
-    flex-direction: column;
-  }
-  .token-submit-btn,
-  .token-clear-btn {
-    width: 100%;
-  }
-  .token-source-label {
-    display: none;
-  }
-}
-
-/* ── 52. Share Signal Table — live signal table for all 16 pairs ─────────────
-   Full-width table on the Share Signal tab. Columns: Pair | Type | Time |
-   Buyer% | Seller% | Signal | Prediction Candle. Row tinted green/red by
-   signal direction. Buyer/seller shown as a mini bar + percentage.
-   Responsive: on mobile <640px, hides Prediction Candle column. */
-
-.share-signal-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-.share-signal-head h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-}
-
-.share-signal-sub {
-  color: var(--text2);
-  font-size: 12px;
-  flex: 1;
-  min-width: 200px;
-}
-
-.share-signal-table-wrap {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  /* overflow-x:auto (not plain `hidden`) — on a narrow viewport the table's
-     remaining columns (Pair/Type/Buyer/Seller/Signal after Time/Prediction
-     Candle are hidden below 640px) can still not fit a ~360px screen.
-     `hidden` on both axes silently clipped that content instead of letting
-     it scroll; overflow-y stays hidden so the rounded corners still clip
-     correctly, only the horizontal axis gains a scrollbar when needed. */
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.share-signal-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.share-signal-table thead {
-  background: var(--bg3);
-  border-bottom: 1px solid var(--border);
-}
-
-.share-signal-table th {
-  padding: 12px 14px;
-  text-align: left;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text2);
-  white-space: nowrap;
-}
-
-.share-signal-table th.col-signal,
-.share-signal-table td.col-signal {
-  text-align: center;
-}
-
-.share-signal-table th.col-buyer,
-.share-signal-table td.col-buyer,
-.share-signal-table th.col-seller,
-.share-signal-table td.col-seller {
-  text-align: right;
-}
-
-.share-signal-table td {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-  vertical-align: middle;
-}
-
-.share-signal-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.share-signal-table tbody tr:hover {
-  background: rgba(68, 138, 255, 0.04);
-}
-
-/* Row tint by signal direction */
-.share-signal-table tr.row-call {
-  background: rgba(0, 230, 118, 0.03);
-}
-
-.share-signal-table tr.row-put {
-  background: rgba(255, 23, 68, 0.03);
-}
-
-.share-signal-table tr.row-call:hover {
-  background: rgba(0, 230, 118, 0.07);
-}
-
-.share-signal-table tr.row-put:hover {
-  background: rgba(255, 23, 68, 0.07);
-}
-
-/* Pair name cell */
-.share-signal-table .col-pair {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* Type badge (OTC / Real) */
-.ss-type-badge {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.ss-type-badge.otc {
-  color: var(--blue);
-  background: rgba(68, 138, 255, 0.12);
-  border: 1px solid rgba(68, 138, 255, 0.25);
-}
-
-.ss-type-badge.real {
-  color: var(--green);
-  background: rgba(0, 230, 118, 0.12);
-  border: 1px solid rgba(0, 230, 118, 0.25);
-}
-
-/* Time cell */
-.share-signal-table .col-time {
-  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-  font-size: 12px;
-  color: var(--text2);
-  white-space: nowrap;
-}
-
-/* Buyer/seller mini bar */
-.ss-pressure {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.ss-pressure-bar {
-  display: inline-block;
-  width: 40px;
-  height: 6px;
-  background: var(--bg);
-  border-radius: 3px;
-  overflow: hidden;
-  vertical-align: middle;
-}
-
-.ss-pressure-bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width var(--duration-normal) var(--ease-out-expo);
-}
-
-.ss-pressure-bar-fill.buyer {
-  background: var(--green);
-}
-
-.ss-pressure-bar-fill.seller {
-  background: var(--red);
-}
-
-.ss-pressure-pct {
-  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-  font-size: 12px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  min-width: 32px;
-  text-align: right;
-}
-
-.ss-pressure-pct.buyer {
-  color: var(--green);
-}
-
-.ss-pressure-pct.seller {
-  color: var(--red);
-}
-
-/* Signal cell — CALL/PUT badge */
-.ss-signal-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 4px 10px;
-  border-radius: 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.ss-signal-badge.call {
-  color: var(--green);
-  background: rgba(0, 230, 118, 0.15);
-  border: 1px solid rgba(0, 230, 118, 0.3);
-}
-
-.ss-signal-badge.put {
-  color: var(--red);
-  background: rgba(255, 23, 68, 0.15);
-  border: 1px solid rgba(255, 23, 68, 0.3);
-}
-
-.ss-signal-badge.neutral {
-  color: var(--text3);
-  background: var(--bg3);
-  border: 1px solid var(--border);
-}
-
-/* Prediction candle cell */
-.ss-pred-candle {
-  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-  font-size: 11px;
-  color: var(--text2);
-  white-space: nowrap;
-}
-
-.ss-pred-candle .pc-o { color: var(--text2); }
-.ss-pred-candle .pc-h { color: var(--green); }
-.ss-pred-candle .pc-l { color: var(--red); }
-.ss-pred-candle .pc-c { color: var(--text); font-weight: 600; }
-
-/* Empty / loading state */
-.share-signal-table .history-empty {
-  text-align: center;
-  padding: 32px 14px;
-  color: var(--text3);
-  font-style: italic;
-}
-
-/* ── Share Signal table responsive ────────────────────────────────────────── */
-
-@media (max-width: 1024px) {
-  .share-signal-table th,
-  .share-signal-table td {
-    padding: 8px 10px;
-    font-size: 12px;
-  }
-  .ss-pressure-bar {
-    width: 30px;
-  }
-}
-
-@media (max-width: 640px) {
-  /* Hide Prediction Candle column on small screens */
-  .share-signal-table th.col-pred,
-  .share-signal-table td.col-pred {
-    display: none;
-  }
-  /* Hide Time column too — less critical on mobile */
-  .share-signal-table th.col-time,
-  .share-signal-table td.col-time {
-    display: none;
-  }
-  .share-signal-table th,
-  .share-signal-table td {
-    padding: 8px;
-    font-size: 11px;
-  }
-  .ss-pressure-bar {
-    display: none;  /* just show the % number on mobile */
-  }
-  .share-signal-head h2 {
-    font-size: 16px;
-  }
-  .share-signal-sub {
-    display: none;
-  }
-}
-
-/* ═══ HOME PAGE — overview dashboard ════════════════════════════════════════
-   Quick-stats row + share-signal table on the Home tab. The home-stats-row
-   is a flex row of 4 cards on desktop, collapsing to 2x2 grid on tablet
-   and 1-column stack on narrow phones. */
+/* ═══ HOME — stat cards + live signal grid ═════════════════════════════ */
 .home-stats-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin: 0 0 18px 0;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  margin-bottom: 22px;
 }
 .home-stat-card {
-  background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 10px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 78px;
+  position: relative;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 15px 17px;
+  background: linear-gradient(160deg, rgba(24, 33, 66, 0.6), rgba(13, 19, 40, 0.7));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-1);
+}
+.home-stat-card::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 1.5px;
+  background: var(--grad-brand); opacity: 0.7;
 }
 .home-stat-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: rgba(255,255,255,0.55);
-  font-weight: 500;
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--tx-3);
 }
 .home-stat-value {
-  font-size: 22px;
-  font-weight: 600;
-  color: #f5f6f8;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+  font-family: var(--mono); font-size: 22px; font-weight: 700; color: var(--tx-0);
 }
-.home-stat-value.live {
-  color: #00e676;
+.home-stat-value.live    { color: var(--up); }
+.home-stat-value.offline { color: var(--dn); }
+
+.share-signal-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 14px;
 }
-.home-stat-value.offline {
-  color: #ff5252;
+.share-signal-head h2 { margin-right: auto; }
+.share-signal-sub { color: var(--tx-3); font-size: 12px; }
+
+/* Signal card grid — one card per pair */
+.share-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
 }
+.share-grid-empty {
+  grid-column: 1 / -1;
+  padding: 44px 20px; text-align: center;
+  color: var(--tx-3); font-size: 13px;
+  background: var(--bg-1); border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+}
+.sg-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 15px 12px;
+  background: linear-gradient(165deg, rgba(24, 33, 66, 0.55), rgba(12, 18, 38, 0.75));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+  cursor: pointer;
+  overflow: hidden;
+}
+.sg-card:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+}
+.sg-card.row-call { border-color: rgba(14, 224, 143, 0.35); }
+.sg-card.row-call::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, var(--up), transparent 70%);
+}
+.sg-card.row-put { border-color: rgba(255, 77, 103, 0.35); }
+.sg-card.row-put::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, var(--dn), transparent 70%);
+}
+.sg-head { display: flex; align-items: center; gap: 8px; }
+.sg-pair { font-weight: 700; font-size: 13.5px; color: var(--tx-0); margin-right: auto; }
+.ss-type-badge {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.1em;
+  padding: 2.5px 6px; border-radius: 5px;
+}
+.ss-type-badge.otc  { background: rgba(255, 181, 71, 0.13); color: var(--warn); border: 1px solid rgba(255, 181, 71, 0.3); }
+.ss-type-badge.real { background: rgba(64, 196, 255, 0.12); color: var(--blue); border: 1px solid rgba(64, 196, 255, 0.3); }
+.sg-time { font-family: var(--mono); font-size: 10.5px; color: var(--tx-3); }
+
+.sg-mid { display: flex; align-items: center; gap: 12px; }
+.ss-signal-badge {
+  font-size: 14px; font-weight: 800; letter-spacing: 0.04em;
+  padding: 7px 13px; border-radius: var(--r-sm); white-space: nowrap;
+  border: 1px solid transparent;
+}
+.ss-signal-badge.call {
+  color: var(--up); background: var(--up-dim); border-color: rgba(14, 224, 143, 0.35);
+}
+.ss-signal-badge.put {
+  color: var(--dn); background: var(--dn-dim); border-color: rgba(255, 77, 103, 0.35);
+}
+.ss-signal-badge.neutral { color: var(--tx-3); background: var(--bg-2); }
+
+.sg-conf { flex: 1; min-width: 0; }
+.sg-conf-track {
+  height: 5px; border-radius: 999px; background: var(--bg-3); overflow: hidden;
+}
+.sg-conf-fill {
+  height: 100%; border-radius: 999px;
+  background: var(--grad-brand);
+  transition: width 0.4s ease;
+}
+.sg-conf-num {
+  font-family: var(--mono); font-size: 10px; color: var(--tx-3); margin-top: 4px;
+  display: block;
+}
+.sg-strength {
+  font-size: 9.5px; font-weight: 800; letter-spacing: 0.1em;
+  color: var(--tx-3);
+}
+.sg-strength.STRONG { color: var(--up); }
+.sg-strength.MEDIUM { color: var(--blue); }
+.sg-strength.WEAK   { color: var(--flat); }
+
+.sg-foot { display: flex; align-items: center; gap: 10px; }
+.ss-pressure { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.ss-pressure-bar {
+  flex: 1; height: 4px; border-radius: 999px;
+  background: var(--bg-3); overflow: hidden;
+}
+.ss-pressure-bar-fill { display: block; height: 100%; border-radius: 999px; }
+.ss-pressure-bar-fill.buyer  { background: var(--up); }
+.ss-pressure-bar-fill.seller { background: var(--dn); }
+.ss-pressure-pct { font-family: var(--mono); font-size: 10px; color: var(--tx-2); }
+.ss-pressure-pct.buyer  { color: var(--up); }
+.ss-pressure-pct.seller { color: var(--dn); }
+
+.ss-pred-candle {
+  font-family: var(--mono); font-size: 9.5px; color: var(--tx-3);
+  display: flex; gap: 7px; white-space: nowrap; overflow: hidden;
+}
+.ss-pred-candle .pc-c { color: var(--tx-2); }
+
+/* ═══ CHART PAGE — signal bar ══════════════════════════════════════════ */
+#tab-advance { overflow: hidden; }
+#signal-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  margin: 12px 16px 0;
+  padding: 11px 16px;
+  background: linear-gradient(165deg, rgba(24, 33, 66, 0.55), rgba(12, 18, 38, 0.8));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  flex-wrap: wrap;
+}
+.signal-primary { display: flex; align-items: center; gap: 16px; }
+
+.signal-badge {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  padding: 9px 18px; border-radius: var(--r-md);
+  font-weight: 800; letter-spacing: 0.05em; white-space: nowrap;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+.signal-badge .signal-dir { font-size: 19px; }
+.signal-badge .signal-strength { font-size: 10.5px; font-weight: 800; opacity: 0.85; }
+.signal-badge.call {
+  color: var(--up); background: var(--up-dim); border-color: rgba(14, 224, 143, 0.4);
+  box-shadow: 0 0 24px rgba(14, 224, 143, 0.12);
+}
+.signal-badge.put {
+  color: var(--dn); background: var(--dn-dim); border-color: rgba(255, 77, 103, 0.4);
+  box-shadow: 0 0 24px rgba(255, 77, 103, 0.12);
+}
+.signal-badge.neutral { color: var(--flat); background: var(--bg-2); }
+.signal-badge.str-STRONG .signal-strength::before { content: "★ "; }
+@keyframes signal-pop-kf {
+  0% { transform: scale(0.92); }
+  55% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+.signal-badge.signal-pop { animation: signal-pop-kf 0.3s ease; }
+
+.signal-confidence { display: flex; align-items: center; gap: 10px; min-width: 170px; }
+.conf-bar-wrap {
+  flex: 1; height: 7px; border-radius: 999px;
+  background: var(--bg-3); overflow: hidden;
+}
+.conf-bar {
+  height: 100%; border-radius: 999px; width: 0%;
+  transition: width 0.45s ease;
+}
+.conf-bar.call { background: linear-gradient(90deg, #0a9e66, var(--up)); }
+.conf-bar.put  { background: linear-gradient(90deg, #b32c40, var(--dn)); }
+#signal-conf { font-size: 12px; font-weight: 700; color: var(--tx-1); white-space: nowrap; }
+
+.signal-detail { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+#signal-score { font-size: 12px; color: var(--tx-2); font-weight: 600; }
+.signal-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.entry-timing, .running-conf, .runconf-badge {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+  padding: 4.5px 10px; border-radius: 999px; white-space: nowrap;
+}
+.entry-timing.et-go   { color: var(--up); background: var(--up-dim); border: 1px solid rgba(14, 224, 143, 0.35); }
+.entry-timing.et-warn { color: var(--warn); background: rgba(255, 181, 71, 0.1); border: 1px solid rgba(255, 181, 71, 0.32); }
+.entry-timing.et-skip { color: var(--tx-3); background: var(--bg-2); border: 1px solid var(--line); }
+.running-conf.confirming { color: var(--up); background: var(--up-dim); }
+.running-conf.opposing   { color: var(--dn); background: var(--dn-dim); }
+.runconf-badge { color: var(--blue); background: rgba(64, 196, 255, 0.1); border: 1px solid rgba(64, 196, 255, 0.3); }
+
+/* Chart area */
+#main {
+  flex: 1; min-height: 0;
+  display: flex; gap: 12px;
+  padding: 12px 16px 16px;
+}
+#chart-wrap {
+  flex: 1; min-width: 0; position: relative;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+#chart { position: absolute; inset: 0; }
+#chart > * { z-index: 1; }
+
+.chart-countdown {
+  position: absolute; top: 10px; left: 10px; z-index: 20;
+  font-family: var(--mono); font-size: 22px; font-weight: 700;
+  color: var(--tx-0);
+  background: rgba(10, 15, 32, 0.78);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 5px 13px;
+  backdrop-filter: blur(8px);
+}
+.chart-countdown.warn   { color: var(--warn); border-color: rgba(255, 181, 71, 0.4); }
+.chart-countdown.danger { color: var(--dn); border-color: rgba(255, 77, 103, 0.45); }
+.countdown-broker { font-size: 10px; color: var(--tx-3); margin-left: 8px; }
+
+#chart-loading, #no-data, #fatal-error {
+  position: absolute; inset: 0; z-index: 15;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; background: rgba(7, 10, 20, 0.82); backdrop-filter: blur(4px);
+}
+.no-data-icon { font-size: 30px; }
+.no-data-text { font-size: 15px; font-weight: 700; color: var(--tx-0); }
+.no-data-sub { font-size: 12px; color: var(--tx-3); max-width: 300px; text-align: center; }
+.loading-spinner {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 3px solid var(--bg-3); border-top-color: var(--blue);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { font-size: 12px; color: var(--tx-3); }
+
+/* ── Side panel (Deep Analysis) ──────────────────────────────────────── */
+#side-panel {
+  width: 300px; flex-shrink: 0;
+  overflow-y: auto;
+  background: linear-gradient(180deg, rgba(18, 26, 54, 0.5), rgba(10, 15, 32, 0.75));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 14px 14px 18px;
+  transition: width 0.25s ease, padding 0.25s ease;
+  position: relative;
+}
+#side-panel.collapsed { width: 0; padding-left: 0; padding-right: 0; border-color: transparent; overflow: hidden; }
+.side-panel-toggle {
+  position: sticky; top: 0; float: right;
+  z-index: 5;
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 7px; color: var(--tx-3); cursor: pointer;
+}
+.side-panel-toggle:hover { color: var(--tx-0); }
+.side-panel-toggle-mobile {
+  display: none;
+  position: fixed; right: 14px; bottom: calc(var(--tabs-h) + 14px); z-index: 70;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--grad-brand); color: #061020;
+  border: none; cursor: pointer;
+  box-shadow: var(--shadow-2);
+  align-items: center; justify-content: center;
+}
+
+.panel-title {
+  font-size: 10.5px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: 0.13em; color: var(--tx-3);
+  margin: 4px 0 8px;
+  display: flex; align-items: baseline;
+}
+.panel-title-gap { margin-top: 18px; }
+
+/* Market state card */
+.mstate-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 12px;
+}
+.mstate-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.mstate-chip {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.07em;
+  padding: 4px 10px; border-radius: 999px;
+  background: var(--bg-3); color: var(--tx-1);
+}
+.mstate-chip.ms-CONTINUATION { color: var(--up);  background: var(--up-dim); }
+.mstate-chip.ms-EXHAUSTION   { color: var(--warn); background: rgba(255, 181, 71, 0.1); }
+.mstate-chip.ms-REVERSAL     { color: var(--violet); background: rgba(139, 92, 246, 0.12); }
+.mstate-chip.ms-TRAP         { color: var(--dn); background: var(--dn-dim); }
+.mstate-chip.ms-RANGE        { color: var(--flat); background: rgba(143, 161, 207, 0.1); }
+.mstate-bias { font-size: 11.5px; font-weight: 700; color: var(--tx-2); margin-left: auto; }
+.mstate-bias.call { color: var(--up); }
+.mstate-bias.put  { color: var(--dn); }
+.mstate-meter-track {
+  height: 5px; border-radius: 999px; background: var(--bg-3); overflow: hidden;
+  margin-bottom: 9px;
+}
+.mstate-meter {
+  height: 100%; width: 0%;
+  background: var(--grad-brand);
+  border-radius: 999px; transition: width 0.4s ease;
+}
+#mstate-evidence { list-style: none; margin: 0; padding: 0; }
+#mstate-evidence li {
+  font-size: 11px; color: var(--tx-2); padding: 2.5px 0;
+  border-bottom: 1px dashed rgba(96, 128, 220, 0.1);
+}
+#mstate-evidence li:last-child { border-bottom: none; }
+#mstate-evidence li.empty { color: var(--tx-3); font-style: italic; }
+.mstate-bars { margin-top: 9px; display: grid; gap: 5px; }
+.mstate-bar-row { display: flex; align-items: center; gap: 8px; opacity: 0.55; }
+.mstate-bar-row.active { opacity: 1; }
+.mstate-bar-name { width: 92px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--tx-3); }
+.mstate-bar-row.active .mstate-bar-name { color: var(--tx-1); }
+.mstate-bar-track { flex: 1; height: 4px; background: var(--bg-3); border-radius: 999px; overflow: hidden; }
+.mstate-bar-fill { height: 100%; background: var(--flat); border-radius: 999px; }
+.mstate-bar-row.active .mstate-bar-fill { background: var(--grad-brand); }
+.mstate-bar-val { width: 30px; font-family: var(--mono); font-size: 9.5px; color: var(--tx-3); text-align: right; }
+
+/* Theory stats + reasons */
+#theory-stats, #reasons-list, #key-levels-list, #theory-legend {
+  list-style: none; margin: 0; padding: 0;
+}
+#theory-stats li, #theory-legend li {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11.5px; color: var(--tx-2); padding: 3.5px 0;
+}
+#theory-stats li.empty, #key-levels-list li.empty { color: var(--tx-3); font-style: italic; }
+.ts-name { font-weight: 700; color: var(--tx-1); width: 108px; flex-shrink: 0; }
+.ts-name.muted { color: var(--tx-3); text-decoration: line-through; }
+.ts-bar { flex: 1; height: 4px; background: var(--bg-3); border-radius: 999px; overflow: hidden; }
+.ts-bar-fill { height: 100%; border-radius: 999px; background: var(--flat); }
+.ts-bar-fill.good { background: var(--up); }
+.ts-bar-fill.bad  { background: var(--dn); }
+.ts-n { font-family: var(--mono); font-size: 10px; color: var(--tx-3); width: 52px; text-align: right; }
+.ts-muted-tag { font-size: 8.5px; font-weight: 800; color: var(--warn); letter-spacing: 0.06em; }
+
+#reasons-list li {
+  font-size: 11.5px; color: var(--tx-2);
+  padding: 4px 8px; margin-bottom: 4px;
+  background: var(--bg-2); border-left: 2.5px solid var(--flat);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  word-break: break-word;
+}
+#reasons-list li.call { border-left-color: var(--up); }
+#reasons-list li.put  { border-left-color: var(--dn); }
+#reasons-list li.empty { background: none; border: none; color: var(--tx-3); font-style: italic; padding-left: 0; }
+.eoc-summary { font-size: 11.5px; color: var(--tx-2); margin-bottom: 8px; }
+.t-num {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+  color: var(--blue); background: rgba(64, 196, 255, 0.08);
+  padding: 2px 6px; border-radius: 5px; flex-shrink: 0;
+  min-width: 82px; text-align: center;
+}
+
+/* Signal history mini */
+.signal-history-mini { display: grid; gap: 5px; }
+.mini-empty { color: var(--tx-3); font-size: 11.5px; font-style: italic; }
+.mini-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--tx-2);
+  background: var(--bg-2); border-radius: var(--r-sm); padding: 6px 9px;
+}
+.mini-badge { font-weight: 800; font-size: 10px; width: 38px; }
+.mini-badge.call { color: var(--up); }
+.mini-badge.put  { color: var(--dn); }
+.mini-pair { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-time { font-family: var(--mono); font-size: 9.5px; color: var(--tx-3); }
+.mini-res { font-weight: 800; font-size: 10px; }
+.mini-res.correct { color: var(--up); }
+.mini-res.wrong   { color: var(--dn); }
+.mini-res.draw    { color: var(--flat); }
+
+/* Key levels */
+#key-levels-list li.kl-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11.5px; padding: 3px 0; color: var(--tx-2);
+}
+.kl-price { font-family: var(--mono); color: var(--tx-1); }
+.kl-touch { margin-left: auto; font-size: 10px; color: var(--tx-3); }
+.kl-item.kl-major { color: var(--tx-1); }
+.kl-item.kl-major .kl-price { color: var(--warn); }
+
+/* Micro flow */
+.micro-wrap { display: grid; gap: 7px; }
+.micro-forming { font-size: 11.5px; color: var(--tx-3); font-style: italic; }
+.micro-pressure-row { display: flex; align-items: center; gap: 9px; }
+.micro-buy, .micro-sell { font-family: var(--mono); font-size: 11px; font-weight: 700; }
+.micro-buy  { color: var(--up); }
+.micro-sell { color: var(--dn); }
+.micro-bar-track {
+  flex: 1; height: 6px; background: var(--bg-3); border-radius: 999px; overflow: hidden;
+  display: flex;
+}
+.micro-bar-fill { height: 100%; background: var(--up); transition: width 0.25s ease; }
+.micro-bar-init { width: 50%; }
+.micro-tag {
+  font-size: 10.5px; color: var(--tx-2);
+  background: var(--bg-2); border-radius: 6px; padding: 4px 8px;
+}
+.micro-tag:not(.hidden) { display: block; }
+.micro-phases-row { display: flex; align-items: center; gap: 7px; font-size: 10.5px; }
+.micro-phase-lbl { color: var(--tx-3); font-weight: 700; }
+.micro-phase { color: var(--tx-1); font-family: var(--mono); }
+.micro-hold-row { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: var(--tx-3); }
+.micro-hold-price { font-family: var(--mono); color: var(--tx-1); }
+
+/* ═══ ANALYTICS PAGE ═══════════════════════════════════════════════════ */
+.dir-summary-row {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+  margin-bottom: 14px;
+}
+.dir-summary-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 15px 17px;
+  background: linear-gradient(160deg, rgba(24, 33, 66, 0.6), rgba(13, 19, 40, 0.7));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.dir-summary-card.call::before,
+.dir-summary-card.put::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+}
+.dir-summary-card.call::before { background: linear-gradient(90deg, var(--up), transparent 70%); }
+.dir-summary-card.put::before  { background: linear-gradient(90deg, var(--dn), transparent 70%); }
+.dir-summary-card.all::before  { background: var(--grad-brand); }
+.dir-summary-label { font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em; color: var(--tx-3); }
+.dir-summary-card.call .dir-summary-label { color: var(--up); }
+.dir-summary-card.put  .dir-summary-label { color: var(--dn); }
+.dir-summary-value { font-family: var(--mono); font-size: 25px; font-weight: 700; color: var(--tx-0); }
+.dir-summary-sub { font-size: 11px; color: var(--tx-3); }
+.analytics-note {
+  font-size: 12px; color: var(--tx-2);
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: 9px 13px; margin-bottom: 14px;
+}
+.analytics-note b { color: var(--tx-0); }
+.analytics-note span { color: var(--tx-3); }
+
+.table-wrap { overflow-x: auto; }
+.analytics-table, #history-table {
+  width: 100%; border-collapse: collapse;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  font-size: 12.5px;
+}
+.analytics-table thead th, #history-table thead th {
+  text-align: left; font-size: 10.5px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--tx-3);
+  padding: 10px 13px;
+  background: rgba(18, 26, 54, 0.65);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.analytics-table tbody td, #history-table tbody td {
+  padding: 9px 13px;
+  border-bottom: 1px solid rgba(96, 128, 220, 0.07);
+  color: var(--tx-1);
+  vertical-align: middle;
+}
+.analytics-table tbody tr:last-child td, #history-table tbody tr:last-child td { border-bottom: none; }
+.analytics-table tbody tr:hover td, #history-table tbody tr:hover td { background: rgba(80, 110, 200, 0.06); }
+.analytics-table .col-pair { font-weight: 700; color: var(--tx-0); white-space: nowrap; }
+.analytics-table .col-num { font-family: var(--mono); }
+.an-wr { font-family: var(--mono); font-weight: 700; }
+.an-wr.good { color: var(--up); }
+.an-wr.bad  { color: var(--dn); }
+
+.dir-cell { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+.dir-cell .dc-label { font-family: var(--mono); font-size: 10.5px; width: 44px; flex-shrink: 0; }
+.dir-cell.call .dc-label { color: var(--up); }
+.dir-cell.put  .dc-label { color: var(--dn); }
+.dc-bar { flex: 1; height: 5px; background: var(--bg-3); border-radius: 999px; overflow: hidden; }
+.dc-fill { height: 100%; border-radius: 999px; }
+.dir-cell.call .dc-fill { background: var(--up); }
+.dir-cell.put  .dc-fill { background: var(--dn); }
+.dc-rate { font-family: var(--mono); font-size: 11px; font-weight: 700; width: 46px; text-align: right; }
+.dir-cell.call .dc-rate { color: var(--up); }
+.dir-cell.put  .dc-rate { color: var(--dn); }
+.dir-cell .dc-n { font-family: var(--mono); font-size: 9.5px; color: var(--tx-3); width: 40px; text-align: right; }
+
+.bias-badge {
+  font-size: 9.5px; font-weight: 800; letter-spacing: 0.08em;
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+}
+.bias-badge.call { color: var(--up); background: var(--up-dim); }
+.bias-badge.put  { color: var(--dn); background: var(--dn-dim); }
+.bias-badge.none { color: var(--tx-3); background: var(--bg-2); }
+
+/* ═══ HISTORY PAGE ═════════════════════════════════════════════════════ */
+#history-body { overflow-x: auto; }
+#history-table { min-width: 640px; }
+.hist-why { font-size: 11px; color: var(--tx-3); max-width: 380px; }
+.hist-signal { font-weight: 800; }
+.hist-signal.call { color: var(--up); }
+.hist-signal.put  { color: var(--dn); }
+.hist-result { font-weight: 700; }
+.hist-result.correct { color: var(--up); }
+.hist-result.wrong   { color: var(--dn); }
+.hist-result.draw    { color: var(--flat); }
+.hist-strength { font-size: 11px; }
+.history-empty { text-align: center; color: var(--tx-3); padding: 30px 14px !important; }
+
+/* ═══ SETTINGS PAGE ════════════════════════════════════════════════════ */
+.info-card {
+  background: linear-gradient(165deg, rgba(24, 33, 66, 0.5), rgba(12, 18, 38, 0.7));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 18px 20px;
+  margin-bottom: 14px;
+}
+.info-card h2 { margin-bottom: 13px; font-size: 15px; }
+.info-card p { margin: 0 0 8px; font-size: 12.5px; }
+.token-status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; flex-wrap: wrap; }
+.token-status-label { font-size: 12px; color: var(--tx-3); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+.token-status-badge { font-size: 12px; font-weight: 700; }
+.token-status-badge.connected    { color: var(--up); }
+.token-status-badge.disconnected { color: var(--dn); }
+.token-status-badge.connecting   { color: var(--warn); }
+.token-source-label { font-size: 11px; color: var(--tx-3); }
+.token-input-label { display: block; font-size: 11.5px; font-weight: 700; color: var(--tx-2); margin-bottom: 7px; }
+.settings-input, .token-input {
+  width: 100%;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  color: var(--tx-0);
+  border-radius: var(--r-md);
+  font-family: var(--mono); font-size: 12px;
+  padding: 11px 13px;
+  resize: vertical;
+  transition: border-color 0.15s ease;
+}
+.settings-input:focus, .token-input:focus { outline: none; border-color: rgba(64, 196, 255, 0.5); }
+.token-actions { display: flex; gap: 9px; margin-top: 11px; }
+.token-submit-btn { background: var(--grad-brand); color: #061020; border: none; font-weight: 800; }
+.token-submit-btn:hover { filter: brightness(1.1); color: #061020; }
+.pw-msg { font-size: 12px; margin-top: 9px; color: var(--tx-2); }
+.pw-msg.ok  { color: var(--up); }
+.pw-msg.err { color: var(--dn); }
+.token-help { margin-top: 13px; font-size: 12.5px; }
+.token-help summary { cursor: pointer; color: var(--blue); font-weight: 600; }
+.token-help ol { margin: 10px 0 0; padding-left: 20px; display: grid; gap: 5px; color: var(--tx-2); }
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 13px; padding: 4px 0;
+}
+.settings-row span:first-child { color: var(--tx-2); }
+.settings-row span:last-child { font-family: var(--mono); font-weight: 700; color: var(--tx-0); }
+.pref-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 0;
+  font-size: 13px; color: var(--tx-1);
+  border-bottom: 1px dashed rgba(96, 128, 220, 0.1);
+  cursor: pointer;
+}
+.pref-row:last-child { border-bottom: none; }
+.pref-row input[type="checkbox"] {
+  appearance: none; width: 38px; height: 21px; border-radius: 999px;
+  background: var(--bg-3); position: relative; cursor: pointer;
+  transition: background 0.18s ease; flex-shrink: 0;
+}
+.pref-row input[type="checkbox"]::after {
+  content: ""; position: absolute; top: 2.5px; left: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--tx-2); transition: all 0.18s ease;
+}
+.pref-row input[type="checkbox"]:checked { background: var(--grad-brand); }
+.pref-row input[type="checkbox"]:checked::after { left: 19px; background: #fff; }
+.legal-details { margin-bottom: 6px; font-size: 12.5px; }
+.legal-details summary { cursor: pointer; color: var(--tx-1); font-weight: 600; padding: 5px 0; }
+.legal-details p { color: var(--tx-2); margin: 8px 0; }
+.plan-note { color: var(--tx-3); font-size: 11.5px; }
+
+/* ═══ PAIR PICKER ══════════════════════════════════════════════════════ */
+.pair-panel {
+  position: fixed; z-index: 200;
+  width: 300px; max-height: 430px;
+  display: flex; flex-direction: column;
+  background: rgba(14, 20, 42, 0.97);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  backdrop-filter: blur(18px);
+}
+.pair-panel-search {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+}
+.pair-panel-search-icon { color: var(--tx-3); font-size: 15px; }
+#pair-search {
+  flex: 1; background: none; border: none; outline: none;
+  color: var(--tx-0); font: inherit; font-size: 13px;
+}
+#pair-search::placeholder { color: var(--tx-3); }
+.pair-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; }
+.pair-list li {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: var(--r-sm);
+  font-size: 13px; color: var(--tx-1); cursor: pointer;
+}
+.pair-list li:hover { background: rgba(80, 110, 200, 0.13); color: var(--tx-0); }
+.pair-list li.selected {
+  background: linear-gradient(135deg, rgba(64, 196, 255, 0.14), rgba(139, 92, 246, 0.14));
+  color: var(--tx-0);
+}
+.pair-list li.locked { opacity: 0.42; cursor: not-allowed; }
+.pp-payout { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--tx-3); }
+
+/* ═══ SIGNAL POPUP ═════════════════════════════════════════════════════ */
+.signal-popup {
+  position: fixed; z-index: 300;
+  top: 18px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 14px;
+  background: rgba(14, 20, 42, 0.97);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  padding: 12px 16px;
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(16px);
+  animation: popup-in 0.28s ease;
+}
+@keyframes popup-in {
+  from { opacity: 0; transform: translate(-50%, -12px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+.signals-last-meta { font-size: 12px; color: var(--tx-2); max-width: 380px; }
+
+/* ═══ BOTTOM TABS (mobile) ═════════════════════════════════════════════ */
+#bottom-tabs { display: none; }
+
+/* ═══ RESPONSIVE ═══════════════════════════════════════════════════════ */
 @media (max-width: 1023px) {
-  .home-stats-row {
-    grid-template-columns: repeat(2, 1fr);
+  #sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 120;
+    transform: translateX(-104%);
+    transition: transform 0.24s ease;
+    box-shadow: var(--shadow-2);
+    width: 264px;
   }
-}
-@media (max-width: 480px) {
-  .home-stats-row {
-    grid-template-columns: 1fr;
-    gap: 8px;
+  #sidebar.open { transform: none; }
+  .sidebar-toggle { display: inline-flex; }
+  #bottom-tabs {
+    display: flex;
+    position: fixed; inset: auto 0 0 0; z-index: 110;
+    height: var(--tabs-h);
+    background: rgba(9, 13, 28, 0.94);
+    border-top: 1px solid var(--line);
+    backdrop-filter: blur(16px);
+    padding-bottom: env(safe-area-inset-bottom);
   }
-  .home-stat-card {
-    padding: 10px 12px;
-    min-height: 64px;
+  .tab-btn {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    background: none; border: none; cursor: pointer;
+    color: var(--tx-3); font-family: inherit;
   }
-  .home-stat-value {
-    font-size: 18px;
+  .tab-btn.active { color: var(--blue); }
+  .tab-btn-label { font-size: 9.5px; font-weight: 700; letter-spacing: 0.03em; }
+  .tab-icon { width: 19px; height: 19px; }
+  #main-wrapper { padding-bottom: var(--tabs-h); }
+  .page-scroll { padding: 14px 14px 24px; }
+  .side-panel-toggle-mobile { display: flex; }
+
+  #side-panel {
+    position: fixed; inset: auto 0 0 0; z-index: 130;
+    width: 100%; max-height: 76vh;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    transform: translateY(105%);
+    transition: transform 0.28s ease;
+    padding-bottom: 26px;
   }
+  #side-panel.open { transform: none; }
+  #side-panel.collapsed { width: 100%; transform: translateY(105%); }
+
+  .home-stats-row { grid-template-columns: repeat(2, 1fr); }
+  .dir-summary-row { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .dir-summary-value { font-size: 19px; }
+  #main { flex-direction: column; padding: 10px 12px 12px; overflow-y: auto; }
+  #chart-wrap { min-height: 330px; flex: none; height: 46vh; }
+  #side-panel { flex: none; }
+  #signal-bar { margin: 10px 12px 0; }
+}
+@media (max-width: 640px) {
+  .dir-summary-row { grid-template-columns: 1fr; }
+  .home-stats-row { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .home-stat-value { font-size: 17px; }
+  .live-price-ticker { padding: 4px 10px; }
+  .ticker-price { font-size: 14px; }
+  .tf-select { display: none; }
+  .pair-btn { min-width: 0; }
+  #pair-btn-label { font-size: 12px; }
+  .share-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .sg-mid { flex-direction: column; align-items: stretch; gap: 8px; }
+  .history-page-head { gap: 7px; }
+  .history-page-head .ctrl-select { max-width: 46%; flex: 1 1 40%; }
+}
+@media (max-width: 400px) {
+  .share-grid { grid-template-columns: 1fr; }
 }
 
-/* ── Per-pair win rate (sidebar) ────────────────────────────────────────────
-   Colour encodes STATISTICAL STATUS, not the raw percentage. A pair showing
-   62% on 9 graded signals is noise (its 95% interval spans ~31-86%), so it
-   renders muted like every other unproven pair. Only a pair whose entire
-   confidence interval clears the payout break-even goes green. */
-.sidebar-pair-wr {
-  font-size: 10px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  min-width: 34px;
-  text-align: right;
-  flex-shrink: 0;
-  border-radius: 4px;
-  padding: 1px 4px;
-  cursor: help;
-  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-}
-
-/* Whole interval beats break-even — the only state that justifies a trade. */
-.sidebar-pair-wr.wr-win {
-  color: var(--green);
-  background: rgba(0, 230, 118, 0.10);
-  border: 1px solid rgba(0, 230, 118, 0.28);
-}
-
-/* Whole interval sits below break-even — demonstrably losing. */
-.sidebar-pair-wr.wr-loss {
-  color: var(--red);
-  background: rgba(255, 82, 82, 0.10);
-  border: 1px solid rgba(255, 82, 82, 0.28);
-}
-
-/* Interval straddles break-even — the normal, honest state. Deliberately
-   flat: this must not read as encouragement. */
-.sidebar-pair-wr.wr-flat {
-  color: var(--text2);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-/* Below the minimum sample size — shown, but visibly not a claim. */
-.sidebar-pair-wr.wr-thin {
-  color: var(--text2);
-  background: transparent;
-  border: 1px dashed rgba(255, 255, 255, 0.14);
-  opacity: 0.65;
-}
-
-.sidebar-pair-wr.wr-none {
-  color: var(--text2);
-  background: transparent;
-  border: none;
-  opacity: 0.4;
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

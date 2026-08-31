@@ -1307,92 +1307,104 @@ async function _renderSignalHistoryMini() {
 }
 
 // ── Share Signal table — live signal table for all 16 pairs ────────────────
-// Fetches /api/share-signals and renders one row per pair in #share-signal-rows.
+// Fetches /api/share-signals and renders one signal card per pair in
+// #share-signal-grid (Aurora redesign — the old 7-column table is gone).
 // Columns: Pair | Type | Time | Buyer% | Seller% | Signal | Prediction Candle.
 // Polled every 10s while the Share Signal tab is active (see _setActiveTab).
 let _sharePollTimer = null;
+let _analyticsPollTimer = null;
 let _lastShareKey = '';
 
 async function _loadShareSignals() {
-  const tbody = document.getElementById('share-signal-rows');
-  if (!tbody) return;
+  const grid = document.getElementById('share-signal-grid');
+  if (!grid) return;
   try {
     const r = await fetch('/api/share-signals');
     if (!r.ok) return;
     const data = await r.json();
     const signals = data.signals || [];
-    // Backend always returns 16 rows (one per wanted pair). The empty state
-    // we actually care about is "no row has a real signal yet" — that means
-    // the feed hasn't closed a candle on any pair yet (cold start).
     const hasAnySignal = signals.some(s => s.signal === 'CALL' || s.signal === 'PUT');
     if (!signals.length || !hasAnySignal) {
-      tbody.innerHTML = '<tr><td colspan="7" class="history-empty">Waiting for first candle close — connect Quotex in Settings to start streaming.</td></tr>';
-      _lastShareKey = '';  // reset so the next real update re-renders
+      grid.innerHTML = '<div class="share-grid-empty">Waiting for the first candle close — connect Quotex in Settings to start streaming.</div>';
+      _lastShareKey = '';
       return;
     }
-    // Dedup — skip re-render if nothing changed. Include strength + confidence
-    // + prediction_candle.close so a strength upgrade (WEAK→STRONG) or a new
-    // ghost candle re-renders even when buy_pct/signal are unchanged.
+    // Dedup — skip re-render if nothing changed (strength upgrade or new
+    // ghost candle still forces a re-render via the key below).
     const key = signals.map(s =>
       `${s.asset}:${s.signal || ''}:${s.strength || ''}:${s.time || ''}:${s.buy_pct ?? ''}:${s.prediction_candle?.close ?? ''}`
     ).join('|');
     if (key === _lastShareKey) return;
     _lastShareKey = key;
 
-    tbody.innerHTML = signals.map((s) => {
-      const sigCls = (s.signal || 'neutral').toLowerCase();
+    const fmtP = (v) => v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(5) : v.toFixed(8);
+    grid.innerHTML = signals.map((s) => {
       const rowCls = s.signal === 'CALL' ? 'row-call' : s.signal === 'PUT' ? 'row-put' : '';
       const typeBadge = s.type === 'otc'
         ? '<span class="ss-type-badge otc">OTC</span>'
-        : '<span class="ss-type-badge real">Real</span>';
-      // Time formatting
+        : '<span class="ss-type-badge real">REAL</span>';
       const timeStr = s.time
         ? new Date(s.time * 1000).toLocaleTimeString('en-GB', {
             hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
           })
         : '–';
-      // Buyer/seller pressure
-      const buyPct = s.buy_pct != null ? s.buy_pct : '–';
-      const sellPct = s.sell_pct != null ? s.sell_pct : '–';
-      const buyBar = s.buy_pct != null
+      const sigBadge = s.signal === 'CALL'
+        ? '<span class="ss-signal-badge call">▲ CALL</span>'
+        : s.signal === 'PUT'
+        ? '<span class="ss-signal-badge put">▼ PUT</span>'
+        : '<span class="ss-signal-badge neutral">–</span>';
+      const conf = (typeof s.confidence === 'number') ? s.confidence : 0;
+      const confPct = Math.round(conf * 100);
+      const strength = s.strength || '';
+      // Buyer/seller pressure footer
+      const pressure = (s.buy_pct != null)
         ? `<span class="ss-pressure">
              <span class="ss-pressure-bar"><span class="ss-pressure-bar-fill buyer" style="width:${s.buy_pct}%"></span></span>
              <span class="ss-pressure-pct buyer">${s.buy_pct}%</span>
+             <span class="ss-pressure-bar"><span class="ss-pressure-bar-fill seller" style="width:${s.sell_pct ?? 0}%"></span></span>
+             <span class="ss-pressure-pct seller">${s.sell_pct ?? '–'}%</span>
            </span>`
-        : '<span class="ss-pressure-pct">–</span>';
-      const sellBar = s.sell_pct != null
-        ? `<span class="ss-pressure">
-             <span class="ss-pressure-bar"><span class="ss-pressure-bar-fill seller" style="width:${s.sell_pct}%"></span></span>
-             <span class="ss-pressure-pct seller">${s.sell_pct}%</span>
-           </span>`
-        : '<span class="ss-pressure-pct">–</span>';
-      // Signal badge
-      const sigBadge = s.signal
-        ? `<span class="ss-signal-badge ${sigCls}">${s.signal === 'CALL' ? '▲ CALL' : s.signal === 'PUT' ? '▼ PUT' : s.signal}</span>`
-        : '<span class="ss-signal-badge neutral">–</span>';
-      // Prediction candle
-      let predCandle = '–';
+        : '<span class="ss-pressure-pct">pressure –</span>';
+      let predCandle = '';
       if (s.prediction_candle && s.prediction_candle.open != null) {
         const pc = s.prediction_candle;
-        const fmt = (v) => v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(5) : v.toFixed(8);
         predCandle = `<span class="ss-pred-candle">` +
-                     `<span class="pc-o">O:${fmt(pc.open)}</span> ` +
-                     `<span class="pc-h">H:${fmt(pc.high)}</span> ` +
-                     `<span class="pc-l">L:${fmt(pc.low)}</span> ` +
-                     `<span class="pc-c">C:${fmt(pc.close)}</span>` +
-                     `</span>`;
+          `<span class="pc-o">O:${fmtP(pc.open)}</span>` +
+          `<span class="pc-h">H:${fmtP(pc.high)}</span>` +
+          `<span class="pc-l">L:${fmtP(pc.low)}</span>` +
+          `<span class="pc-c">C:${fmtP(pc.close)}</span></span>`;
       }
-
-      return `<tr class="${rowCls}">
-        <td class="col-pair">${s.display || s.asset}</td>
-        <td class="col-type">${typeBadge}</td>
-        <td class="col-time">${timeStr}</td>
-        <td class="col-buyer">${buyBar}</td>
-        <td class="col-seller">${sellBar}</td>
-        <td class="col-signal">${sigBadge}</td>
-        <td class="col-pred">${predCandle}</td>
-      </tr>`;
+      return `<div class="sg-card ${rowCls}" data-asset="${s.asset}" data-period="60">
+        <div class="sg-head">
+          <span class="sg-pair">${s.display || s.asset}</span>
+          ${typeBadge}
+        </div>
+        <div class="sg-mid">
+          ${sigBadge}
+          <div class="sg-conf">
+            <div class="sg-conf-track"><div class="sg-conf-fill" style="width:${confPct}%"></div></div>
+            <span class="sg-conf-num">${s.signal && s.signal !== 'NEUTRAL' ? 'confidence ' + confPct + '%' : 'waiting'}</span>
+          </div>
+          <span class="sg-strength ${strength}">${strength || '–'}</span>
+        </div>
+        <div class="sg-foot">${pressure}</div>
+        ${predCandle}
+        <span class="sg-time">candle close ${timeStr}</span>
+      </div>`;
     }).join('');
+    // Click a card → jump to that pair's chart.
+    grid.querySelectorAll('.sg-card').forEach((card) => {
+      card.addEventListener('click', () => {
+        const asset = card.dataset.asset;
+        if (!asset) return;
+        if (typeof resetAndSubscribe === 'function') {
+          currentAsset = asset;
+          _savePairPrefs();
+          resetAndSubscribe();
+          _setActiveTab('chart');
+        }
+      });
+    });
   } catch (_) {
     // keep whatever was last rendered
   }
@@ -1760,6 +1772,7 @@ let _setActiveTab = function(tab) {
   } else {
     // Fallback if nav.js didn't load
     const _fallbackMap = { home: 'tab-home', chart: 'tab-advance',
+                           analytics: 'tab-analytics',
                            history: 'tab-history', settings: 'tab-settings' };
     for (const [key, id] of Object.entries(_fallbackMap)) {
       const el = document.getElementById(id);
@@ -1778,6 +1791,16 @@ let _setActiveTab = function(tab) {
   // When switching to History tab, auto-load the history table
   if (tab === 'history') {
     loadHistory();
+  }
+  // When switching to the Win Rates (analytics) tab, load the per-pair /
+  // per-direction breakdown and keep it fresh while the tab is open.
+  if (tab === 'analytics') {
+    _loadAnalytics();
+    if (_analyticsPollTimer) clearInterval(_analyticsPollTimer);
+    _analyticsPollTimer = setInterval(_pollGuard(_loadAnalytics), 15000);
+  } else if (_analyticsPollTimer) {
+    clearInterval(_analyticsPollTimer);
+    _analyticsPollTimer = null;
   }
   // When switching to Home tab, load share-signals + home stats and start polling.
   // (Share-signal table now lives on the Home overview page, not its own tab.)
@@ -2258,6 +2281,129 @@ function bootChart(attempt) {
 }
 bootChart();
 
+// ── Win Rates (Analytics) — per-pair CALL vs PUT breakdown ────────────────
+// The user's explicit requirement:
+//   "প্রত্যেক পেয়ার ও সিগন্যাল হিস্টোরি উইন রেট আমি দেখতে পারবো। Call ও put
+//    কোনো সিগন্যাল গুলো কেমন win রেট দিচ্ছে। সেই গুলো আলাদা আলাদা করে
+//    নিজের মতো করে দেখতে পারবো।"
+// Data: /api/winrate-calls (per-pair CALL/PUT/all buckets with Wilson CI +
+// status judged against the payout break-even — same honesty rules as the
+// sidebar win-rate cells).
+
+let _analyticsDays = 7;
+let _lastAnalyticsKey = '';
+
+function _analyticsStatusColor(status) {
+  switch (status) {
+    case 'proven_win':  return 'good';
+    case 'proven_loss': return 'bad';
+    default:            return '';
+  }
+}
+
+function _dirCellHTML(dir, label) {
+  if (!dir || !dir.n) {
+    return `<div class="dir-cell ${label === 'CALL' ? 'call' : 'put'}">
+      <span class="dc-label">${label === 'CALL' ? '▲ CALL' : '▼ PUT'}</span>
+      <span class="dc-n">no data</span></div>`;
+  }
+  const cls = _analyticsStatusColor(dir.status);
+  const pct = Math.round(dir.rate ?? 0);
+  const ci = dir.ci95 ? `95% CI ${dir.ci95[0]}%–${dir.ci95[1]}%` : '';
+  const statusNote = {
+    proven_win:  'whole interval beats break-even',
+    proven_loss: 'whole interval below break-even',
+    thin:        `under ${_analyticsMinN} signals — too few to judge`,
+    unproven:    'no proven edge either way',
+    none:        'no graded signals',
+  }[dir.status] || '';
+  return `<div class="dir-cell ${label === 'CALL' ? 'call' : 'put'}">
+    <span class="dc-label">${label === 'CALL' ? '▲ CALL' : '▼ PUT'}</span>
+    <div class="dc-bar"><div class="dc-fill" style="width:${pct}%"></div></div>
+    <span class="dc-rate ${cls}" title="${dir.correct}W/${dir.wrong}L · ${ci} · ${statusNote}">${dir.rate}%</span>
+    <span class="dc-n" title="${ci}">n=${dir.n}</span>
+  </div>`;
+}
+
+let _analyticsMinN = 20;
+
+async function _loadAnalytics() {
+  const tbody = document.getElementById('analytics-rows');
+  if (!tbody) return;
+  const daysSel = document.getElementById('analytics-days');
+  if (daysSel && daysSel.value) _analyticsDays = parseInt(daysSel.value, 10) || 7;
+  try {
+    const r = await fetch(`/api/winrate-calls?days=${_analyticsDays}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const pairs = d.pairs || [];
+    _analyticsMinN = d.min_n ?? 20;
+
+    // ── Summary cards: overall + CALL + PUT ─────────────────────────────
+    const ov = d.overall || {};
+    const beEl = document.getElementById('analytics-breakeven');
+    if (beEl) beEl.textContent = (d.break_even ?? 54.05) + '%';
+    const setCard = (idRate, idN, bucket, label) => {
+      const rateEl = document.getElementById(idRate);
+      const nEl = document.getElementById(idN);
+      if (!rateEl || !nEl) return;
+      if (bucket && bucket.n) {
+        rateEl.textContent = bucket.rate + '%';
+        rateEl.className = 'dir-summary-value ' + _analyticsStatusColor(bucket.status);
+        nEl.textContent = `${bucket.correct}W / ${bucket.wrong}L · n=${bucket.n} · ${label}`;
+      } else {
+        rateEl.textContent = '–';
+        rateEl.className = 'dir-summary-value';
+        nEl.textContent = 'no graded signals in this window';
+      }
+    };
+    setCard('analytics-call-rate', 'analytics-call-n', ov.call, 'CALL signals');
+    setCard('analytics-all-rate',  'analytics-all-n',  ov.all,  'all signals');
+    setCard('analytics-put-rate',  'analytics-put-n',  ov.put,  'PUT signals');
+
+    // ── Per-pair table (dedup render) ───────────────────────────────────
+    const key = JSON.stringify([_analyticsDays, d]);
+    if (key === _lastAnalyticsKey) return;
+    _lastAnalyticsKey = key;
+
+    if (!pairs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="history-empty">No graded signals in this window yet — the feed needs to run with a connected Quotex session.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = pairs.map((p) => {
+      const allCls = _analyticsStatusColor(p.all?.status);
+      const bias = p.direction_bias === 'call'
+        ? '<span class="bias-badge call">▲ CALL better</span>'
+        : p.direction_bias === 'put'
+        ? '<span class="bias-badge put">▼ PUT better</span>'
+        : '<span class="bias-badge none">balanced</span>';
+      const allRate = (p.all && p.all.n) ? p.all.rate + '%' : '–';
+      return `<tr>
+        <td class="col-pair">${p.display || p.asset}</td>
+        <td class="col-num">${p.all?.n ?? 0}</td>
+        <td class="col-num"><span class="an-wr ${allCls}" title="${p.all?.ci95 ? '95% CI ' + p.all.ci95[0] + '%–' + p.all.ci95[1] + '%' : ''}">${allRate}</span></td>
+        <td class="col-dir">${_dirCellHTML(p.call, 'CALL')}</td>
+        <td class="col-dir">${_dirCellHTML(p.put, 'PUT')}</td>
+        <td>${bias}</td>
+      </tr>`;
+    }).join('');
+  } catch (_) {
+    // transient — the next poll retries
+  }
+}
+
+// Analytics page controls
+const analyticsRefresh = document.getElementById('analytics-refresh');
+if (analyticsRefresh) analyticsRefresh.addEventListener('click', () => {
+  _lastAnalyticsKey = '';
+  _loadAnalytics();
+});
+const analyticsDays = document.getElementById('analytics-days');
+if (analyticsDays) analyticsDays.addEventListener('change', () => {
+  _lastAnalyticsKey = '';
+  _loadAnalytics();
+});
+
 // ── History modal — browse past resolved signals from the DB ──────────────
 function _fmtHistTime(ctime) {
   const d = new Date(ctime * 1000);
@@ -2288,11 +2434,21 @@ async function loadHistory() {
     _renderHistoryFilterOptions();
   }
   const asset = sel ? sel.value : '';
+  // Direction + result filters (the user's requirement: Call ও Put
+  // সিগন্যালগুলো আলাদা আলাদা দেখা)।
+  const dirSel = document.getElementById('history-direction-filter');
+  const resSel = document.getElementById('history-result-filter');
+  const direction = dirSel ? dirSel.value : '';
+  const result = resSel ? resSel.value : '';
   try {
-    const q = asset ? `?asset=${encodeURIComponent(asset)}&limit=150` : '?limit=150';
-    const data = await fetch('/api/signals' + q).then((r) => r.json());
+    const params = new URLSearchParams();
+    params.set('limit', '150');
+    if (asset) params.set('asset', asset);
+    if (direction) params.set('direction', direction);
+    if (result) params.set('result', result);
+    const data = await fetch('/api/signals?' + params.toString()).then((r) => r.json());
     if (!Array.isArray(data) || !data.length) {
-      rows.innerHTML = '<tr><td colspan="6" class="history-empty">No resolved signals yet</td></tr>';
+      rows.innerHTML = '<tr><td colspan="6" class="history-empty">No resolved signals match this filter yet</td></tr>';
       return;
     }
     rows.innerHTML = data.map((s) => {
@@ -2331,6 +2487,10 @@ const histRefresh = document.getElementById('history-refresh');
 if (histRefresh) histRefresh.addEventListener('click', loadHistory);
 const histFilter = document.getElementById('history-pair-filter');
 if (histFilter) histFilter.addEventListener('change', loadHistory);
+const histDirFilter = document.getElementById('history-direction-filter');
+if (histDirFilter) histDirFilter.addEventListener('change', loadHistory);
+const histResFilter = document.getElementById('history-result-filter');
+if (histResFilter) histResFilter.addEventListener('change', loadHistory);
 
 // Share Signal page controls
 const shareRefresh = document.getElementById('share-refresh');

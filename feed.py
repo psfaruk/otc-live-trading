@@ -1387,9 +1387,21 @@ class QuotexFeed:
                 f"{' | ' + ','.join(tags) if tags else ''}"
             )
 
-            # Log whenever a theory fired — this is the only evidence
-            # source now that analyze_eoc is the sole signal generator.
-            if fired:
+            # LOG EVERY graded signal (not only candles where a theory
+            # voted). The old `if fired:` gate silently dropped every
+            # pure-tiebreak / pure-STAT candle from signal_log, so the
+            # win-rate history the user sees was a biased subset (only
+            # pattern-heavy candles). Every resolved CALL/PUT now gets a
+            # row; when no theory voted the decision is attributed to the
+            # STAT base layer or TIEBREAK so per-theory reports stay
+            # meaningful.
+            if True:
+                if not fired:
+                    # Attribute the decision to the layer that made it so
+                    # per-code reports don't lose these rows.
+                    _reasons = prediction.get("reasons") or []
+                    fired = (["STAT"] if any(r.startswith("STAT ") for r in _reasons)
+                             else ["TIEBREAK"])
                 _db.log_signal(
                     asset, period, closed["time"],
                     sig, prediction["score"],

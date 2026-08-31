@@ -1,6 +1,6 @@
 /* ── Plybit AI — nav.js ─────────────────────────────────────────────────── *
  * Page navigation system: sidebar (desktop) + bottom tabs (mobile)         *
- * 4-tab layout: Home / Chart / History / Settings                          *
+ * 5-tab layout: Home / Chart / Win Rates / History / Settings                          *
  * chart.js's _setActiveTab calls Nav.setPage() to keep both nav systems     *
  * in sync. Sidebar clicks are routed THROUGH _setActiveTab so per-tab        *
  * loaders (share-signals poll, history load, settings poll) actually fire.  *
@@ -8,12 +8,13 @@
 'use strict';
 
 const Nav = (() => {
-  const PAGES = ['tab-home', 'tab-advance', 'tab-history', 'tab-settings'];
+  const PAGES = ['tab-home', 'tab-advance', 'tab-analytics', 'tab-history', 'tab-settings'];
   const TAB_MAP = {
-    home:     'tab-home',
-    chart:    'tab-advance',
-    history:  'tab-history',
-    settings: 'tab-settings',
+    home:      'tab-home',
+    chart:     'tab-advance',
+    analytics: 'tab-analytics',
+    history:   'tab-history',
+    settings:  'tab-settings',
   };
 
   let _currentPage = 'tab-advance';
@@ -54,13 +55,14 @@ const Nav = (() => {
   // show/hide transform the way #side-panel-toggle (nested inside) is
   // while the sheet is closed. See index.html's comment on this element.
   const sidePanelToggleMobile = document.getElementById('side-panel-toggle-mobile');
-  const _mobileNavQuery = window.matchMedia('(max-width: 767px)');
+  const _mobileNavQuery = window.matchMedia('(max-width: 1023px)');
 
   function toggleSidePanel() {
     if (_mobileNavQuery.matches) {
-      const nowActive = sidePanel.classList.toggle('active');
+      // Mobile bottom-sheet: .open slides it up (style.css media query).
+      const nowOpen = sidePanel.classList.toggle('open');
       if (sidePanelToggleMobile) {
-        sidePanelToggleMobile.classList.toggle('open', nowActive);
+        sidePanelToggleMobile.classList.toggle('open', nowOpen);
       }
     } else {
       sidePanel.classList.toggle('collapsed');

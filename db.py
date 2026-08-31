@@ -402,13 +402,23 @@ def theory_perf(asset: str | None = None, period: int | None = None,
 
 
 def get_signals(asset: str | None = None, period: int | None = None,
-                limit: int = 50) -> list[dict]:
-    """Most recent resolved signals with their full postmortem, newest first."""
+                limit: int = 50, direction: str | None = None,
+                result: str | None = None) -> list[dict]:
+    """Most recent resolved signals with their full postmortem, newest first.
+
+    direction: filter by the signal itself — "CALL" or "PUT" (the History /
+    Analytics tabs use this to show per-direction performance).
+    result:    filter by outcome — "correct", "wrong" or "draw".
+    """
     where, params = [], []
     if asset:
         where.append("asset=?");  params.append(asset)
     if period:
         where.append("period=?"); params.append(period)
+    if direction in ("CALL", "PUT"):
+        where.append("signal=?"); params.append(direction)
+    if result in ("correct", "wrong", "draw"):
+        where.append("result=?"); params.append(result)
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     with _lock:
         con = sqlite3.connect(DB_PATH)
@@ -761,6 +771,121 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
         "by_signal": by_signal,
         "by_asset": by_asset,
         "by_hour": by_hour,
+    }
+
+
+def direction_winrate(days: int = 7, period: int = 60) -> dict:
+    """Per-pair CALL vs PUT win rates — the user's explicit requirement:
+
+    "Call ও put কোনো সিগন্যাল গুলো কেমন win রেট দিচ্ছে। সেই গুলো আলাদা
+    আলাদা করে নিজের মতো করে দেখতে পারবো।"
+
+    One row per pair with the CALL bucket, the PUT bucket and the combined
+    bucket, each with n / correct / wrong / rate / 95% Wilson interval.
+    `direction_bias` summarises which side has been stronger on the pair
+    (with a minimum-sample guard so 2-of-3 candles cannot claim an edge).
+    Draws are excluded from n (broker refund — neither win nor loss).
+    """
+    MIN_N = 20           # below this a direction bucket is marked thin
+    BREAK_EVEN = 54.05
+    cutoff = int(time.time()) - days * 86400
+
+    with _lock:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            rows = con.execute(
+                "SELECT asset, signal, "
+                "       COALESCE(SUM(result='correct'),0), "
+                "       COALESCE(SUM(result='wrong'),0), "
+                "       COALESCE(SUM(result='draw'),0) "
+                "FROM signal_log "
+                "WHERE ctime >= ? AND period = ? "
+                "      AND result IN ('correct','wrong','draw') "
+                "GROUP BY asset, signal", (cutoff, period)).fetchall()
+        finally:
+            con.close()
+
+    def _bucket(correct: int, wrong: int, draws: int) -> dict:
+        n = correct + wrong
+        lo, hi = _wilson(correct, n)
+        if n == 0:
+            return {"n": 0, "correct": 0, "wrong": 0, "draws": draws,
+                    "rate": None, "ci95": None, "status": "none"}
+        if n < MIN_N:
+            status = "thin"
+        elif lo > BREAK_EVEN:
+            status = "proven_win"
+        elif hi < BREAK_EVEN:
+            status = "proven_loss"
+        else:
+            status = "unproven"
+        return {"n": n, "correct": correct, "wrong": wrong, "draws": draws,
+                "rate": round(100.0 * correct / n, 1), "ci95": [lo, hi],
+                "status": status}
+
+    by_pair: dict[str, dict[str, dict]] = {}
+    for asset, signal, correct, wrong, draws in rows:
+        slot = by_pair.setdefault(asset, {
+            "CALL": [0, 0, 0], "PUT": [0, 0, 0]})
+        if signal not in slot:
+            continue
+        slot[signal][0] += correct
+        slot[signal][1] += wrong
+        slot[signal][2] += draws
+
+    display_names = {}
+    try:
+        from strategies import get_profile
+        for asset in by_pair:
+            try:
+                display_names[asset] = get_profile(asset).display
+            except Exception:
+                display_names[asset] = asset
+    except Exception:
+        pass
+
+    pairs = []
+    for asset, slot in by_pair.items():
+        call = _bucket(*slot["CALL"])
+        put = _bucket(*slot["PUT"])
+        allt = _bucket(slot["CALL"][0] + slot["PUT"][0],
+                       slot["CALL"][1] + slot["PUT"][1],
+                       slot["CALL"][2] + slot["PUT"][2])
+        # direction bias — needs a meaningful sample on BOTH sides before
+        # claiming one side is better, otherwise it is coin-flip noise.
+        bias = "none"
+        if call["n"] >= MIN_N and put["n"] >= MIN_N:
+            if call["rate"] - put["rate"] >= 3.0:
+                bias = "call"
+            elif put["rate"] - call["rate"] >= 3.0:
+                bias = "put"
+        pairs.append({
+            "asset": asset,
+            "display": display_names.get(asset, asset),
+            "call": call, "put": put, "all": allt,
+            "direction_bias": bias,
+        })
+
+    pairs.sort(key=lambda r: -(r["all"]["rate"] if r["all"]["n"] else 0))
+
+    # Overall buckets across all pairs
+    tc = sum(p["call"]["correct"] for p in pairs)
+    tw = sum(p["call"]["wrong"] for p in pairs)
+    td = sum(p["call"]["draws"] for p in pairs)
+    pc = sum(p["put"]["correct"] for p in pairs)
+    pw = sum(p["put"]["wrong"] for p in pairs)
+    pd = sum(p["put"]["draws"] for p in pairs)
+    return {
+        "days": days,
+        "period": period,
+        "break_even": BREAK_EVEN,
+        "min_n": MIN_N,
+        "overall": {
+            "call": _bucket(tc, tw, td),
+            "put": _bucket(pc, pw, pd),
+            "all": _bucket(tc + pc, tw + pw, td + pd),
+        },
+        "pairs": pairs,
     }
 
 
