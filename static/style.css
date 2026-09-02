@@ -324,12 +324,14 @@ select:focus, input:focus, textarea:focus { border-color: var(--violet); box-sha
   padding: 14px 16px; margin-bottom: 12px; backdrop-filter: blur(14px);
 }
 .deck-signal { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-.deck-meta { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; flex: 1; }
-.deck-cell small { display: block; font-size: 9.5px; letter-spacing: .14em; color: var(--t-3); font-weight: 700; margin-bottom: 3px; }
+.deck-meta { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.deck-cell small { display: block; font-size: 9.5px; letter-spacing: .14em; color: var(--t-3); font-weight: 700; margin-bottom: 4px; }
 .deck-cell .mono { font-size: 15px; font-weight: 700; }
 
 .deck-conf { display: flex; align-items: center; gap: 9px; }
-.conf-ring, .cd-ring { transform: rotate(-90deg); }
+.conf-ring, .cd-ring { transform: rotate(-90deg); display: block; }
+.conf-ring { width: 46px; height: 46px; flex-shrink: 0; }
+.cd-ring { width: 54px; height: 54px; }
 .ring-bg { fill: none; stroke: var(--bg-3); stroke-width: 4.5; }
 .ring-fg { fill: none; stroke: var(--cyan); stroke-width: 4.5; stroke-linecap: round; stroke-dasharray: 119.4; stroke-dashoffset: 119.4; transition: stroke-dashoffset .5s ease, stroke .3s; }
 #conf-ring-fg { stroke: var(--violet); }
@@ -338,7 +340,7 @@ select:focus, input:focus, textarea:focus { border-color: var(--violet); box-sha
 .conf-num { display: flex; flex-direction: column; line-height: 1.1; }
 .conf-num .mono { font-size: 16px; font-weight: 800; }
 .conf-num small, .cd-num small { font-size: 9px; letter-spacing: .12em; color: var(--t-3); font-weight: 700; }
-.deck-countdown { position: relative; width: 54px; height: 54px; }
+.deck-countdown { position: relative; width: 54px; height: 54px; flex-shrink: 0; margin-left: auto; }
 .cd-num { position: absolute; inset: 0; display: grid; place-items: center; font-size: 14px; font-weight: 800; }
 
 .et { font-weight: 900; font-size: 13px; letter-spacing: .08em; padding: 5px 12px; border-radius: 8px; }
@@ -363,7 +365,9 @@ select:focus, input:focus, textarea:focus { border-color: var(--violet); box-sha
 #confluence-bar { flex: 1; min-width: 120px; height: 6px; border-radius: 4px; background: var(--bg-3); overflow: hidden; }
 #confluence-fill { height: 100%; width: 0%; background: var(--grad); border-radius: 4px; transition: width .5s ease; }
 
-#accuracy-strip { display: flex; gap: 5px; margin-top: 12px; }
+.acc-wrap { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--hair); }
+.acc-label { font-size: 9.5px; letter-spacing: .14em; color: var(--t-3); font-weight: 800; white-space: nowrap; }
+#accuracy-strip { display: flex; gap: 5px; flex-wrap: wrap; }
 .acc-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--bg-3); }
 .acc-dot.a-c { background: var(--up); box-shadow: 0 0 6px rgba(0,226,138,.5); }
 .acc-dot.a-w { background: var(--down); box-shadow: 0 0 6px rgba(255,77,109,.5); }
@@ -511,10 +515,19 @@ select:focus, input:focus, textarea:focus { border-color: var(--violet); box-sha
 #signal-popup-meta { font-size: 11.5px; color: var(--t-2); line-height: 1.5; }
 #signal-popup-close { position: absolute; top: 8px; right: 10px; color: var(--t-3); font-size: 13px; }
 
+/* ══ Tables · horizontal scroll on narrow screens ══ */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll .table { min-width: 620px; }
+
 /* ══ Bottom tabs (mobile) ══ */
 #bottom-tabs { display: none; }
 
-/* ══ Responsive ══ */
+/* ═══════════════════════════════════════════════════════════════════
+   RESPONSIVE
+   ≤1023px : tablet/phone chrome (drawer sidebar, bottom tabs, 1-col chart)
+   ≤760px  : phone layouts (signal deck becomes a structured grid)
+   ≤560px  : small phones (compact everything)
+   ═══════════════════════════════════════════════════════════════════ */
 @media (max-width: 1023px) {
   #sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; z-index: 80;
@@ -540,15 +553,124 @@ select:focus, input:focus, textarea:focus { border-color: var(--violet); box-sha
   .tab-btn.active svg { filter: drop-shadow(0 0 6px rgba(139,92,246,.8)); }
   #chart-zone { grid-template-columns: 1fr; }
   #side-panel { max-height: none; }
-  #chart-wrap { height: 52vh; }
-  .wr-summary { grid-template-columns: 1fr; }
+  #chart-wrap { height: 46vh; min-height: 300px; }
+  .wr-summary { grid-template-columns: repeat(3, 1fr); }
+  .wr-card { text-align: center; padding: 11px 8px; }
+  .wr-card .mono { font-size: 20px; }
   #ticker { display: none; }
-  .page { padding: 16px 14px 30px; }
+  .page { padding: 14px 12px calc(var(--tabs-h) + 30px); }
+  #page-settings .panel-card { max-width: none; }
 }
+
+/* ── phones: signal deck becomes a tidy, predictable grid ── */
+@media (max-width: 760px) {
+  /* deck top row: badge left · countdown right */
+  .deck-signal {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "badge cd"
+      "cells cells";
+    gap: 12px 12px;
+    align-items: center;
+  }
+  #signal-badge {
+    grid-area: badge;
+    width: 100%; min-height: 52px;
+    justify-content: center;
+    padding: 10px 14px;
+  }
+  .sig-dir { font-size: 19px; }
+  .deck-countdown { grid-area: cd; margin-left: 0; }
+  .deck-meta {
+    grid-area: cells;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  /* each stat becomes a compact centred tile */
+  .deck-conf, .deck-meta .deck-cell {
+    background: var(--bg-2);
+    border: 1px solid var(--hair);
+    border-radius: 10px;
+    padding: 9px 6px 8px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; gap: 6px;
+    min-width: 0;
+  }
+  .deck-cell small { margin-bottom: 0; }
+  .deck-cell .mono { font-size: 14px; }
+  .deck-countdown { justify-self: end; }
+  /* entry spans the full width as a banner */
+  #entry-cell { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; padding: 9px 12px; }
+  #entry-cell .et { flex: 1; margin-left: 10px; text-align: center; font-size: 12.5px; padding: 7px 10px; }
+
+  /* confluence stacks into labelled rows */
+  #confluence-strip {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "label label"
+      "chips chips"
+      "bar bar"
+      "note note";
+    gap: 8px;
+    margin-top: 12px; padding-top: 11px;
+  }
+  #confluence-strip > small { grid-area: label; }
+  #voter-chips { grid-area: chips; }
+  .voter-chip { padding: 4px 9px; }
+  #confluence-bar { grid-area: bar; width: 100%; min-width: 0; }
+  #confluence-note { grid-area: note; }
+
+  /* accuracy strip keeps its label on one line, dots fit beside it */
+  .acc-wrap { gap: 8px; }
+  .acc-label { flex-shrink: 0; font-size: 9px; }
+  #accuracy-strip { gap: 4px; }
+  .acc-dot { width: 8px; height: 8px; border-radius: 2.5px; }
+
+  /* side panel cards breathe */
+  .panel-card { padding: 13px 14px; }
+  .reasons { max-height: none; }
+
+  /* signal popup becomes a toast above the bottom tabs */
+  #signal-popup {
+    top: auto; bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 14px);
+    left: 12px; right: 12px; min-width: 0;
+  }
+}
+
+/* ── small phones ── */
 @media (max-width: 560px) {
-  .deck-signal { gap: 10px; }
-  .deck-meta { gap: 12px; }
   .utc-hide { display: none; }
+  #topbar { padding: 0 10px; gap: 8px; }
+  #pair-btn { min-width: 0; max-width: 52vw; padding: 7px 9px; }
+  #pair-btn-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tf-select { width: 62px; padding: 7px 6px; }
+  .status-pill { padding: 5px 8px; font-size: 10px; }
+
+  .stat-row { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .stat-card { padding: 11px 12px; }
+  .stat-value { font-size: 17px; }
+
+  .wr-card .mono { font-size: 16px; }
+  .wr-card small { font-size: 9px; }
+  .wr-meta { font-size: 9.5px; }
+  .wr-controls { gap: 8px; }
+  .seg button { padding: 7px 10px; }
+
+  .hist-controls select { flex: 1 1 130px; min-width: 0; }
+  .wr-controls #wr-days { flex-wrap: wrap; }
+
+  /* stack the accuracy label above the dots when space runs out */
+  .acc-wrap { flex-direction: column; align-items: flex-start; gap: 7px; }
+
+  #chart-wrap { height: 42vh; }
+  .page-head h1 { font-size: 21px; }
+  .page-sub { font-size: 12.5px; }
+  .section-head { flex-direction: column; gap: 2px; margin: 18px 0 10px; }
+  .sig-badge { padding: 7px 12px; }
+  .et { font-size: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

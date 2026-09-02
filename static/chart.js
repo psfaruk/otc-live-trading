@@ -172,7 +172,10 @@
 
   function ring(el, frac) {
     if (!el) return;
-    const C = 119.4; // 2πr, r=19
+    // circumference from the circle's own radius — works for any ring size
+    let C = 119.4;
+    try { C = 2 * Math.PI * el.r.baseVal.value; } catch (e) {}
+    el.style.strokeDasharray = String(C);
     el.style.strokeDashoffset = String(C * (1 - Math.max(0, Math.min(1, frac))));
   }
 

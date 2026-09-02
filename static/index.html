@@ -87,7 +87,7 @@
         <span id="ticker-price" class="mono">—</span>
         <span id="ticker-chip" class="ticker-chip"></span>
       </div>
-      <div id="utc-clock" class="mono dim">—:—:—</div>
+      <div id="utc-clock" class="mono dim utc-hide">—:—:—</div>
       <div id="status" class="status-pill st-off"><span class="status-dot"></span><span id="status-label">OFF</span></div>
     </header>
 
@@ -162,13 +162,13 @@
                 <small>ENTRY</small>
                 <div id="entry-timing" class="et et-wait">—</div>
               </div>
-              <div class="deck-countdown">
-                <svg class="cd-ring" viewBox="0 0 54 54">
-                  <circle cx="27" cy="27" r="23" class="ring-bg"/>
-                  <circle cx="27" cy="27" r="23" class="ring-fg" id="cd-ring-fg"/>
-                </svg>
-                <div class="cd-num mono" id="chart-countdown">—</div>
-              </div>
+            </div>
+            <div class="deck-countdown">
+              <svg class="cd-ring" viewBox="0 0 54 54">
+                <circle cx="27" cy="27" r="23" class="ring-bg"/>
+                <circle cx="27" cy="27" r="23" class="ring-fg" id="cd-ring-fg"/>
+              </svg>
+              <div class="cd-num mono" id="chart-countdown">—</div>
             </div>
           </div>
 
@@ -179,7 +179,10 @@
             <span id="confluence-note" class="hint"></span>
           </div>
 
-          <div id="accuracy-strip" title="last 15 outcomes on this pair"></div>
+          <div class="acc-wrap">
+            <small class="acc-label">LAST 15 · THIS PAIR</small>
+            <div id="accuracy-strip" title="last 15 outcomes on this pair"></div>
+          </div>
         </div>
 
         <div id="chart-zone">
@@ -260,13 +263,15 @@
         </div>
 
         <div class="panel-card">
-          <table class="table" id="wr-table">
-            <thead><tr>
-              <th>Pair</th><th class="num">Signals</th><th class="num">Win rate</th>
-              <th class="num">CALL</th><th class="num">PUT</th><th>Bias</th><th>Status</th>
-            </tr></thead>
-            <tbody id="wr-rows"><tr><td colspan="7" class="dim">loading…</td></tr></tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="table" id="wr-table">
+              <thead><tr>
+                <th>Pair</th><th class="num">Signals</th><th class="num">Win rate</th>
+                <th class="num">CALL</th><th class="num">PUT</th><th>Bias</th><th>Status</th>
+              </tr></thead>
+              <tbody id="wr-rows"><tr><td colspan="7" class="dim">loading…</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
@@ -293,10 +298,12 @@
           <button id="history-refresh" class="btn-ghost">Refresh</button>
         </div>
         <div class="panel-card">
-          <table class="table" id="history-table">
-            <thead><tr><th>Time</th><th>Pair</th><th>Signal</th><th>Strength</th><th>Result</th><th>Why</th></tr></thead>
-            <tbody id="history-rows"><tr><td colspan="6" class="dim">loading…</td></tr></tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="table" id="history-table">
+              <thead><tr><th>Time</th><th>Pair</th><th>Signal</th><th>Strength</th><th>Result</th><th>Why</th></tr></thead>
+              <tbody id="history-rows"><tr><td colspan="6" class="dim">loading…</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
