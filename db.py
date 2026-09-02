@@ -1,14 +1,18 @@
 """
 SQLite store for closed-candle microstructure data + signal log.
 
-Auth/user/promo/notice tables fully removed — the app is now a single-tenant
-public dashboard with no per-user state.
-
-Each row = one closed candle's summary:
-  OHLC + buy/sell pressure + last-tick reaction + phase pattern + hold zone
-
-This lets EOC analysis see what the *previous* candle's internal pressure
-looked like — information that would otherwise be discarded when ticks.clear().
+HISTORY INTEGRITY CONTRACT (the user's explicit requirement — no result
+overrides, ever):
+  - open_signal()    inserts a PENDING row the moment a signal is emitted
+                     (candle open) with the exact signal/strength/score.
+  - finalize_signal() updates ONLY the outcome fields (result, actual,
+                     a_open/a_close, tags, postmortem) on a PENDING row.
+  - Signal fields written at emission are NEVER rewritten. INSERT OR
+                     REPLACE on signal_log is gone — history cannot be
+                     silently rewritten by a retry or a re-grade.
+  - result values:   'correct' | 'wrong' | 'draw' (broker refund) |
+                     'no_data' (candle closed with zero ticks — cannot be
+                     graded; excluded from win-rate) | 'pending' (open).
 """
 import os
 import sqlite3
@@ -21,6 +25,26 @@ import time
 DB_PATH = os.environ.get("QX_DB_PATH") or os.path.join(
     os.path.dirname(__file__), "candle_micro.db")
 _lock   = threading.Lock()
+
+# SQLite robustness: WAL lets the per-candle writes on the event loop
+# coexist with the threadpool stats readers without 'database is locked'
+# surfacing as silent row loss, and busy_timeout makes a contested write
+# wait instead of failing.
+_SQLITE_PRAGMAS = (
+    "PRAGMA journal_mode=WAL;",
+    "PRAGMA busy_timeout=8000;",
+    "PRAGMA synchronous=NORMAL;",
+)
+
+
+def _connect() -> sqlite3.Connection:
+    con = sqlite3.connect(DB_PATH, timeout=8.0)
+    for pragma in _SQLITE_PRAGMAS:
+        try:
+            con.execute(pragma)
+        except sqlite3.OperationalError:
+            pass          # WAL unsupported on some filesystems — degrade fine
+    return con
 
 # If QX_DB_PATH points at a directory that doesn't exist yet (e.g. a Railway
 # Volume mount path configured before the volume itself is attached),
@@ -94,10 +118,18 @@ CREATE TABLE IF NOT EXISTS signal_log (
     setup_id    TEXT,              -- e.g. OTC_SIDEWAYS_SUPPORT_BOUNCE — the trade-gate key
     trade_ok    INTEGER,           -- 1 if the trade gate approved at signal time
     trade_why   TEXT,              -- gate's stated reason (proven edge / why blocked)
+    -- ── History-integrity columns (2026-09 confluence engine) ──
+    emitted_at  REAL,              -- unix ts when the signal was broadcast (candle open)
+    graded_at   REAL,              -- unix ts when the outcome was written
+    agree_weight REAL,             -- summed weight of the agreeing voters
+    voters      TEXT,              -- JSON [{name, dir, weight}] — the council
+    payout      INTEGER,           -- broker payout % at emission (break-even context)
     PRIMARY KEY (asset, period, ctime)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ctime
     ON signal_log (asset, period, ctime DESC);
+CREATE INDEX IF NOT EXISTS idx_signal_result
+    ON signal_log (result, ctime DESC);
 
 -- One row per individual theory vote — normalized version of right/wrong_codes.
 -- Lets SQL answer "how is RUN doing on AUDCAD this week at x2+ weight" directly,
@@ -121,7 +153,7 @@ CREATE INDEX IF NOT EXISTS idx_votes_theory
 def init() -> None:
     """Create tables if they don't exist + migrate signal_log columns."""
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             con.executescript(_DDL)
             # Migrate older signal_log tables: add any missing report columns.
@@ -145,6 +177,9 @@ def init() -> None:
                 ("market", "TEXT"), ("reaction_type", "TEXT"),
                 ("reaction_quality", "INTEGER"), ("setup_id", "TEXT"),
                 ("trade_ok", "INTEGER"), ("trade_why", "TEXT"),
+                ("emitted_at", "REAL"), ("graded_at", "REAL"),
+                ("agree_weight", "REAL"), ("voters", "TEXT"),
+                ("payout", "INTEGER"),
             ]:
                 if col not in have:
                     con.execute(f"ALTER TABLE signal_log ADD COLUMN {col} {decl}")
@@ -193,7 +228,7 @@ def save(asset: str, period: int, candle: dict, micro: dict) -> None:
         micro.get("ticks_json"),
     )
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             con.execute("""
                 INSERT OR REPLACE INTO candle_micro
@@ -227,7 +262,7 @@ def get_micro_history(asset: str, period: int, n: int = 6,
         where += " AND ctime < ? AND ctime >= ?"
         params += [before_ctime, before_ctime - n * period]
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             rows = con.execute(f"""
                 SELECT ctime, open, high, low, close,
@@ -270,7 +305,7 @@ def cleanup(keep_days: int = 7) -> None:
     """Delete rows older than keep_days to prevent unbounded growth."""
     cutoff = int(time.time()) - keep_days * 86400
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             con.execute("DELETE FROM candle_micro WHERE ctime < ?", (cutoff,))
             # Keep signal_log longer (30 days) so win-rate has history.
@@ -286,6 +321,66 @@ def cleanup(keep_days: int = 7) -> None:
 
 # ── Signal logging / win-rate ──────────────────────────────────────────────────
 
+# Signals are logged in TWO phases so the history is audit-proof:
+#   phase 1  open_signal()      at candle open, result='pending'
+#   phase 2  finalize_signal()  at candle close, outcome fields ONLY
+# A pending row can be finalized exactly once (WHERE result='pending'), so
+# a retry / re-grade / crash loop can never rewrite a settled outcome.
+
+def open_signal(asset: str, period: int, ctime: int, signal: str,
+                score: int, confidence: float, codes: str,
+                strength: str, agree: int, agree_weight: float,
+                reasons: str = "", regime: str | None = None,
+                zone: str | None = None, voters_json: str = "",
+                payout: int | None = None,
+                emitted_at: float | None = None) -> bool:
+    """Phase 1 — insert the emitted signal as PENDING. Returns True when a
+    new row was created (False = already open: idempotent, never overwritten)."""
+    with _lock:
+        con = _connect()
+        try:
+            cur = con.execute("""
+                INSERT OR IGNORE INTO signal_log
+                (asset, period, ctime, signal, score, confidence, codes,
+                 result, strength, strength_live, agree, agree_weight,
+                 reasons, regime, zone, voters, payout, emitted_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (asset, period, ctime, signal, score, confidence, codes,
+                  "pending", strength, strength, agree, agree_weight,
+                  reasons, regime, zone, voters_json, payout,
+                  emitted_at or time.time()))
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+def finalize_signal(asset: str, period: int, ctime: int, result: str,
+                    actual: str, a_open, a_close,
+                    right_codes: str = "", wrong_codes: str = "",
+                    tags: str = "", postmortem: str = "",
+                    graded_at: float | None = None) -> bool:
+    """Phase 2 — write the outcome onto the PENDING row. Touches ONLY
+    outcome fields; the signal/strength/score recorded at emission are
+    untouchable. Returns True if a pending row was finalized."""
+    with _lock:
+        con = _connect()
+        try:
+            cur = con.execute("""
+                UPDATE signal_log
+                SET result=?, actual=?, a_open=?, a_close=?,
+                    right_codes=?, wrong_codes=?, tags=?, postmortem=?,
+                    graded_at=?
+                WHERE asset=? AND period=? AND ctime=? AND result='pending'
+            """, (result, actual, a_open, a_close, right_codes, wrong_codes,
+                  tags, postmortem, graded_at or time.time(),
+                  asset, period, ctime))
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
 def log_signal(asset: str, period: int, ctime: int, signal: str,
                score: int, confidence: float, codes: str,
                actual: str, result: str,
@@ -297,47 +392,47 @@ def log_signal(asset: str, period: int, ctime: int, signal: str,
                a_close: float | None = None,
                regime: str | None = None, zone: str | None = None,
                tags: str = "", postmortem: str = "",
-               votes: list[tuple[str, str, int, str]] | None = None,
+               votes: list | None = None,
                market: str | None = None, reaction_type: str | None = None,
                reaction_quality: int | None = None,
                setup_id: str | None = None,
                trade_ok: int | None = None,
-               trade_why: str | None = None) -> None:
-    """
-    Record one resolved prediction with a full WHY report:
-      codes        — theories that fired
-      right_codes  — theories that called THIS candle correctly
-      wrong_codes  — theories that were wrong THIS candle
-      reasons      — the exact votes (JSON) so the decision can be replayed
-      a_open/a_close — the actual outcome candle (to see the move size)
-      regime/zone  — analyze_eoc's market context the prediction was made in
-      tags         — comma flags explaining the outcome (NOISE_CANDLE, ...)
-      postmortem   — one human-readable line: why this trade won or lost
-      votes        — [(theory, CALL/PUT, mag, right/wrong), ...] → theory_votes
-      market/reaction_type/reaction_quality/setup_id — reaction_engine's
-        richer context+reaction read, and the trade-gate key (setup_id)
-    """
+               trade_why: str | None = None,
+               agree_weight: float | None = None,
+               voters_json: str = "", payout: int | None = None,
+               late_logged: bool = False) -> None:
+    """One-shot full-row write (used when no pending row exists — e.g. a
+    late-catch or a grading path that skipped phase 1).
+
+    NO-REWRITE GUARANTEE: INSERT OR IGNORE — if a row already exists for
+    (asset, period, ctime) this is a no-op, so a retry can never replace
+    a settled outcome. `late_logged` tags the row LATE_LOGGED so the audit
+    trail shows it was not written through the two-phase path."""
+    if late_logged and "LATE_LOGGED" not in tags:
+        tags = ",".join(x for x in (tags, "LATE_LOGGED") if x)
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             con.execute("""
-                INSERT OR REPLACE INTO signal_log
+                INSERT OR IGNORE INTO signal_log
                 (asset, period, ctime, signal, score, confidence,
                  codes, actual, result, strength, strength_live, agree,
-                 right_codes, wrong_codes, reasons, a_open, a_close,
-                 regime, zone, tags, postmortem,
+                 agree_weight, right_codes, wrong_codes, reasons, a_open,
+                 a_close, regime, zone, tags, postmortem,
                  market, reaction_type, reaction_quality, setup_id,
-                 trade_ok, trade_why)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 trade_ok, trade_why, voters, payout,
+                 emitted_at, graded_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (asset, period, ctime, signal, score, confidence,
                   codes, actual, result, strength, strength_live, agree,
-                  right_codes, wrong_codes, reasons, a_open, a_close,
-                  regime, zone, tags, postmortem,
+                  agree_weight, right_codes, wrong_codes, reasons, a_open,
+                  a_close, regime, zone, tags, postmortem,
                   market, reaction_type, reaction_quality, setup_id,
-                  trade_ok, trade_why))
+                  trade_ok, trade_why, voters_json, payout,
+                  time.time(), time.time()))
             if votes:
                 con.executemany("""
-                    INSERT OR REPLACE INTO theory_votes
+                    INSERT OR IGNORE INTO theory_votes
                     (asset, period, ctime, theory, vote, mag, outcome)
                     VALUES (?,?,?,?,?,?,?)
                 """, [(asset, period, ctime, t, v, m, o)
@@ -355,7 +450,7 @@ def log_theory_votes(asset: str, period: int, ctime: int,
     if not votes:
         return
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             con.executemany("""
                 INSERT OR REPLACE INTO theory_votes
@@ -383,7 +478,7 @@ def theory_perf(asset: str | None = None, period: int | None = None,
     wsql = " WHERE " + " AND ".join(where)
 
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             rows = con.execute(f"""
                 SELECT theory,
@@ -408,7 +503,8 @@ def get_signals(asset: str | None = None, period: int | None = None,
 
     direction: filter by the signal itself — "CALL" or "PUT" (the History /
     Analytics tabs use this to show per-direction performance).
-    result:    filter by outcome — "correct", "wrong" or "draw".
+    result:    filter by outcome — "correct", "wrong", "draw", "no_data"
+               or "pending".
     """
     where, params = [], []
     if asset:
@@ -417,11 +513,11 @@ def get_signals(asset: str | None = None, period: int | None = None,
         where.append("period=?"); params.append(period)
     if direction in ("CALL", "PUT"):
         where.append("signal=?"); params.append(direction)
-    if result in ("correct", "wrong", "draw"):
+    if result in ("correct", "wrong", "draw", "no_data", "pending"):
         where.append("result=?"); params.append(result)
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             con.row_factory = sqlite3.Row
             rows = con.execute(f"""
@@ -438,26 +534,39 @@ def get_signals(asset: str | None = None, period: int | None = None,
     return [dict(r) for r in rows]
 
 
-def get_stats(asset: str | None = None, period: int | None = None) -> dict:
-    """
-    Overall + per-theory win-rate from signal_log.
-    Filters by asset/period when given. Per-theory rate = how often the overall
-    prediction was correct when that theory fired (a proxy for theory value).
+def get_stats(asset: str | None = None, period: int | None = None,
+              days: int | None = None) -> dict:
+    """Overall + per-theory win-rate from signal_log — THE canonical stats
+    source. Every win-rate surface in the app reads through this or the
+    same bucket helper so numbers can never disagree between tabs.
+
+    days:    trailing window in days (None = all history).
+    period:  candle period filter (None = all periods).
+    rate = correct / (correct + wrong). Draws are broker refunds and
+    no_data candles are ungradeable — both are reported but excluded
+    from the rate, exactly like the broker's P&L.
     """
     where, params = [], []
     if asset:
         where.append("asset=?");  params.append(asset)
     if period:
         where.append("period=?"); params.append(period)
+    if days:
+        where.append("ctime >= ?")
+        params.append(int(time.time()) - days * 86400)
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
 
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
-            total, correct, wrong_n, draws = con.execute(
-                f"SELECT COUNT(*), COALESCE(SUM(result='correct'),0), "
+            (total, correct, wrong_n, draws, no_data,
+             pending) = con.execute(
+                f"SELECT COUNT(*), "
+                f"COALESCE(SUM(result='correct'),0), "
                 f"COALESCE(SUM(result='wrong'),0), "
-                f"COALESCE(SUM(result='draw'),0) "
+                f"COALESCE(SUM(result='draw'),0), "
+                f"COALESCE(SUM(result='no_data'),0), "
+                f"COALESCE(SUM(result='pending'),0) "
                 f"FROM signal_log{wsql}", params).fetchone()
             rows = con.execute(
                 f"SELECT codes, result FROM signal_log{wsql}", params).fetchall()
@@ -466,18 +575,25 @@ def get_stats(asset: str | None = None, period: int | None = None) -> dict:
                 f"COALESCE(SUM(result IN ('correct','wrong')),0) "
                 f"FROM signal_log{wsql}"
                 f"{' AND' if wsql else ' WHERE'} strength IS NOT NULL "
+                f"AND result IN ('correct','wrong') "
+                f"AND strength_live IS NOT NULL "
                 f"GROUP BY strength", params).fetchall()
         finally:
             con.close()
 
-    by_strength = {
-        s: {"n": n, "rate": round(w / n * 100, 1) if n else 0.0}
-        for s, w, n in strength_rows if n
-    }
+    lo, hi = _wilson(correct or 0, (correct or 0) + (wrong_n or 0))
+    by_strength = {}
+    for s, w, n in strength_rows:
+        if not n:
+            continue
+        s_lo, s_hi = _wilson(w, n)
+        by_strength[s] = {"n": n, "correct": w,
+                          "rate": round(w / n * 100, 1) if n else 0.0,
+                          "ci95": [s_lo, s_hi]}
 
     theory: dict[str, list[int]] = {}
     for codes, result in rows:
-        if result == "draw":
+        if result not in ("correct", "wrong"):
             continue
         for code in (codes or "").split(","):
             if not code:
@@ -494,11 +610,16 @@ def get_stats(asset: str | None = None, period: int | None = None) -> dict:
     }
     decided = (correct or 0) + (wrong_n or 0)
     return {
-        "total":      total or 0,
+        "days":       days,
+        "total":      (total or 0),
+        "decided":    decided,
         "correct":    correct or 0,
         "wrong":      wrong_n or 0,
         "draws":      draws or 0,
+        "no_data":    no_data or 0,
+        "pending":    pending or 0,
         "rate":       round((correct or 0) / decided * 100, 1) if decided else 0.0,
+        "ci95":       [lo, hi] if decided else None,
         "by_strength": by_strength,
         "per_theory": dict(sorted(per_theory.items(),
                                   key=lambda x: -x[1]["n"])),
@@ -519,7 +640,7 @@ def theory_report(asset: str | None = None, period: int | None = None) -> dict:
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
 
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             rows = con.execute(
                 f"SELECT right_codes, wrong_codes FROM signal_log{wsql}",
@@ -588,7 +709,7 @@ def diagnosis(days: int = 7, asset: str | None = None) -> dict:
         return sorted(out, key=lambda d: -d["n"])
 
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             return _diagnosis_query(con, wsql, params, cutoff, days, asset)
         finally:
@@ -682,8 +803,8 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
             f"SELECT COUNT(*), SUM(result='correct') "
             f"FROM signal_log{wsql}", params).fetchone()
         draws = con.execute(
-            "SELECT COUNT(*) FROM signal_log WHERE ctime >= ? AND result='draw'",
-            [cutoff]).fetchone()[0]
+            "SELECT COUNT(*) FROM signal_log"
+            f"{wsql} AND result='draw'", params).fetchone()[0]
 
         # by_strength reads the FROZEN signal-time column. by_strength_live
         # reads the runconf-mutated one and is reported separately, flagged,
@@ -774,64 +895,90 @@ def _diagnosis_query(con, wsql, params, cutoff, days, asset) -> dict:
     }
 
 
-def direction_winrate(days: int = 7, period: int = 60) -> dict:
+def _wr_bucket(correct: int, wrong: int, draws: int, min_n: int,
+               break_even: float) -> dict:
+    """THE single win-rate bucket builder — used by every per-pair /
+    per-direction / per-window surface so no two tabs can ever disagree.
+
+    rate   = correct / (correct + wrong); draws are broker refunds,
+    excluded from n but reported. Verdict status comes from the WHOLE
+    95% Wilson interval against the payout break-even (never the point
+    estimate — a 54.07% point estimate on a ±1.8pp interval is noise):
+      proven_win  — the whole interval clears break-even
+      proven_loss — the whole interval sits below it
+      unproven    — the interval straddles it (the normal state)
+      thin        — under min_n graded signals; no claim either way
+    """
+    n = correct + wrong
+    lo, hi = _wilson(correct, n)
+    if n == 0:
+        return {"n": 0, "correct": 0, "wrong": 0, "draws": draws,
+                "rate": None, "ci95": None, "status": "none"}
+    if n < min_n:
+        status = "thin"
+    elif lo > break_even:
+        status = "proven_win"
+    elif hi < break_even:
+        status = "proven_loss"
+    else:
+        status = "unproven"
+    return {"n": n, "correct": correct, "wrong": wrong, "draws": draws,
+            "rate": round(100.0 * correct / n, 1), "ci95": [lo, hi],
+            "status": status}
+
+
+def _payout_break_even(payout: int | None) -> float:
+    """Break-even accuracy for a binary payout: 100/(100+payout).
+    payout=85 → 54.05%. Falls back to 85% (Quotex's typical) when unknown."""
+    p = payout if payout and payout > 0 else 85
+    return round(100.0 * 100.0 / (100.0 + p), 2)
+
+
+def direction_winrate(days: int = 7, period: int = 60,
+                      payout: int | None = None) -> dict:
     """Per-pair CALL vs PUT win rates — the user's explicit requirement:
 
     "Call ও put কোনো সিগন্যাল গুলো কেমন win রেট দিচ্ছে। সেই গুলো আলাদা
     আলাদা করে নিজের মতো করে দেখতে পারবো।"
 
     One row per pair with the CALL bucket, the PUT bucket and the combined
-    bucket, each with n / correct / wrong / rate / 95% Wilson interval.
-    `direction_bias` summarises which side has been stronger on the pair
-    (with a minimum-sample guard so 2-of-3 candles cannot claim an edge).
-    Draws are excluded from n (broker refund — neither win nor loss).
+    bucket, each with n / correct / wrong / rate / 95% Wilson interval and
+    an honest status verdict. `direction_bias` summarises which side has
+    been stronger (minimum-sample guarded).
     """
-    MIN_N = 20           # below this a direction bucket is marked thin
-    BREAK_EVEN = 54.05
+    MIN_N = 20           # unified across ALL surfaces (was 20 vs 100 vs 10)
+    BREAK_EVEN = _payout_break_even(payout)
     cutoff = int(time.time()) - days * 86400
 
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             rows = con.execute(
                 "SELECT asset, signal, "
                 "       COALESCE(SUM(result='correct'),0), "
                 "       COALESCE(SUM(result='wrong'),0), "
-                "       COALESCE(SUM(result='draw'),0) "
+                "       COALESCE(SUM(result='draw'),0), "
+                "       COALESCE(SUM(result='no_data'),0), "
+                "       COALESCE(SUM(result='pending'),0) "
                 "FROM signal_log "
                 "WHERE ctime >= ? AND period = ? "
-                "      AND result IN ('correct','wrong','draw') "
+                "      AND signal IN ('CALL','PUT') "
                 "GROUP BY asset, signal", (cutoff, period)).fetchall()
         finally:
             con.close()
 
-    def _bucket(correct: int, wrong: int, draws: int) -> dict:
-        n = correct + wrong
-        lo, hi = _wilson(correct, n)
-        if n == 0:
-            return {"n": 0, "correct": 0, "wrong": 0, "draws": draws,
-                    "rate": None, "ci95": None, "status": "none"}
-        if n < MIN_N:
-            status = "thin"
-        elif lo > BREAK_EVEN:
-            status = "proven_win"
-        elif hi < BREAK_EVEN:
-            status = "proven_loss"
-        else:
-            status = "unproven"
-        return {"n": n, "correct": correct, "wrong": wrong, "draws": draws,
-                "rate": round(100.0 * correct / n, 1), "ci95": [lo, hi],
-                "status": status}
-
-    by_pair: dict[str, dict[str, dict]] = {}
-    for asset, signal, correct, wrong, draws in rows:
+    by_pair: dict[str, dict[str, list]] = {}
+    for asset, signal, correct, wrong, draws, no_data, pending in rows:
         slot = by_pair.setdefault(asset, {
-            "CALL": [0, 0, 0], "PUT": [0, 0, 0]})
-        if signal not in slot:
+            "CALL": [0, 0, 0], "PUT": [0, 0, 0],
+            "no_data": 0, "pending": 0})
+        if signal not in ("CALL", "PUT"):
             continue
         slot[signal][0] += correct
         slot[signal][1] += wrong
         slot[signal][2] += draws
+        slot["no_data"] += no_data
+        slot["pending"] += pending
 
     display_names = {}
     try:
@@ -846,11 +993,12 @@ def direction_winrate(days: int = 7, period: int = 60) -> dict:
 
     pairs = []
     for asset, slot in by_pair.items():
-        call = _bucket(*slot["CALL"])
-        put = _bucket(*slot["PUT"])
-        allt = _bucket(slot["CALL"][0] + slot["PUT"][0],
-                       slot["CALL"][1] + slot["PUT"][1],
-                       slot["CALL"][2] + slot["PUT"][2])
+        call = _wr_bucket(*slot["CALL"], MIN_N, BREAK_EVEN)
+        put = _wr_bucket(*slot["PUT"], MIN_N, BREAK_EVEN)
+        allt = _wr_bucket(slot["CALL"][0] + slot["PUT"][0],
+                          slot["CALL"][1] + slot["PUT"][1],
+                          slot["CALL"][2] + slot["PUT"][2],
+                          MIN_N, BREAK_EVEN)
         # direction bias — needs a meaningful sample on BOTH sides before
         # claiming one side is better, otherwise it is coin-flip noise.
         bias = "none"
@@ -864,6 +1012,7 @@ def direction_winrate(days: int = 7, period: int = 60) -> dict:
             "display": display_names.get(asset, asset),
             "call": call, "put": put, "all": allt,
             "direction_bias": bias,
+            "no_data": slot["no_data"], "pending": slot["pending"],
         })
 
     pairs.sort(key=lambda r: -(r["all"]["rate"] if r["all"]["n"] else 0))
@@ -881,46 +1030,36 @@ def direction_winrate(days: int = 7, period: int = 60) -> dict:
         "break_even": BREAK_EVEN,
         "min_n": MIN_N,
         "overall": {
-            "call": _bucket(tc, tw, td),
-            "put": _bucket(pc, pw, pd),
-            "all": _bucket(tc + pc, tw + pw, td + pd),
+            "call": _wr_bucket(tc, tw, td, MIN_N, BREAK_EVEN),
+            "put": _wr_bucket(pc, pw, pd, MIN_N, BREAK_EVEN),
+            "all": _wr_bucket(tc + pc, tw + pw, td + pd, MIN_N, BREAK_EVEN),
         },
         "pairs": pairs,
     }
 
 
-def pair_winrate(days: int = 7, period: int = 60) -> dict:
+def pair_winrate(days: int = 7, period: int = 60,
+                 payout: int | None = None) -> dict:
     """Per-pair win rate for the frontend sidebar.
 
-    Deliberately NOT a thin wrapper over diagnosis(): that runs a dozen
-    GROUP BY passes for slices the sidebar never shows, and this is polled
-    every few seconds by every open tab.
-
-    Every row carries n and a 95% Wilson interval, and is judged against the
-    payout break-even rather than 50%. A bare "62%" on n=8 next to a pair
-    name is worse than showing nothing -- it is an invitation to size up on
-    noise. `status` is the only field the UI should colour on:
-
-      proven_win  — the whole interval clears break-even
-      proven_loss — the whole interval sits below it
-      unproven    — the interval straddles it (the normal state)
-      thin        — under MIN_N graded signals; no claim either way
-
-    Draws (zero-move candles) are excluded from n: the broker refunds them,
-    so they are neither a win nor a loss.
+    Thin, consistent core: same buckets, same MIN_N, same break-even as
+    direction_winrate — deliberately the SAME verdicts on both surfaces.
+    `status` is the only field the UI should colour on.
     """
-    MIN_N = 100          # below this, Wilson is so wide the number is noise
-    BREAK_EVEN = 54.05   # 100/(100+85) at Quotex's typical 85% payout
+    MIN_N = 20
+    BREAK_EVEN = _payout_break_even(payout)
     cutoff = int(time.time()) - days * 86400
 
     with _lock:
-        con = sqlite3.connect(DB_PATH)
+        con = _connect()
         try:
             rows = con.execute(
                 "SELECT asset, "
                 "       COALESCE(SUM(result='correct'),0), "
                 "       COALESCE(SUM(result='wrong'),0), "
-                "       COALESCE(SUM(result='draw'),0) "
+                "       COALESCE(SUM(result='draw'),0), "
+                "       COALESCE(SUM(result='no_data'),0), "
+                "       COALESCE(SUM(result='pending'),0) "
                 "FROM signal_log "
                 "WHERE ctime >= ? AND period = ? "
                 "GROUP BY asset", (cutoff, period)).fetchall()
@@ -928,31 +1067,20 @@ def pair_winrate(days: int = 7, period: int = 60) -> dict:
             con.close()
 
     out = []
-    for asset, correct, wrong, draws in rows:
-        n = correct + wrong
-        if not n:
+    total_no_data = 0
+    total_pending = 0
+    for asset, correct, wrong, draws, no_data, pending in rows:
+        total_no_data += no_data
+        total_pending += pending
+        b = _wr_bucket(correct, wrong, draws, MIN_N, BREAK_EVEN)
+        if not b["n"]:
             continue
-        lo, hi = _wilson(correct, n)
-        if n < MIN_N:
-            status = "thin"
-        elif lo > BREAK_EVEN:
-            status = "proven_win"
-        elif hi < BREAK_EVEN:
-            status = "proven_loss"
-        else:
-            status = "unproven"
-        out.append({
-            "asset": asset,
-            "n": n,
-            "correct": correct,
-            "wrong": wrong,
-            "draws": draws,
-            "accuracy": round(100.0 * correct / n, 1),
-            "ci95": [lo, hi],
-            "status": status,
-        })
+        b["asset"] = asset
+        b["no_data"] = no_data
+        b["pending"] = pending
+        out.append(b)
 
-    out.sort(key=lambda r: -r["accuracy"])
+    out.sort(key=lambda r: -(r["rate"] if r["rate"] is not None else -1))
     total_n = sum(r["n"] for r in out)
     total_c = sum(r["correct"] for r in out)
     return {
@@ -961,9 +1089,13 @@ def pair_winrate(days: int = 7, period: int = 60) -> dict:
         "break_even": BREAK_EVEN,
         "min_n": MIN_N,
         "pairs": out,
+        "no_data": total_no_data,
+        "pending": total_pending,
         "overall": {
             "n": total_n,
             "accuracy": round(100.0 * total_c / total_n, 1) if total_n else None,
             "ci95": list(_wilson(total_c, total_n)) if total_n else None,
+            "status": _wr_bucket(total_c, total_n - total_c, 0,
+                                 MIN_N, BREAK_EVEN)["status"] if total_n else "none",
         },
     }

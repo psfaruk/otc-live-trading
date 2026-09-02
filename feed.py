@@ -27,7 +27,10 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from analyze_eoc import analyze_eoc, _round_level, _key_levels, _parse_votes
+# Legacy helpers reused from analyze_eoc (key-level clustering, round
+# numbers). The legacy ANALYZER itself is no longer imported: one engine,
+# one code path.
+from analyze_eoc import _round_level, _key_levels
 import db as _db
 
 # New modular strategy engine (per-pair profiles + candlestick patterns).
@@ -42,9 +45,11 @@ except Exception as _e:
     _STRATEGY_ENGINE_AVAILABLE = False
     _run_strategy_engine = None
 
-# Master kill switch: when "1" (default), use the new modular strategy engine.
-# When "0", fall back to the legacy analyze_eoc analyzer for shadow comparison.
-USE_STRATEGY_ENGINE = os.environ.get("USE_STRATEGY_ENGINE", "1") == "1"
+# Master switch — the confluence council engine is the ONLY signal path.
+# The legacy analyze_eoc fallback was removed: two engines with different
+# tiebreak semantics meant the graded signal depended on which env flag was
+# set when the candle closed. One engine, one code path, one truth.
+USE_STRATEGY_ENGINE = True
 
 # Minimum live 1-minute payout % for a forex pair to be tradeable in this
 # app — pairs below this are blocked from streaming outright (not just from
@@ -54,11 +59,21 @@ USE_STRATEGY_ENGINE = os.environ.get("USE_STRATEGY_ENGINE", "1") == "1"
 # vary by broker account/region.
 PAYOUT_FLOOR = int(os.environ.get("QX_PAYOUT_FLOOR", "81"))
 
-# Method A (LIVE running-candle theory) / Method B (strength gating) rollout
-# flags — both untested, added 2026-07-10. Zero-redeploy killswitch: set
-# either to "0" via the platform's env var UI to fall back to prior behavior.
-ENABLE_LIVE_THEORY   = os.environ.get("ENABLE_LIVE_THEORY",   "1") == "1"
-ENABLE_STRENGTH_GATE = os.environ.get("ENABLE_STRENGTH_GATE", "1") == "1"
+# Confluence council roll-out flags.
+# ENABLE_LIVE_THEORY / ENABLE_STRENGTH_GATE are GONE:
+#   - the mid-candle LIVE re-eval no longer mutates the graded prediction
+#     (the signal is frozen at candle open — display-only live views are
+#     broadcast separately as `live_view`),
+#   - the strength gate is deleted outright: it folded the RUNNING candle's
+#     own ticks (i.e. part of the outcome) back into the signal strength —
+#     lookahead that poisoned by_strength stats.
+ENABLE_LIVE_THEORY = False
+ENABLE_STRENGTH_GATE = False
+
+# A prediction needs at least this many closed candles. Below this the
+# council has no measurable statistics to work with and emitting ANY
+# direction would be a guess — guesses are exactly what the user removed.
+MIN_PREDICT_CANDLES = 10
 
 # ── Fallback display-name helper ─────────────────────────────────────────────
 def _api_to_display(api_name: str) -> str:
@@ -1107,131 +1122,133 @@ class QuotexFeed:
                       running_ticks: list[float] | None = None
                       ) -> tuple[dict | None, list]:
         """
-        Shared EOC analysis: pure analyze_eoc theory blend, nothing else.
+        Shared analysis core: the CONFLUENCE COUNCIL engine, nothing else.
         Used by the watched asset (via _run_eoc) AND background trackers, so
         evidence collected in the background goes through the exact same
         pipeline as the on-screen signal. Returns (result, micro_hist).
 
-        candles[-1] is the just-closed candle at this point. micro_history is
-        fetched BEFORE the just-closed candle is saved to DB (we save it right
-        after this call), so the history contains only the candles PRIOR to
-        the current one — no double-counting with ticks/RUN. before_ctime
-        restricts it to the 5 candle-slots immediately before the just-closed
-        candle: a restart / asset switch can no longer feed hours-old rows to
-        MICRO as if they were the previous candle.
+        candles[-1] must be the JUST-CLOSED candle. `ticks` are the closed
+        candle's ticks (legitimate closed information). `running_ticks` are
+        NEVER allowed to influence the emitted signal — the council ignores
+        them; the feed's display-only live view may use them.
 
-        EVERY closed candle emits a CALL or PUT signal — the user's explicit
-        requirement ("প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে").
-        The strategy engine's tiebreak (strategies/runner.py:515-530) and the
-        legacy analyze_eoc tiebreak (analyze_eoc.py:1196-1233) both guarantee
-        this — when no theory voted, the engine falls back to (a) independent
-        evidence lean, (b) regime direction, (c) last-candle color. NEUTRAL is
-        only ever returned when `candles` is completely empty (cold-start with
-        zero history and zero accumulated ticks — an edge case that should
-        never happen on an always-on 1m stream).
+        Signal policy (the user's 2026-09 requirement — the opposite of the
+        old every-candle rule): a CALL/PUT is emitted ONLY when several
+        independent strategies AGREE with sufficient weight and no veto.
+        Otherwise the result is NEUTRAL ("NO TRADE") and nothing is
+        broadcast, logged, or graded. NO tiebreaks. NO fallbacks.
 
-        Previously this method had a `len(candles) < 5` early-None guard that
-        suppressed signals during cold-start (~5 min per pair). That guard
-        violated the user's every-candle requirement and is now removed —
-        the runner handles 1-2 candle windows fine via its tiebreak.
+        Cold start: with fewer than MIN_PREDICT_CANDLES closed candles there
+        is no measurable statistics — return None (no prediction at all).
+        The old code REMOVED this guard to satisfy the every-candle rule,
+        which meant coin-flip signals logged off 1-2 candle windows; that
+        practice is what corrupted the win-rate history.
         """
         if not candles:
-            # Truly empty — no candle has closed yet. The runner's _empty_signal
-            # path returns NEUTRAL for this, but we want to suppress the broadcast
-            # entirely (no candle = nothing to predict on). The next closed candle
-            # will have len(candles) >= 1 and go through the full pipeline.
+            return None, []
+        if len(candles) < MIN_PREDICT_CANDLES:
             return None, []
         micro_hist = _db.get_micro_history(
             asset, period, n=5,
             before_ctime=candles[-1]["time"]) if len(candles) >= 2 else []
 
-        # ── Primary path: new modular strategy engine (per-pair profiles +
-        # candlestick patterns + market-state deep analysis).
-        # Falls back to legacy analyze_eoc when USE_STRATEGY_ENGINE=0 or
-        # when the strategies package failed to import at startup.
-        if USE_STRATEGY_ENGINE and _STRATEGY_ENGINE_AVAILABLE:
+        if _STRATEGY_ENGINE_AVAILABLE:
             try:
                 result = _run_strategy_engine(
                     candles, asset=asset, period=period,
                     ticks=ticks,
-                    running_ticks=running_ticks if ENABLE_LIVE_THEORY else None,
+                    running_ticks=None,   # frozen-at-open guarantee
                     muted=self._muted_theories,
                 )
-                # analyze_eoc compat: ensure all keys the feed expects exist.
                 result.setdefault("candle", None)  # filled in by _run_eoc
                 return result, micro_hist
             except Exception as _e:
+                import traceback
                 print(f"[feed] strategy engine error for {asset}@{period}s: "
-                      f"{_e} — falling back to analyze_eoc")
-
-        # Legacy path (also used as fallback when the new engine raises)
-        result = analyze_eoc(candles, ticks,
-                             micro_history=micro_hist,
-                             period=period,
-                             muted=self._muted_theories,
-                             asset=asset,
-                             running_ticks=running_ticks if ENABLE_LIVE_THEORY else None)
-        return result, micro_hist
+                      f"{_e}")
+                traceback.print_exc()
+                # NO fallback analyzer — a different engine would produce a
+                # different signal than the council. No prediction is the
+                # only honest result when the engine fails.
+                return None, micro_hist
+        return None, micro_hist
 
     def _run_eoc(self, stream: _AssetStream,
-                actual_open: float | None = None) -> dict | None:
+                actual_open: float | None = None,
+                for_ctime: int | None = None) -> dict | None:
         closed = stream.candles
         base_ticks = list(stream.ticks)
-        # running_ticks=None here: the NEW candle's ticks are empty at this
-        # exact moment (they accumulate after this call). LIVE theory picks
-        # up once ticks come in, via the periodic re-eval in the stream loop.
+        # ctime of the candle this prediction is FOR. On the close path the
+        # stream's open pointer still points at the just-closed candle, so
+        # the caller passes the NEW boundary explicitly.
+        _target_ctime = for_ctime or (stream.candle_open_time + stream.period)
         result, micro_hist = self._analyze_core(
             stream.asset, stream.period, closed, base_ticks,
             running_ticks=None)
         if result is None:
             return None
-        # ── Freeze the signal-time strength ────────────────────────────────
-        # `strength` is later MUTATED by _apply_runconf using the running
-        # candle's own ticks — i.e. using the outcome the prediction is
-        # trying to call. That is legitimate as a live confirmation display,
-        # but recording it as the signal's strength poisoned every
-        # retrospective measurement: by_strength came out MEDIUM/STRONG=100%,
-        # WEAK=0%, because the label had simply absorbed the answer.
-        # This copy is written once, at birth, and never touched again.
+        # ── FREEZE the prediction at candle open ───────────────────────────
+        # From here on, NOTHING may mutate `signal`, `strength`, or `score`:
+        #   - the old mid-candle LIVE re-eval REPLACED the direction with a
+        #     re-analysis that used the running candle's own ticks
+        #     (lookahead) — what was graded was not what was broadcast;
+        #   - the old strength gate folded the outcome candle's ticks into
+        #     `strength` (by_strength read ~80% for MEDIUM — mirage).
+        # The emitted signal and the graded signal are now THE SAME OBJECT.
         result["strength_at_signal"] = result.get("strength")
-        # Snapshot for the periodic LIVE-theory re-eval (see stream loop).
-        stream.base_candles = closed
+        # Snapshot (COPY — the old code stored a live reference to
+        # stream.candles, so the display-only re-eval analysed a stale
+        # first-tick snapshot of the running candle) for the display-only
+        # live view. Never touches the graded prediction.
+        stream.base_candles = list(closed)
         stream.base_ticks   = base_ticks
         stream._live_reeval_ticks = 0
 
         # Chop guard: this exact (regime, zone) has been wrong ZONE_LOSS_GUARD+
-        # times in a row — a spot that's proven itself unreadable. Under
-        # every-candle mode (2026-07-06) the signal direction stands but is
-        # demoted to WEAK instead of being withheld as NEUTRAL. Clears
-        # itself the moment the regime/zone classification changes (see the
-        # streak update in _close_running_and_start_new), not on a timer.
+        # times in a row — a spot that has proven itself unreadable. Under
+        # confluence-only mode the honest response is to STAND DOWN: the
+        # signal becomes NEUTRAL (no trade) until the regime/zone changes.
+        # (The old every-candle mode demoted to WEAK — still a forced coin
+        # flip. Forcing is what the user removed.)
         _reg = result.get("regime") or {}
         _key = (_reg.get("trend"), _reg.get("zone"))
-        if (result["signal"] != "NEUTRAL"
+        if (result["signal"] in ("CALL", "PUT")
                 and _key == (stream.zone_streak["regime"], stream.zone_streak["zone"])
                 and stream.zone_streak["losses"] >= ZONE_LOSS_GUARD):
-            result["strength"] = "WEAK"
+            result["signal"] = "NEUTRAL"
+            result["strength"] = "NONE"
+            result["confidence"] = 0.0
             result.setdefault("reasons", []).append(
                 f"CHOP GUARD: {_key[0]}/{_key[1]} wrong "
-                f"{stream.zone_streak['losses']}x running -> WEAK until zone changes")
+                f"{stream.zone_streak['losses']}x running -> NO TRADE until "
+                f"zone changes")
+            result.setdefault("confluence", {})["emitted"] = False
+            result["confluence"]["blocked_by"] = ["chop guard"]
 
-        # ── Every-candle signal guarantee ──────────────────────────────────
-        # The strategy engine (strategies/runner.py) and the legacy analyze_eoc
-        # both end with an always-emit tiebreak that GUARANTEES a CALL or PUT
-        # on every closed candle — the user's explicit requirement:
-        #   "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে।"
-        # When no theory voted and no market state had conviction, the tiebreak
-        # falls through to the just-closed candle's own color (bull → CALL,
-        # bear → PUT), marked WEAK so the user knows it's a low-confidence
-        # tiebreak, not a strong-agreement signal. NEUTRAL is unreachable on
-        # any non-empty candle window.
-        #
-        # The earlier 2026-08-11 note here claimed NEUTRAL was first-class —
-        # that was an aspirational refactor that was never actually applied
-        # to the engines' tiebreak code (both still force CALL/PUT). The
-        # user's every-candle requirement (re-confirmed 2026-08-17) ratifies
-        # the existing behavior, so this comment now matches what the code
-        # actually does.
+        # ── PHASE 1 history write: the signal as EMITTED ──────────────────
+        # Recorded BEFORE anything can observe the outcome, so the win-rate
+        # history is provably what users saw. Only CALL/PUT rows exist here;
+        # NEUTRAL is not a trade and gets no row.
+        if result["signal"] in ("CALL", "PUT"):
+            try:
+                import json as _json
+                _db.open_signal(
+                    stream.asset, stream.period, _target_ctime,
+                    result["signal"], int(result.get("score", 0)),
+                    float(result.get("confidence", 0.0)),
+                    ",".join(sorted(set(result.get("patterns_fired", [])))
+                             or ["COUNCIL"]),
+                    result.get("strength") or "MEDIUM",
+                    int(result.get("agree", 0)),
+                    float(result.get("agree_weight", 0.0)),
+                    reasons=_json.dumps(result.get("reasons", [])),
+                    regime=_reg.get("trend"), zone=_reg.get("zone"),
+                    voters_json=_json.dumps(result.get("voters", [])),
+                    payout=stream.payout,
+                )
+            except Exception as _e:
+                print(f"[db] open_signal error: {_e}")
+
         return {**result, "candle": _pred_candle(closed, result["signal"], stream.period, actual_open),
                 "payout": stream.payout}
 
@@ -1239,13 +1256,20 @@ class QuotexFeed:
         # Compare the candle that just closed against the prediction that was
         # made FOR it (pred), NOT the one before it. `pred` is captured
         # immediately before it is reassigned in the close handler.
-        # NEUTRAL is not a direction — it must never be graded (the old code
-        # fell through to pred_up=False, silently grading NEUTRAL as PUT).
+        # NEUTRAL is not a direction — it must never be graded.
         if not pred or pred["signal"] not in ("CALL", "PUT"):
             return None
+        # A candle closed with ZERO ticks cannot be graded against the
+        # broker's official candle — the broker may well have printed a
+        # real close while our feed was silent. 'no_data' keeps the row
+        # auditable while excluding it from the win-rate.
+        if just_closed.get("_synthetic"):
+            return "no_data"
         # Zero-move candle = broker refund (draw), not a win or a loss.
         # Grading close>=open as UP silently counted draws as CALL wins.
-        if just_closed["close"] == just_closed["open"]:
+        # The tiny epsilon guards against float aggregation noise around a
+        # genuinely flat candle.
+        if abs(just_closed["close"] - just_closed["open"]) <= 1e-10:
             return "draw"
         actual_up = just_closed["close"] > just_closed["open"]
         pred_up   = pred["signal"] == "CALL"
@@ -1256,80 +1280,68 @@ class QuotexFeed:
                        candles: list[dict]) -> str | None:
         """
         Grade `closed` against the prediction that was made FOR it and write
-        the full postmortem row to signal_log. Shared by the watched asset's
-        close path and background trackers. `candles` must already contain
-        `closed` as its last element (ATR history reads candles[-11:-1]).
-        Returns the accuracy string (correct/wrong/draw) or None.
+        the outcome to signal_log. Shared by the watched asset's close path
+        and background trackers. `candles` must already contain `closed` as
+        its last element (ATR history reads candles[-11:-1]).
+        Returns the accuracy string (correct/wrong/draw/no_data) or None.
 
-        NEUTRAL predictions get no signal_log row (NEUTRAL is not a
-        direction and must never be graded), but their per-theory votes ARE
-        shadow-graded into theory_votes — with the dead band + parrot guard
-        producing NEUTRAL on a large share of candles, dropping those votes
-        would starve theory_perf's 7-day window exactly when the mute gate
-        depends on it, and a muted theory could never earn its way back.
+        HISTORY INTEGRITY (the user's no-override requirement):
+          - Phase 1 (open_signal) already stored the signal AS EMITTED at
+            candle open with result='pending'. This method (phase 2) writes
+            ONLY the outcome fields, exactly once (WHERE result='pending').
+          - If no pending row exists (phase-1 failure, restart gap), the row
+            is inserted late and tagged LATE_LOGGED so the audit trail is
+            honest about it.
+          - NEUTRAL predictions were never logged (not a trade) — nothing to
+            do here beyond returning None.
+          - 'no_data' candles (closed with zero ticks) are graded as
+            ungradeable: the broker's official candle may have moved while
+            our feed was silent. They stay in the log but are excluded from
+            every win-rate.
         """
         accuracy = self._accuracy(closed, prediction)
         if not prediction:
             return accuracy
+        if prediction.get("signal") not in ("CALL", "PUT"):
+            # NEUTRAL — not a trade. Shadow-grade the council voters into
+            # theory_votes so the mute gate keeps building its track record
+            # even on no-trade candles (honest diagnostics: "what would each
+            # voter have called").
+            try:
+                votes = self._voter_votes(prediction, closed)
+                _db.log_theory_votes(asset, period, closed["time"], votes)
+            except Exception as _e:
+                print(f"[db] theory shadow-grade error: {_e}")
+            return accuracy
 
-        # Log the resolved prediction with a full WHY report. For each theory
-        # vote we record whether it called THIS candle right or wrong, so later
-        # analysis can see exactly why a signal won or lost.
         try:
             import json as _json
-            reasons   = prediction.get("reasons", [])
-            is_draw   = closed["close"] == closed["open"]
+            is_draw   = abs(closed["close"] - closed["open"]) <= 1e-10
+            is_no_data = bool(closed.get("_synthetic")) or accuracy == "no_data"
             actual_up = closed["close"] > closed["open"]
 
-            # Per-theory votes, AGGREGATED per theory. Muted lines are
-            # INCLUDED deliberately (include_muted default) — shadow-grading
-            # them is what lets a muted theory keep its track record alive.
-            # A theory like RUN can emit several sub-votes in one candle —
-            # summing them into one NET vote per theory prevents (a) the
-            # theory_votes PK overwriting earlier sub-votes and (b) the same
-            # theory landing in right_codes AND wrong_codes at once. A theory
-            # whose sub-votes cancel out (net 0) casts no vote. Draw candles
-            # are refunds: theories are neither right nor wrong on them.
-            _net: dict[str, int] = {}
-            for code, vdir, mag in _parse_votes(reasons):
-                _net[code] = _net.get(code, 0) + vdir * mag
+            votes = self._voter_votes(prediction, closed)
+            fired = {t for t, _, _, _ in votes}
+            right = {t for t, _, _, o in votes if o == "right"}
+            wrong = {t for t, _, _, o in votes if o == "wrong"}
 
-            votes = []          # (theory, CALL/PUT, mag, right/wrong/draw)
-            fired, right, wrong = set(), set(), set()
-            for code, net in _net.items():
-                fired.add(code)
-                if net == 0:
-                    continue    # internally conflicted — no net vote
-                voted_up = net > 0
-                if is_draw:
-                    outcome = "draw"
-                else:
-                    outcome = "right" if voted_up == actual_up else "wrong"
-                    (right if outcome == "right" else wrong).add(code)
-                votes.append((code, "CALL" if voted_up else "PUT",
-                              abs(net), outcome))
-
-            # NEUTRAL final — shadow-grade the votes, skip the postmortem.
-            if not accuracy:
-                _db.log_theory_votes(asset, period, closed["time"], votes)
-                return accuracy
-
-            # ── Postmortem: WHY did this trade win or lose ─────────────
-            move  = closed["close"] - closed["open"]
-            c_rng = closed["high"] - closed["low"]
-            _hist = candles[-11:-1]
-            atr   = (sum(x["high"] - x["low"] for x in _hist) / len(_hist)
-                     if _hist else c_rng)
             _reg  = (prediction.get("regime") or {})
             regime, zone = _reg.get("trend"), _reg.get("zone")
             sig   = prediction["signal"]
+            move  = closed["close"] - closed["open"]
+            c_rng = closed["high"] - closed["low"]
+            _hist = [c for c in candles[-11:-1] if c["high"] > c["low"]]
+            atr   = (sum(x["high"] - x["low"] for x in _hist) / len(_hist)
+                     if _hist else c_rng)
 
             tags = []
+            if is_no_data:
+                tags.append("NO_DATA")     # silent feed — ungradeable
             if is_draw:
-                tags.append("DRAW")              # zero move = broker refund
-            if atr > 0 and c_rng < atr * 0.40:
-                tags.append("NOISE_CANDLE")      # sub-noise range: coin flip
-            if atr > 0 and abs(move) >= atr * 0.80:
+                tags.append("DRAW")        # zero move = broker refund
+            if not is_no_data and atr > 0 and c_rng < atr * 0.40:
+                tags.append("NOISE_CANDLE")
+            if not is_no_data and atr > 0 and abs(move) >= atr * 0.80:
                 tags.append("BIG_MOVE")
             if ((regime == "UPTREND" and sig == "PUT") or
                     (regime == "DOWNTREND" and sig == "CALL")):
@@ -1338,46 +1350,26 @@ class QuotexFeed:
                     (regime == "DOWNTREND" and sig == "PUT")):
                 tags.append("WITH_REGIME")
             if micro_snap and micro_snap.get("last_react") == "EXHAUST":
-                tags.append("LATE_FLIP")         # candle flipped at the close
-            if not is_draw and len(wrong) > len(right):
+                tags.append("LATE_FLIP")
+            if not is_draw and not is_no_data and len(wrong) > len(right):
                 tags.append("MAJORITY_WRONG")
-            # Market-state deep-analysis layer: log which state was named and
-            # whether its own directional bias called this candle — the ONLY
-            # honest way to learn if any state reads better than coin-flip
-            # before it is ever allowed to influence the signal.
             _ms = prediction.get("market_state") or {}
             if _ms.get("state"):
                 tags.append(f"ST_{_ms['state']}")
-                if _ms.get("bias") in ("CALL", "PUT") and not is_draw:
+                if _ms.get("bias") in ("CALL", "PUT") and not (is_draw or is_no_data):
                     tags.append("STBIAS_" + (
                         "RIGHT" if (_ms["bias"] == "CALL") == actual_up
                         else "WRONG"))
-
-            # Method B (2026-07-10, untested): log whether the running-candle
-            # strength gate fired on this prediction, and whether the gate's
-            # implied call (confirming = same direction, opposing = flip)
-            # matched the actual outcome — the only honest way to learn if
-            # RUNCONF gating tracks real accuracy before trusting it further.
-            _runconf_tag = (prediction or {}).get("_runconf_tag")
-            if _runconf_tag:
-                tags.append(_runconf_tag)   # RUNCONF_UP or RUNCONF_DOWN
-                if not is_draw:
-                    _gate_correct = (
-                        (_runconf_tag == "RUNCONF_UP"   and actual_up ==
-                         (sig == "CALL")) or
-                        (_runconf_tag == "RUNCONF_DOWN" and actual_up !=
-                         (sig == "CALL"))
-                    )
-                    tags.append("RUNCONF_" + ("RIGHT" if _gate_correct else "WRONG"))
 
             _atr_note = (f" ({abs(move) / atr * 100:.0f}% of ATR)"
                          if atr > 0 else "")
             _actual_lbl = ("FLAT" if is_draw
                            else "UP" if actual_up else "DOWN")
             pm = (
-                f"{sig} s={prediction['score']:+d}"
+                f"{sig} s={prediction.get('score', 0):+d}"
                 f" {prediction.get('strength')}"
                 f" agree={prediction.get('agree')}"
+                f"/{len(prediction.get('voters') or [])}"
                 f" | actual {_actual_lbl}"
                 f" move={move:+.5f}{_atr_note}"
                 f" | {accuracy.upper()}"
@@ -1387,47 +1379,74 @@ class QuotexFeed:
                 f"{' | ' + ','.join(tags) if tags else ''}"
             )
 
-            # LOG EVERY graded signal (not only candles where a theory
-            # voted). The old `if fired:` gate silently dropped every
-            # pure-tiebreak / pure-STAT candle from signal_log, so the
-            # win-rate history the user sees was a biased subset (only
-            # pattern-heavy candles). Every resolved CALL/PUT now gets a
-            # row; when no theory voted the decision is attributed to the
-            # STAT base layer or TIEBREAK so per-theory reports stay
-            # meaningful.
-            if True:
-                if not fired:
-                    # Attribute the decision to the layer that made it so
-                    # per-code reports don't lose these rows.
-                    _reasons = prediction.get("reasons") or []
-                    fired = (["STAT"] if any(r.startswith("STAT ") for r in _reasons)
-                             else ["TIEBREAK"])
+            # ── PHASE 2: outcome write. Exactly once, outcome fields only.
+            finalized = _db.finalize_signal(
+                asset, period, closed["time"], accuracy, _actual_lbl,
+                closed["open"], closed["close"],
+                right_codes=",".join(sorted(right)),
+                wrong_codes=",".join(sorted(wrong)),
+                tags=",".join(tags), postmortem=pm,
+            )
+            if not finalized:
+                # No pending row — the phase-1 write failed or was skipped.
+                # Insert the full row honestly tagged LATE_LOGGED (never
+                # overwrite an existing row — INSERT OR IGNORE inside).
                 _db.log_signal(
                     asset, period, closed["time"],
-                    sig, prediction["score"],
-                    prediction["confidence"], ",".join(sorted(fired)),
+                    sig, int(prediction.get("score", 0)),
+                    float(prediction.get("confidence", 0.0)),
+                    ",".join(sorted(fired)) or "COUNCIL",
                     _actual_lbl, accuracy,
-                    # strength      = what was known WHEN THE SIGNAL FIRED.
-                    #                 Safe to filter/backtest on.
-                    # strength_live = after _apply_runconf folded in the
-                    #                 outcome candle's own ticks. Useful as a
-                    #                 live display, NEVER as a filter — it
-                    #                 knows part of the answer.
                     strength=(prediction.get("strength_at_signal")
                               or prediction.get("strength")),
                     strength_live=prediction.get("strength"),
-                    agree=prediction.get("agree"),
+                    agree=int(prediction.get("agree", 0)),
+                    agree_weight=float(prediction.get("agree_weight", 0.0)),
                     right_codes=",".join(sorted(right)),
                     wrong_codes=",".join(sorted(wrong)),
-                    reasons=_json.dumps(reasons),
+                    reasons=_json.dumps(prediction.get("reasons", [])),
                     a_open=closed["open"], a_close=closed["close"],
                     regime=regime, zone=zone,
                     tags=",".join(tags), postmortem=pm,
                     votes=votes,
+                    voters_json=_json.dumps(prediction.get("voters", [])),
+                    payout=prediction.get("payout"),
+                    late_logged=True,
                 )
+            # Per-voter track record (the mute gate's input). No-data candles
+            # carry no outcome information — skip them.
+            if not is_no_data:
+                _db.log_theory_votes(asset, period, closed["time"], votes)
         except Exception as _e:
-            print(f"[db] log_signal error: {_e}")
+            import traceback
+            print(f"[db] finalize_signal error: {_e}")
+            traceback.print_exc()
         return accuracy
+
+    def _voter_votes(self, prediction: dict, closed: dict) -> list[
+            tuple[str, str, int, str]]:
+        """Turn the council's `voters` snapshot into graded theory_votes rows.
+
+        Uses the STRUCTURED voter list captured at emission — the old code
+        regex-parsed reason strings, so any formatting change silently
+        zeroed theory grading. Each voter gets ONE net vote (it already is
+        one). Draw candles are refunds: voters are neither right nor wrong.
+        """
+        is_draw = abs(closed["close"] - closed["open"]) <= 1e-10
+        if is_draw:
+            return []
+        actual_up = closed["close"] > closed["open"]
+        votes = []
+        for v in prediction.get("voters") or []:
+            name = v.get("name")
+            vdir = v.get("dir", 0)
+            if not name or vdir == 0:
+                continue
+            outcome = "right" if (vdir > 0) == actual_up else "wrong"
+            votes.append((name, "CALL" if vdir > 0 else "PUT",
+                          int(round(abs(v.get("weight", 1.0)) or 1)),
+                          outcome))
+        return votes
 
     def _save_micro(self, asset: str, period: int, closed: dict,
                     micro_snap: dict, candles: list[dict],
@@ -1669,64 +1688,6 @@ class QuotexFeed:
             return "CONFIRMING"
         return "OPPOSING"
 
-    def _apply_strength_gate(self, stream: _AssetStream,
-                             prediction: dict) -> dict:
-        """
-        Method B (2026-07-10, untested) — gate prediction strength using the
-        running candle's tick confirmation. Returns a NEW prediction dict
-        (does not mutate the input).
-
-        Decision matrix:
-          WEAK   + CONFIRMING + 10+ ticks -> MEDIUM
-          MEDIUM + OPPOSING   + 10+ ticks -> WEAK
-          STRONG + OPPOSING   + 10+ ticks -> MEDIUM
-        All other cases: strength unchanged.
-        """
-        if not prediction or prediction.get("signal") not in ("CALL", "PUT"):
-            return prediction
-
-        conf = self._running_confirmation(stream)
-        if conf is None:
-            return prediction
-
-        tick_count = len(stream.ticks)
-        if tick_count < 10:
-            return prediction  # not enough live evidence yet
-
-        current = prediction.get("strength", "WEAK")
-        new_strength = current
-        gate_tag = None
-        gate_reason = None
-
-        if current == "WEAK" and conf == "CONFIRMING":
-            new_strength = "MEDIUM"
-            gate_tag = "RUNCONF_UP"
-            gate_reason = (f"RUNCONF: WEAK + 10+ confirming ticks "
-                          f"({tick_count}) -> upgraded to MEDIUM")
-        elif current == "MEDIUM" and conf == "OPPOSING":
-            new_strength = "WEAK"
-            gate_tag = "RUNCONF_DOWN"
-            gate_reason = (f"RUNCONF: MEDIUM + 10+ opposing ticks "
-                          f"({tick_count}) -> demoted to WEAK")
-        elif current == "STRONG" and conf == "OPPOSING":
-            new_strength = "MEDIUM"
-            gate_tag = "RUNCONF_DOWN"
-            gate_reason = (f"RUNCONF: STRONG + 10+ opposing ticks "
-                          f"({tick_count}) -> demoted to MEDIUM")
-        else:
-            return prediction  # no change
-
-        new_pred = dict(prediction)
-        new_pred["strength"] = new_strength
-        # Carry the frozen signal-time value through untouched. Without this
-        # the dict() copy would keep whatever `strength` had become, and the
-        # lookahead would leak straight back into the logged row.
-        new_pred["strength_at_signal"] = prediction.get(
-            "strength_at_signal", current)
-        new_pred["reasons"] = [*prediction.get("reasons", []), gate_reason]
-        new_pred["_runconf_tag"] = gate_tag
-        return new_pred
-
     def _running_candle(self, stream: _AssetStream) -> dict:
         op = stream.candle_open_price
         ticks = list(stream.ticks)
@@ -1756,6 +1717,12 @@ class QuotexFeed:
             return None
 
         closed = self._running_candle(stream)
+        # A candle closed with ZERO ticks is a synthetic flat bar (the feed
+        # was silent the whole minute). Mark it: it is graded 'no_data' and
+        # excluded from the win-rate — the broker's real candle may have
+        # moved while we saw nothing.
+        _had_ticks = len(stream.ticks) > 0
+        closed["_synthetic"] = not _had_ticks
 
         # Replace or append the closed candle in the history list
         if stream.candles and stream.candles[-1]["time"] == closed["time"]:
@@ -1773,9 +1740,9 @@ class QuotexFeed:
         _micro_snap = (self._analyze_microstructure(stream.ticks, stream.candle_open_price)
                        if len(stream.ticks) >= 10 else None)
 
-        # Grade the candle that just closed against the prediction that was
-        # made FOR it (stream.prediction, before we overwrite it below) and
-        # write the full postmortem row (shared with background trackers).
+        # Grade the candle that just closed against the FROZEN prediction
+        # that was made FOR it (stream.prediction, before we overwrite it
+        # below) and write the outcome row (shared with background trackers).
         accuracy = self._grade_and_log(stream.asset, stream.period, closed,
                                        stream.prediction, _micro_snap,
                                        stream.candles)
@@ -1794,7 +1761,11 @@ class QuotexFeed:
                 stream.zone_streak = {"regime": _key[0], "zone": _key[1],
                                       "losses": 1 if accuracy == "wrong" else 0}
 
-        stream.prediction = self._run_eoc(stream, actual_open=first_tick)
+        # Prediction for the NEW candle — computed from CLOSED candles only,
+        # frozen for the whole life of the candle, and (if CALL/PUT) logged
+        # as PENDING at this instant. for_ctime = the new boundary.
+        stream.prediction = self._run_eoc(
+            stream, actual_open=first_tick, for_ctime=new_open_time)
 
         # Persist microstructure NOW — after EOC (so DB was clean during analysis)
         # but BEFORE ticks.clear() so the tick buffer is still fully intact.
@@ -1807,7 +1778,8 @@ class QuotexFeed:
         stream.candle_open_price   = first_tick
         stream.candle_open_is_real = open_is_real
         stream.ticks.clear()
-        stream.ticks.append(first_tick)
+        if _had_ticks:
+            stream.ticks.append(first_tick)
 
         return accuracy
 
@@ -1815,20 +1787,29 @@ class QuotexFeed:
         """Return the Quotex server's current timestamp when available,
         falling back to the local clock.
 
-        The broker timestamp is what every tick message carries (set on
-        api.timesync.server_timestamp in pyquotex/api.py:570) and is the
-        authoritative clock for candle boundaries — using the local clock
-        instead would drift on hosts with skewed NTP and cause candles to
-        close a few hundred ms early/late vs the broker's actual period
-        rollover. Returns time.time() if the client isn't connected yet
-        or timesync hasn't received its first tick.
+        MONOTONIC GUARD: pyquotex overwrites timesync.server_timestamp with
+        the timestamp of the LAST price tick of ANY asset. That value (a)
+        can move BACKWARDS when a lagging exotic-pair tick arrives and (b)
+        freezes when every feed stalls — both corrupted candle-boundary
+        math (double closes, skipped boundaries). This getter therefore
+        never returns a value older than the previous one, and falls back
+        to the local clock when the broker timestamp has been frozen for
+        more than 30s.
         """
         try:
             if self._client and self._client.api:
                 ts = self._client.api.timesync.server_timestamp
-                # Sanity: a valid Unix timestamp from this millennium
                 if ts and ts > 1_000_000_000:
-                    return float(ts)
+                    ts = float(ts)
+                    last = getattr(self, "_last_broker_ts", 0.0)
+                    if ts >= last:
+                        self._last_broker_ts = ts
+                        self._last_broker_ts_wall = time.time()
+                        return ts
+                    # Lagging tick dragged the clock backwards — hold monotonic
+                    return max(last, time.time()) if (
+                        time.time() - getattr(self, "_last_broker_ts_wall", 0)
+                        > 30.0) else last
         except Exception:
             pass
         return time.time()
@@ -1906,6 +1887,54 @@ class QuotexFeed:
             return
 
         last = history[-1]
+        now_bt = self._broker_time()
+        cur_open = _floor_to_period(now_bt, period)
+        # Guard 1: brokers may include the CURRENTLY-RUNNING partial candle
+        # in the history batch. If the last candle's slot is the current one,
+        # it is NOT closed — do not treat its close as a completed candle and
+        # do not shift the boundary a full period into the future (that made
+        # every tick of the real candle get dropped as 'late' until the next
+        # boundary). Drop it from history and start the running candle at its
+        # slot with its open price.
+        if last["time"] >= cur_open and cur_open > 0:
+            print(f"[feed] history ends with running candle for {asset}@{period}s "
+                  f"— trimming it and starting live at {cur_open}")
+            history = history[:-1]
+            if not history:
+                # nothing closed yet — start from ticks only
+                stream.candle_open_time  = cur_open
+                stream.candle_open_price = last["open"]
+                stream.ticks.clear()
+                stream.candle_open_is_real = False
+                stream.last_tick_ts = 0.0
+                await self._broadcast({
+                    "type": "snapshot", "asset": asset, "period": period,
+                    "candles": [], "prediction": None})
+                return
+            last = history[-1]
+        # Guard 2: stale history (gap of 3+ periods to now). Closing the gap
+        # with synthetic flat candles used to pollute indicator windows for
+        # up to 400 candles. Jump the boundary to the current slot instead —
+        # the chart keeps an honest hole, indicators stay clean.
+        if cur_open - last["time"] > 3 * period:
+            print(f"[feed] history gap {cur_open - last['time']}s for "
+                  f"{asset}@{period}s — jumping to current slot (no flat fill)")
+            stream.candles           = history
+            stream.candle_open_time  = cur_open
+            stream.candle_open_price = last["close"]
+            stream.ticks.clear()
+            stream.candle_open_is_real = False
+            stream.last_tick_ts         = 0.0
+            stream.prediction = None
+            await self._broadcast({
+                "type":       "snapshot",
+                "asset":      asset,
+                "period":     period,
+                "candles":    history,
+                "prediction": None,
+            })
+            return
+
         stream.candles           = history
         stream.candle_open_time  = last["time"] + period
         stream.candle_open_price = last["close"]
@@ -1915,7 +1944,11 @@ class QuotexFeed:
         stream.last_tick_ts         = 0.0
         # Generate initial prediction from history so the ghost candle
         # appears immediately without waiting for the first EOC.
-        stream.prediction = self._run_eoc(stream, actual_open=last["close"])
+        # for_ctime: the prediction targets the ALREADY-RUNNING candle
+        # (stream.candle_open_time), not the next boundary.
+        stream.prediction = self._run_eoc(
+            stream, actual_open=last["close"],
+            for_ctime=stream.candle_open_time)
         await self._broadcast({
             "type":       "snapshot",
             "asset":      asset,
@@ -1928,7 +1961,7 @@ class QuotexFeed:
         """Runs 'forever' for one (asset, period) — timer-close fallback,
         tick polling, tick-based close, same-candle updates. Direct per-asset
         port of what used to be the single shared run() loop's body."""
-        TIMER_GRACE = 1.5   # seconds past boundary before forcing close
+        TIMER_GRACE = 2.0   # seconds past boundary before forcing close
         STALE_SECS  = 90
 
         while True:
@@ -1967,22 +2000,20 @@ class QuotexFeed:
                 now = self._broker_time()
                 if (stream.candle_open_time > 0
                         and now >= stream.candle_open_time + stream.period + TIMER_GRACE):
-                    # FIX: previously only ONE timer-close fired per loop
-                    # iteration. If the stream was silent for 2+ periods
-                    # (network blip, stale re-arm took 90s, etc.), the
-                    # intermediate candles were NEVER closed, NEVER graded,
-                    # NEVER logged, NEVER broadcast — directly violating
-                    # "every candle must signal". Now we loop: while the
-                    # boundary has been crossed by another full period,
-                    # close-and-start a new candle for EACH intermediate one.
+                    # Multi-period catch-up: if the stream was silent for 2+
+                    # periods, close each intermediate candle in sequence.
+                    # SYNTHETIC SILENT CANDLES (zero ticks — feed was dark):
+                    #   - they ARE closed and recorded (chart continuity +
+                    #     audit trail), graded 'no_data',
+                    #   - but NO prediction is generated for the candle that
+                    #     follows a silent period and NO signal_start is
+                    #     broadcast: predicting on flat synthetic bars and
+                    #     broadcasting signals for candles we cannot see was
+                    #     pure history pollution.
                     while True:
                         expected_new = _floor_to_period(now, stream.period)
                         if expected_new <= stream.candle_open_time:
                             break
-                        # Only close one period at a time — if `now` is
-                        # 2+ periods past the open, we close each candle
-                        # in sequence so all intermediate candles get
-                        # recorded with a proper OHLC + a fresh prediction.
                         single_target = stream.candle_open_time + stream.period
                         last_px = (list(stream.ticks)[-1] if stream.ticks
                                    else stream.candle_open_price)
@@ -1990,38 +2021,42 @@ class QuotexFeed:
                               f"{stream.candle_open_time} -> {single_target}")
                         accuracy = self._close_running_and_start_new(
                             stream, single_target, last_px, open_is_real=False)
-                        running  = self._running_candle(stream)
-                        all_c    = stream.candles + [running]
-                        await self._broadcast({
-                            "type":       "eoc",
-                            "asset":      stream.asset,
-                            "period":     stream.period,
-                            "candles":    all_c[-300:],
-                            "prediction": stream.prediction,
-                            "accuracy":   accuracy,
-                        })
-                        # ── Signal-at-candle-start (timer-close path) ──────────
-                        # Same 0-second signal broadcast as the tick-close path
-                        # above. Timer-close fires when no boundary tick arrived
-                        # within the grace window — we still need to push the
-                        # signal_start event so external API clients receive it.
-                        if stream.prediction and stream.prediction.get("signal") in (
-                                "CALL", "PUT", "NEUTRAL"):
+                        # Broadcast the eoc ONLY when real data shaped the
+                        # closed candle (otherwise it is a synthetic bar).
+                        if stream.candles and not stream.candles[-1].get("_synthetic", False):
+                            running  = self._running_candle(stream)
+                            all_c    = stream.candles + [running]
                             await self._broadcast({
-                                "type":          "signal_start",
-                                "asset":         stream.asset,
-                                "period":        stream.period,
-                                "candle_open_time": single_target,
-                                "candle_expires_at": single_target + stream.period,
-                                "signal":        stream.prediction["signal"],
-                                "strength":      stream.prediction.get("strength"),
-                                "confidence":    stream.prediction.get("confidence"),
-                                "score":         stream.prediction.get("score"),
-                                "agree":         stream.prediction.get("agree"),
-                                "patterns_fired": stream.prediction.get("patterns_fired", []),
-                                "reasons":       stream.prediction.get("reasons", [])[:5],
-                                "prediction_candle": stream.prediction.get("candle"),
+                                "type":       "eoc",
+                                "asset":      stream.asset,
+                                "period":     stream.period,
+                                "candles":    all_c[-300:],
+                                "prediction": stream.prediction,
+                                "accuracy":   accuracy,
                             })
+                            # ── Signal-at-candle-start (timer-close path) ──
+                            if stream.prediction and stream.prediction.get("signal") in (
+                                    "CALL", "PUT", "NEUTRAL"):
+                                await self._broadcast({
+                                    "type":          "signal_start",
+                                    "asset":         stream.asset,
+                                    "period":        stream.period,
+                                    "candle_open_time": single_target,
+                                    "candle_expires_at": single_target + stream.period,
+                                    "signal":        stream.prediction["signal"],
+                                    "strength":      stream.prediction.get("strength"),
+                                    "confidence":    stream.prediction.get("confidence"),
+                                    "score":         stream.prediction.get("score"),
+                                    "agree":         stream.prediction.get("agree"),
+                                    "patterns_fired": stream.prediction.get("patterns_fired", []),
+                                    "reasons":       stream.prediction.get("reasons", [])[:5],
+                                    "prediction_candle": stream.prediction.get("candle"),
+                                })
+                        else:
+                            # Feed is dark: no prediction for candles we
+                            # cannot see. Park the prediction; the next real
+                            # tick batch re-enters normal flow.
+                            stream.prediction = None
 
                         # If we've caught up to `now` (within one period),
                         # exit the multi-period close loop. Otherwise iterate
@@ -2254,64 +2289,56 @@ class QuotexFeed:
 
                     running = self._running_candle(stream)
 
-                    if not stream.candles:
-                        stream.candles.append(running)
-                    elif stream.candles[-1]["time"] < running["time"]:
-                        stream.candles.append(running)
-                    # Keep historical closed candles intact; the live candle is
-                    # rendered from tick updates and does not need to overwrite
-                    # the last completed bar in history.
+                    # NOTE: the running candle is deliberately NOT appended
+                    # to stream.candles here. The old code appended it, so
+                    # every consumer reading candles[-1] between open and
+                    # close saw a stale first-tick snapshot, and the ghost
+                    # prediction re-render at re-anchor computed its slot as
+                    # last.time + period = one period in the FUTURE. The
+                    # live candle is rendered from tick updates and from the
+                    # `candle` field of the tick event instead.
 
-                    # ── LIVE theory periodic re-eval (Method A, 2026-07-10) ──
-                    # Re-run analyze_eoc with the running candle's own ticks
-                    # every ~30 ticks so the LIVE vote can update mid-candle.
-                    # Reuses the (closed candles, just-closed ticks) snapshot
-                    # taken by _run_eoc at candle-open — stream.ticks now
-                    # holds the NEW (still-open) candle's ticks instead.
-                    #
-                    # 2026-08-11: also accept NEUTRAL updates — if the
-                    # fresh analysis says "no edge" mid-candle, we should
-                    # surface that to the UI (show "WAIT") rather than
-                    # keep displaying a stale CALL/PUT from candle open.
-                    pred_changed = False
-                    if (ENABLE_LIVE_THEORY and stream.base_candles
-                            and len(stream.ticks) >= 15
+                    # ── Display-only live re-check (was: LIVE theory re-eval) ──
+                    # Every ~30 running ticks, re-run the council with the
+                    # running candle's ticks for the UI's "live re-check"
+                    # panel. CRITICAL CHANGE vs the old Method A: the result
+                    # NEVER replaces stream.prediction. The graded signal is
+                    # the one frozen at candle open — a mid-candle re-eval
+                    # that could flip direction used outcome-candle
+                    # information (lookahead) and made the graded signal
+                    # differ from the broadcast one.
+                    live_view = None
+                    if (stream.base_candles and len(stream.ticks) >= 15
                             and len(stream.ticks) - stream._live_reeval_ticks >= 30):
                         try:
+                            # Append the FORMING candle (built from running
+                            # ticks) so the council reacts to the live bar.
+                            # Display-only by construction: this result never
+                            # touches the graded prediction.
+                            _rc = self._running_candle(stream)
+                            _rc["_running"] = True
                             fresh, _ = self._analyze_core(
                                 stream.asset, stream.period,
-                                stream.base_candles, stream.base_ticks,
+                                stream.base_candles + [_rc],
+                                stream.base_ticks,
                                 running_ticks=list(stream.ticks))
                             stream._live_reeval_ticks = len(stream.ticks)
-                            if fresh and fresh.get("signal") in ("CALL", "PUT", "NEUTRAL"):
-                                # Only mark changed if the signal ACTUALLY
-                                # differs — avoids spurious broadcasts when
-                                # the LIVE vote is stable.
-                                _old_sig = (stream.prediction or {}).get("signal")
-                                if _old_sig != fresh.get("signal"):
-                                    stream.prediction = {
-                                        **(stream.prediction or {}), **fresh}
-                                    # Re-render the prediction candle for
-                                    # the new signal (esp. NEUTRAL's flat
-                                    # doji shape — see _pred_candle).
-                                    if stream.prediction:
-                                        stream.prediction["candle"] = _pred_candle(
-                                            stream.candles,
-                                            stream.prediction["signal"],
-                                            stream.period,
-                                            stream.candle_open_price)
-                                    pred_changed = True
+                            if fresh:
+                                live_view = {
+                                    "signal": fresh.get("signal"),
+                                    "strength": fresh.get("strength"),
+                                    "agree": fresh.get("agree"),
+                                    "reasons": (fresh.get("reasons") or [])[:4],
+                                    "note": "display-only — the traded signal "
+                                            "is frozen at candle open",
+                                }
                         except Exception as exc:
-                            print(f"[feed] LIVE re-eval error "
+                            print(f"[feed] live re-check error "
                                   f"({stream.asset}@{stream.period}s): {exc}")
 
-                    # ── Strength gate (Method B, 2026-07-10, untested) ──────────
-                    if (ENABLE_STRENGTH_GATE and stream.prediction
-                            and stream.prediction.get("signal") != "NEUTRAL"):
-                        gated = self._apply_strength_gate(stream, stream.prediction)
-                        if gated is not stream.prediction:
-                            stream.prediction = gated
-                            pred_changed = True
+                    # (The old `_apply_strength_gate` is DELETED: it demoted/
+                    # promoted strength mid-candle from the running candle's
+                    # own ticks — outcome information folded into the signal.)
 
                     # Skip broadcast if open price is still 0 (no valid tick yet)
                     # — prevents LightweightCharts "Value is null" on the client
@@ -2325,10 +2352,13 @@ class QuotexFeed:
                             "micro":         self._analyze_microstructure(
                                                  stream.ticks, stream.candle_open_price),
                         }
-                        # Carry the re-anchored/re-evaluated/gated prediction
-                        # so the client redraws its signal panel from it.
-                        if reanchored or pred_changed:
+                        # Re-anchor: the ghost prediction candle is redrawn
+                        # from the REAL open price (display-only fix — the
+                        # signal itself is untouched).
+                        if reanchored:
                             msg["prediction"] = stream.prediction
+                        if live_view:
+                            msg["live_view"] = live_view
                         await self._broadcast(msg)
 
             except asyncio.CancelledError:

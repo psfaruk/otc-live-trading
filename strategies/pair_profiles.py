@@ -201,11 +201,12 @@ _PROFILES: dict[str, PairProfile] = {
         best_windows_utc=[(7, 16)],
         strategy_weights={
             # Most volatile EM pair — momentum continuation, mean-reversion
-            # fails.
+            # fails. (Reversal-star boosts removed: they contradicted the
+            # archetype — a TREND pair documented as "mean-reversion fails"
+            # must not boost MORNING/EVENING_STAR reversal votes.)
             "MARUBOZU": 1.25,
             "THREE_WHITE_SOLDIERS": 1.20, "THREE_BLACK_CROWS": 1.20,
             "RISING_THREE_METHODS": 1.20, "FALLING_THREE_METHODS": 1.20,
-            "MORNING_STAR": 1.20, "EVENING_STAR": 1.20,
             "TWEEZER_BOTTOM": 0.70, "TWEEZER_TOP": 0.70,
         },
         trap_wick_sensitivity=1.40,
@@ -383,12 +384,21 @@ def is_in_best_window(profile: PairProfile, hour_utc: int) -> bool:
 def session_quality(profile: PairProfile, hour_utc: int) -> float:
     """Return 0..1 multiplier for signal strength based on session timing.
 
-    Inside a best window = 1.0; outside but in active forex hours = 0.7;
-    dead hours (Asian for majors, dead session for EURGBP) = 0.4.
+    OTC pairs are broker-synthesised 24/7 feeds with NO measurable
+    time-of-day structure (verified: the recorded live stats show no
+    hour-of-day edge on any OTC peg). Session dampening on them was
+    unvalidatable noise — it is now DISABLED for _otc assets (always 1.0).
+
+    Real pairs keep the session filter: inside a best window = 1.0;
+    active forex hours (London + NY, 7..21 UTC) = 0.75; Asian hours for
+    the Asia-Pacific majors = 0.75; everything else = 0.45 (dead — the
+    runner stands down below 0.5).
     """
+    if profile.asset.endswith("_otc"):
+        return 1.0
     if is_in_best_window(profile, hour_utc):
         return 1.0
-    # Active forex hours (London + NY) = 7..17 UTC
+    # Active forex hours (London + NY)
     if 7 <= hour_utc < 21:
         return 0.75
     # Asian session active for AUD/NZD/JPY

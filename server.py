@@ -341,14 +341,18 @@ def _cached(cache: dict, key: tuple, ttl: float, compute):
 
 
 @app.get("/api/stats")
-def stats(asset: str | None = None, period: int | None = None):
+def stats(asset: str | None = None, period: int | None = None,
+          days: int | None = None):
+    """Canonical win-rate source. `days` (1/3/7/30) scopes the window so the
+    headline number matches the Analytics tab instead of being a lifetime
+    blend that no other surface agrees with."""
     import db as _db
 
     def _compute():
-        s = _db.get_stats(asset, period)
+        s = _db.get_stats(asset, period, days=days)
         s["muted_theories"] = dict(feed._muted_theories)
         return s
-    return _cached(_stats_cache, ("stats", asset, period), _STATS_CACHE_TTL, _compute)
+    return _cached(_stats_cache, ("stats", asset, period, days), _STATS_CACHE_TTL, _compute)
 
 
 @app.get("/api/theory-report")
@@ -366,7 +370,7 @@ def signals(asset: str | None = None, period: int | None = None,
 
     direction: "CALL" or "PUT" — show only that side (the user's explicit
     requirement: Call ও put সিগন্যালগুলো আলাদা আলাদা দেখা)।
-    result: "correct" | "wrong" | "draw" — outcome filter.
+    result: "correct" | "wrong" | "draw" | "no_data" | "pending" — outcome filter.
     """
     import db as _db
     return _db.get_signals(asset, period, limit,
@@ -455,6 +459,10 @@ def api_v1_signals(asset: str | None = None):
             "confidence": r.get("confidence"),
             "score": score,
             "agree": agree,
+            # Confluence council detail: which voters agreed, and why a
+            # NEUTRAL ("NO TRADE") blocked the signal.
+            "voters": (stream.prediction or {}).get("voters", []) if stream else [],
+            "confluence": (stream.prediction or {}).get("confluence", {}) if stream else {},
             "buy_pct": r.get("buy_pct"),
             "sell_pct": r.get("sell_pct"),
             "prediction_candle": r.get("prediction_candle"),

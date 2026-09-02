@@ -16,7 +16,6 @@ runtime engine (analyze_eoc.py / strategies/runner.py) composes
 these detectors and weights them with market context.
 """
 from __future__ import annotations
-import math
 from dataclasses import dataclass
 
 
@@ -190,26 +189,22 @@ def doji(c: dict) -> Signal:
 
     Body <= 10% of range. Direction is 0 (caller must wait for breakout
     confirmation on the next candle). Marked NEUTRAL.
+
+    FIX (double-fire): this function previously DELEGATED to dragonfly_doji
+    / gravestone_doji, so a dragonfly candle produced TWO signals named
+    DRAGONFLY_DOJI in detect_all() output — one from the standalone
+    detector and one from here. Inflated confluence counts. Now this
+    returns only neutral indecision labels; the directional T-shapes come
+    exclusively from the standalone detectors.
     """
     a = candle_anatomy(c)
     if a["brr"] <= 0.10:
-        # subtype
         if a["upper_ratio"] <= 0.05 and a["lower_ratio"] <= 0.05:
             sub = "FOUR_PRICE_DOJI"
         elif a["lower_ratio"] >= 0.50 and a["upper_ratio"] <= 0.05:
-            # Only return the dragonfly if it actually matched; otherwise
-            # fall through to the default DOJI subtype so a near-dragonfly
-            # that misses the close_pos>=0.90 threshold is still reported
-            # as indecision rather than silently dropped.
-            _sub = dragonfly_doji(c)
-            if _sub.matched:
-                return _sub
-            sub = "DOJI"
+            sub = "DOJI_DRAGONFLY_SHAPE"   # neutral info — NOT the reversal signal
         elif a["upper_ratio"] >= 0.50 and a["lower_ratio"] <= 0.05:
-            _sub = gravestone_doji(c)
-            if _sub.matched:
-                return _sub
-            sub = "DOJI"
+            sub = "DOJI_GRAVESTONE_SHAPE"  # neutral info — NOT the reversal signal
         elif a["upper_ratio"] >= 0.40 and a["lower_ratio"] >= 0.40:
             sub = "LONG_LEGGED_DOJI"
         else:
@@ -364,8 +359,10 @@ def bearish_engulfing(c1: dict, c2: dict) -> Signal:
             and a2["close_pos"] <= 0.30
             and a2["lower_ratio"] <= 0.20
             and a2["brr"] >= 0.55):
-        s = 0.65 + min(0.15, (a2["body"] / a1["body"] - 1.3) * 0.10)
-        return _ok("BEARISH_ENGULFING", -1, min(0.82, s),
+        # Strength scale kept IDENTICAL to bullish_engulfing — the old
+        # +0.05/+0.04 asymmetry was an unexplained systematic PUT-side bias.
+        s = 0.60 + min(0.15, (a2["body"] / a1["body"] - 1.3) * 0.10)
+        return _ok("BEARISH_ENGULFING", -1, min(0.78, s),
                    f"BEARISH_ENGULFING: C2 engulfs C1 (ratio "
                    f"{a2['body']/a1['body']:.1f}x) -> PUT reversal")
     return _no()
@@ -374,10 +371,13 @@ def bearish_engulfing(c1: dict, c2: dict) -> Signal:
 def bullish_harami(c1: dict, c2: dict) -> Signal:
     """Bullish Harami — C1 large red, C2 small green fully inside C1 body.
 
-    C2 body < 60% of C1. Win rate: ~55–58%.
+    C1 must be a REAL candle (body >= 55% of its range) and C2's body under
+    60% of C1's — the old version had no C1-size guard and fired on 8% of
+    all candles (high-frequency, low-information vote).
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
     if (not a1["is_bull"] and a2["is_bull"]
+            and a1["brr"] >= 0.55
             and a2["open"] >= a1["close"] and a2["close"] <= a1["open"]
             and a2["body"] < 0.60 * a1["body"]):
         return _ok("BULLISH_HARAMI", +1, 0.50,
@@ -391,6 +391,7 @@ def bearish_harami(c1: dict, c2: dict) -> Signal:
     """Bearish Harami — C1 large green, C2 small red inside. Win rate: ~47% (weak)."""
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
     if (a1["is_bull"] and not a2["is_bull"]
+            and a1["brr"] >= 0.55
             and a2["open"] <= a1["close"] and a2["close"] >= a1["open"]
             and a2["body"] < 0.60 * a1["body"]):
         return _ok("BEARISH_HARAMI", -1, 0.42,
@@ -400,14 +401,15 @@ def bearish_harami(c1: dict, c2: dict) -> Signal:
 
 
 def piercing_line(c1: dict, c2: dict) -> Signal:
-    """Piercing Line — C1 long red, C2 opens below C1 low (relaxed: close),
-    closes >= 50% into C1 body.
+    """Piercing Line — C1 long red, C2 opens at/below C1 close (gapless-adapted:
+    1-minute OTC candles open at the prior close, so the textbook gap-down
+    open is `open == close` here), closes >= 50% into C1 body.
 
     Win rate: ~64–80% (ATAS).
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    if (not a1["is_bull"] and a2["is_bull"]
-            and a2["open"] < a1["close"]              # opens below C1 close
+    if (not a1["is_bull"] and a1["brr"] >= 0.55 and a2["is_bull"]
+            and a2["open"] <= a1["close"] * 1.0002   # at/below C1 close (gapless)
             and a2["close"] > (a1["open"] + a1["close"]) / 2   # closes above mid
             and a2["close"] < a1["open"]):             # but below C1 open
         # Penetration depth
@@ -419,14 +421,15 @@ def piercing_line(c1: dict, c2: dict) -> Signal:
 
 
 def dark_cloud_cover(c1: dict, c2: dict) -> Signal:
-    """Dark Cloud Cover — C1 long green, C2 opens above C1 high/close, closes
-    below midpoint of C1 body but above C1 open.
+    """Dark Cloud Cover — C1 long green, C2 opens at/above C1 close
+    (gapless-adapted, mirror of piercing_line), closes below midpoint of
+    C1 body but above C1 open.
 
     Win rate: ~60–64%.
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    if (a1["is_bull"] and not a2["is_bull"]
-            and a2["open"] > a1["close"]
+    if (a1["is_bull"] and a1["brr"] >= 0.55 and not a2["is_bull"]
+            and a2["open"] >= a1["close"] * 0.9998   # at/above C1 close (gapless)
             and a2["close"] < (a1["open"] + a1["close"]) / 2
             and a2["close"] > a1["open"]):
         # FIX: penetration is how far C2's close pushes INTO C1's body,
@@ -468,30 +471,30 @@ def tweezer_bottom(c1: dict, c2: dict, tol: float = 0.0006) -> Signal:
 
 
 def bullish_counterattack(c1: dict, c2: dict) -> Signal:
-    """Bullish Counterattack — C1 strong red, C2 gaps down then closes
-    within ±0.1% of C1 close. Win rate: ~56–59%.
+    """Bullish Counterattack — C1 strong red, C2 opens at/below C1 close
+    (gapless-adapted: the textbook gap-down open is `open == close` on the
+    1-minute OTC feed) and closes within ±0.15% of C1 close. Win rate:
+    ~56–59%.
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    if (not a1["is_bull"] and a2["is_bull"]
-            and a2["open"] < a1["close"]            # gaps down
+    if (not a1["is_bull"] and a1["brr"] >= 0.55 and a2["is_bull"]
+            and a2["open"] <= a1["close"] * 1.0002   # at/below C1 close
             and abs(a2["close"] - a1["close"]) <= a1["close"] * 0.0015):
         return _ok("BULLISH_COUNTERATTACK", +1, 0.50,
-                   "BULLISH_COUNTERATTACK: gap down + close back at C1 close "
-                   "-> CALL reversal")
+                   "BULLISH_COUNTERATTACK: opens at C1 close, closes back "
+                   "at C1 close -> CALL reversal")
     return _no()
 
 
 def bearish_counterattack(c1: dict, c2: dict) -> Signal:
-    """Bearish Counterattack — C1 strong green, C2 gaps up then closes
-    within ±0.1% of C1 close.
-    """
+    """Bearish Counterattack — gapless-adapted mirror."""
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    if (a1["is_bull"] and not a2["is_bull"]
-            and a2["open"] > a1["close"]
+    if (a1["is_bull"] and a1["brr"] >= 0.55 and not a2["is_bull"]
+            and a2["open"] >= a1["close"] * 0.9998   # at/above C1 close
             and abs(a2["close"] - a1["close"]) <= a1["close"] * 0.0015):
         return _ok("BEARISH_COUNTERATTACK", -1, 0.50,
-                   "BEARISH_COUNTERATTACK: gap up + close back at C1 close "
-                   "-> PUT reversal")
+                   "BEARISH_COUNTERATTACK: opens at C1 close, closes back "
+                   "at C1 close -> PUT reversal")
     return _no()
 
 
@@ -522,12 +525,13 @@ def separating_lines_bear(c1: dict, c2: dict) -> Signal:
 
 
 def on_neck(c1: dict, c2: dict) -> Signal:
-    """On-Neck — bearish continuation. C1 long red, C2 small green opens
-    below C1 low and closes at/near C1 low (<=0.15% above).
+    """On-Neck — bearish continuation (gapless-adapted). C1 long red, C2
+    small green opens at/below C1 close and closes at/near C1 low
+    (<=0.15% above) — the 'neckline' the textbooks expect to break.
     """
     a1, a2 = candle_anatomy(c1), candle_anatomy(c2)
-    if (not a1["is_bull"] and a2["is_bull"]
-            and a2["open"] < c1["low"]
+    if (not a1["is_bull"] and a1["brr"] >= 0.55 and a2["is_bull"]
+            and a2["open"] <= a1["close"] * 1.0002
             and abs(a2["close"] - c1["low"]) <= c1["low"] * 0.0015
             and a2["close"] >= c1["low"]):
         return _ok("ON_NECK", -1, 0.50,
@@ -758,29 +762,24 @@ def ladder_top(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> Signal:
 # ── Four+ candle patterns ────────────────────────────────────────────────────
 
 def rising_three_methods(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> Signal:
-    """Rising Three Methods — C1 long green; C2-C4 small bearish candles fully
-    inside C1 BODY (not just its high-low range); C5 long green closing above
-    C1 high.
-
-    Bullish continuation. ~65-70%.
+    """Rising Three Methods — C1 long green; C2-C4 small bearish candles
+    inside C1's RANGE (the published definition — the old body-only test
+    made the pattern unreachable on a gapless feed); C5 long green closing
+    above C1 high. Bullish continuation. ~65-70%.
     """
     a1 = candle_anatomy(c1); a5 = candle_anatomy(c5)
     if not (a1["is_bull"] and a1["brr"] >= 0.55 and a5["is_bull"]
             and a5["brr"] >= 0.55 and a5["close"] > c1["high"]):
         return _no()
-    # C2-C4 must be small red candles (counter-trend) inside C1's BODY
-    # (not just its high-low range), and ALL THREE must qualify
-    # (textbook requires 3, the previous `>= 2` accepted false positives).
-    c1_body_lo = min(c1["open"], c1["close"])
-    c1_body_hi = max(c1["open"], c1["close"])
+    c1_lo, c1_hi = c1["low"], c1["high"]
     inside_count = 0
     for c in (c2, c3, c4):
         a = candle_anatomy(c)
-        # Counter-trend: rising_three_methods wants small reds inside.
+        # Counter-trend: small reds inside C1's RANGE.
         if (not a["is_bull"]
                 and a["body"] <= 0.30 * a1["body"]
-                and c["low"] >= c1_body_lo
-                and c["high"] <= c1_body_hi):
+                and c["low"] >= c1_lo
+                and c["high"] <= c1_hi):
             inside_count += 1
     if inside_count == 3:
         return _ok("RISING_THREE_METHODS", +1, 0.66,
@@ -790,21 +789,19 @@ def rising_three_methods(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> Si
 
 
 def falling_three_methods(c1: dict, c2: dict, c3: dict, c4: dict, c5: dict) -> Signal:
-    """Falling Three Methods — mirror."""
+    """Falling Three Methods — mirror (counter-candles inside C1's RANGE)."""
     a1 = candle_anatomy(c1); a5 = candle_anatomy(c5)
     if not (not a1["is_bull"] and a1["brr"] >= 0.55 and not a5["is_bull"]
             and a5["brr"] >= 0.55 and a5["close"] < c1["low"]):
         return _no()
-    # C2-C4 must be small GREEN candles inside C1's BODY (mirror of rising).
-    c1_body_lo = min(c1["open"], c1["close"])
-    c1_body_hi = max(c1["open"], c1["close"])
+    c1_lo, c1_hi = c1["low"], c1["high"]
     inside_count = 0
     for c in (c2, c3, c4):
         a = candle_anatomy(c)
         if (a["is_bull"]
                 and a["body"] <= 0.30 * a1["body"]
-                and c["low"] >= c1_body_lo
-                and c["high"] <= c1_body_hi):
+                and c["low"] >= c1_lo
+                and c["high"] <= c1_hi):
             inside_count += 1
     if inside_count == 3:
         return _ok("FALLING_THREE_METHODS", -1, 0.66,
@@ -831,15 +828,103 @@ TWO_CANDLE_DETECTORS = [
 THREE_CANDLE_DETECTORS = [
     morning_star, evening_star, three_white_soldiers, three_black_crows,
     three_inside_up, three_inside_down, three_outside_up, three_outside_down,
-    abandoned_baby_bull, abandoned_baby_bear, deliberation,
+    # Abandoned Baby removed: it requires a full gap between candles, which
+    # never exists on the gapless 1-minute feed (0 fires in 20k). The
+    # detector functions remain for reference but are not run.
+    deliberation,
 ]
+
+# Same-anatomy family map — detectors that validate the SAME candle shape.
+# One shape = one piece of evidence. Exported for reuse by the runner.
+FAMILY_OF: dict[str, str] = {
+    "MARUBOZU": "body_cont", "BELT_HOLD_BULL": "body_cont",
+    "BELT_HOLD_BEAR": "body_cont",
+    "THREE_WHITE_SOLDIERS": "trend3", "THREE_BLACK_CROWS": "trend3",
+    "HAMMER": "wick_rev", "HANGING_MAN": "wick_rev",
+    "SHOOTING_STAR": "wick_rev", "INVERTED_HAMMER": "wick_rev",
+    "DRAGONFLY_DOJI": "wick_rev", "GRAVESTONE_DOJI": "wick_rev",
+    "PIN_BAR_BULL": "wick_rev", "PIN_BAR_BEAR": "wick_rev",
+    "BULLISH_ENGULFING": "engulf", "BEARISH_ENGULFING": "engulf",
+    "THREE_OUTSIDE_UP": "engulf", "THREE_OUTSIDE_DOWN": "engulf",
+    "TWEEZER_TOP": "tweezer", "TWEEZER_BOTTOM": "tweezer",
+    "BULLISH_HARAMI": "harami", "BEARISH_HARAMI": "harami",
+    "THREE_INSIDE_UP": "harami", "THREE_INSIDE_DOWN": "harami",
+    "MORNING_STAR": "star", "EVENING_STAR": "star",
+    "SEPARATING_LINES_BULL": "sep_cont", "SEPARATING_LINES_BEAR": "sep_cont",
+    "BULLISH_COUNTERATTACK": "counter", "BEARISH_COUNTERATTACK": "counter",
+}
+
+# Context twins: byte-identical anatomy, opposite meaning. Both fire on the
+# same shape and their votes cancel — the direction is decided by the LOCAL
+# 3-candle move, exactly one twin is kept.
+_TWIN_PAIRS = {
+    ("HAMMER", "HANGING_MAN"),                 # hammer-shaped body low
+    ("SHOOTING_STAR", "INVERTED_HAMMER"),      # star-shaped body high
+}
+
+
+def _local_move(candles: list[dict], lookback: int = 3) -> int:
+    """Sign of the net close-to-close move over the last `lookback` candles."""
+    if len(candles) < lookback + 1:
+        return 0
+    net = candles[-1]["close"] - candles[-1 - lookback]["close"]
+    if net > 0:
+        return 1
+    if net < 0:
+        return -1
+    return 0
+
+
+def _resolve_twins(signals: list[Signal], candles: list[dict]) -> list[Signal]:
+    """Keep exactly one twin per pair, chosen by the local move direction.
+
+    HAMMER (bullish reversal) is meaningful after a DOWN-move;
+    HANGING_MAN (bearish reversal) after an UP-move. With no local move the
+    shape carries no directional information and BOTH twins are dropped.
+    """
+    move = _local_move(candles)
+    by_name = {s.name: s for s in signals}
+    drop: set[str] = set()
+    for a, b in _TWIN_PAIRS:
+        sa, sb = by_name.get(a), by_name.get(b)
+        if sa is None and sb is None:
+            continue
+        if sa is not None and sb is not None:
+            # both fired — keep the one matching the local move
+            if move > 0:      # up-move → bearish twin is the reversal read
+                drop.add(a)
+            elif move < 0:    # down-move → bullish twin
+                drop.add(b)
+            else:
+                drop.add(a); drop.add(b)
+        elif sa is not None and move > 0:
+            drop.add(a)       # bull twin in an up-move = wrong context
+        elif sb is not None and move < 0:
+            drop.add(b)       # bear twin in a down-move = wrong context
+    return [s for s in signals if s.name not in drop]
+
+
+def _dedup_families(signals: list[Signal]) -> list[Signal]:
+    """Collapse same-anatomy families to their strongest member."""
+    best: dict[str, Signal] = {}
+    for s in signals:
+        key = FAMILY_OF.get(s.name, s.name)
+        prev = best.get(key)
+        if prev is None or s.strength > prev.strength:
+            best[key] = s
+    return list(best.values())
 
 
 def detect_all(candles: list[dict]) -> list[Signal]:
     """Run every pattern detector over the most recent candles.
 
-    Returns ALL fired signals (no merging). Caller picks the strongest or
-    composes them with context.
+    CLEANUP PIPELINE (fixes the measured vote-stacking problems):
+      1. run all detectors
+      2. resolve context twins (hammer/hanging-man, star family) via the
+         local 3-candle move — never emit both directions of one shape
+      3. dedup same-anatomy families — one shape, one vote
+    Direction-0 (indecision) signals are included: callers that count
+    "agreement" must only count signals with direction != 0.
     """
     out: list[Signal] = []
     if not candles:
@@ -862,18 +947,13 @@ def detect_all(candles: list[dict]) -> list[Signal]:
             if s.matched:
                 out.append(s)
     if len(candles) >= 5:
-        c1, c2, c3, c4, c5 = candles[-5:-4][0], candles[-4:-3][0], \
-                             candles[-3:-2][0], candles[-2:-1][0], candles[-1]
-        s = rising_three_methods(c1, c2, c3, c4, c5)
-        if s.matched:
-            out.append(s)
-        s = falling_three_methods(c1, c2, c3, c4, c5)
-        if s.matched:
-            out.append(s)
-        s = ladder_bottom(c1, c2, c3, c4, c5)
-        if s.matched:
-            out.append(s)
-        s = ladder_top(c1, c2, c3, c4, c5)
-        if s.matched:
-            out.append(s)
+        c1, c2, c3, c4, c5 = candles[-5], candles[-4], \
+                             candles[-3], candles[-2], candles[-1]
+        for fn in (rising_three_methods, falling_three_methods,
+                   ladder_bottom, ladder_top):
+            s = fn(c1, c2, c3, c4, c5)
+            if s.matched:
+                out.append(s)
+    out = _resolve_twins(out, candles)
+    out = _dedup_families(out)
     return out

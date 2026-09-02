@@ -1,209 +1,170 @@
-# otc-live-trading (Plybit AI)
+# otc-live-trading (NOVA · OTC Signal Terminal)
 
 Live OTC binary-options signal dashboard. Streams forex candles from Quotex,
-runs a multi-theory price-action blend on every closed candle, and broadcasts
-CALL/PUT signals with strength (STRONG / MEDIUM / WEAK) + a deep market-state
-read (continuation / exhaustion / reversal / trap).
+runs a **confluence council** of six independent strategy voters on every
+closed candle, and broadcasts a signal **only when several voters agree with
+enough weight and no veto**. Everything else is honestly reported as
+**NO TRADE**.
 
 Public dashboard — **no signup, no login, no admin panel, no API keys**.
 The ONLY credential is a Quotex SSID token pasted into the Settings tab.
-Every visitor sees every chart, every signal, every theory reason.
 
 ## ⚠ Read this first — live data connection
 
 The dashboard will show "Waiting…" forever until a Quotex SSID token is set.
 There is **no email/password fallback** — Cloudflare's JS challenge on the
 `qxbroker.com/en/sign-in` page rejects every non-browser HTTP client with a
-403, so the legacy email/password login path was removed entirely (retrying
-it just hammered Quotex with bad credentials and never succeeded).
-
-The token path bypasses the login form entirely and opens the WebSocket
-directly with the SSID cookie.
+403.
 
 ### How to extract QX_TOKEN (one-time, ~30 seconds)
 
-1. Open https://qxbroker.com/en/sign-in in Chrome/Firefox
-2. Log in with your Quotex email + password
-3. Once you're on the trading dashboard, press **F12** to open DevTools
-4. Go to **Application** tab → **Storage** → **Cookies** → `https://qxbroker.com`
-5. Find the cookie named **`session`** (or `ssid` on some accounts)
-6. Copy its **Value** (a long string starting with `eyJ...` or similar)
-7. Paste it into the **Settings → Quotex Connection → Session Token (SSID)**
-   field on the dashboard, or set it as the `QX_TOKEN` env var on Railway.
+1. Open https://qxbroker.com/en/sign-in in Chrome/Firefox and log in
+2. Press **F12** → **Application** → **Cookies** → `https://qxbroker.com`
+3. Copy the value of the **`session`** (or `ssid`) cookie
+4. Paste it into **Settings → Quotex Connection**, or set it as the `QX_TOKEN`
+   env var on Railway
 
-Alternatively, in DevTools **Console** after logging in:
-```js
-document.cookie.split(';').filter(c => c.includes('session') || c.includes('ssid'))[0]
-```
+### Login behavior — single attempt, no auto-retry
 
-### How to set env vars on Railway (optional — for headless deploys)
+The login system tries **EXACTLY ONCE** per token paste (the operator's
+explicit requirement). On a real `authorization/reject` the token is cleared;
+on transient failures it is preserved — paste the same token again to retry.
 
-The recommended path is to paste the token in the Settings tab — it takes
-priority over the env var and can be refreshed without a redeploy. If you
-prefer the env var:
+## Signal policy — confluence or nothing
 
-1. Open your project on https://railway.com
-2. Click the `otc-live-trading` service
-3. Go to the **Variables** tab
-4. Add `QX_TOKEN` = the cookie value from step 6 above
-5. Railway auto-redeploys with the new env var
+> "সেই স্ট্রাটেজি high confidence থাকবে... ফলব্যাক সিগন্যাল থাকবে না।
+> High confidence বেশ কয়েকটি স্ট্রাটেজি এক মত হতে হবে। এটা অবস্থান বোঝে
+> সিদ্ধান্ত নিবে।" — the owner, 2026-09
 
-### Diagnostic endpoint
+The council emits **CALL/PUT only when ALL of these hold** (else NEUTRAL,
+nothing is broadcast/logged/graded):
 
-Once deployed, open `https://<your-app>.up.railway.app/api/debug` in a
-browser. It returns JSON showing exactly which auth path the feed is using
-and what's wrong if it isn't connecting:
+| Rule | Threshold (env-tunable) |
+|------|-------------------------|
+| R1 weighted net score | `\|net\| ≥ 4.0` (`QX_SCORE_FLOOR`) |
+| R2 several voters agree | agree ≥ 3 (`QX_MIN_AGREE`) |
+| R3 the agreement has weight | agree_weight ≥ 4.0 (`QX_WEIGHT_FLOOR`) |
+| R4 no veto | no opposing voter with weight ≥ 2.5 (`QX_VETO_WEIGHT`) |
+| R5 liquidity gates | ATR above pair floor, session alive |
+| R6 **STAT anchor** | the measured statistical layer must be among the agreeing voters (`QX_REQUIRE_STAT=1`) |
 
-```json
-{
-  "env": {"QX_TOKEN_set": true, "QX_HOST": "qxbroker.com (default)"},
-  "feed": {"connected": true, "pairs_loaded": 16, "active_streams": 16},
-  "token": {"has_user_token": true, "login_failed": false, "connected": true},
-  "hint": "Feed is connected — live data should be streaming."
-}
-```
+**There are NO tiebreaks and NO fallback signals.** The old
+"every candle must emit" behaviour was the single largest source of wrong
+predictions (forced coin flips measured 47-53%) and was removed entirely.
 
-## Login behavior — single attempt, no auto-retry
+### The six voters (each one independent information)
 
-The login system tries **EXACTLY ONCE** per token. If the connect attempt
-fails for ANY reason (auth reject, timeout, network error), the system does
-NOT retry automatically — the manager loop idles until the operator pastes
-a fresh SSID (or the same one again) in the Settings tab.
+1. **STAT** — empirical per-pair continuation rate conditioned on the current
+   run length (streak-bucket z-test over the trailing 120 candles) + archetype
+   prior. The only measurable next-candle statistic on a near-memoryless feed.
+2. **REGIME** — least-squares trend (R² + steepness). Follows only top-slice
+   confirmations (R² ≥ 0.40), fades runs of 3+ inside a trend (measured
+   "run 2-3 then fade" OTC behaviour). Naive trend-following measured 47.7%
+   in attribution — an anti-signal — and is now gated.
+3. **POSITION** — the অবস্থান voter: where price sits inside its 40-candle
+   range, how far it is stretched from SMA20 (in ATRs), and whether the
+   rejection wick touches a real key level / wick wall.
+4. **PATTERN** — cleaned candlestick evidence as ONE vote (same-anatomy
+   families deduped, hammer/hanging-man twins context-resolved, momentum
+   patterns regime-gated).
+5. **STATE** — market state (CONTINUATION / EXHAUSTION / REVERSAL / TRAP)
+   with honest conviction.
+6. **FLOW** — closed-candle tick absorption (buyers/sellers vs close
+   position). Only when ≥ 15 real ticks exist.
 
-This is the user's explicit requirement:
-> "যদি কোনো কারণে প্রথম বারে লগিং ফেইল হলে, সেকেন্ড টাইম আর লগিং ট্রাই করা যাবে না।"
+### Backtest (deterministic, 4 seeds × 16 pairs × 1500 candles ≈ 96k candles)
 
-The token is preserved on transient failures (timeouts, network blips) so
-the operator doesn't have to re-extract the SSID — just paste the same token
-again to retry once. On a real `authorization/reject` from the server (the
-token is genuinely invalid/expired), the token is cleared and the operator
-must re-extract a fresh SSID.
+Run `python tools/backtest_strategies.py --all --seeds 4`. Reports land in
+`reports/backtest_report.{json,md}`. Key results:
 
-## Environment variables
+- **portfolio 53.85%** over 7,621 decided signals — 95% CI **[52.73, 54.97]**,
+  entirely above the 52.08% break-even at 92% payout
+- out-of-sample seeds 2-3: 54.04%, CI [52.47, 55.60]
+- emission share ~8% of candles — the council declines ~92% of them
+- the harness is **deterministic** (crc32 seeding — the old `hash()` seeding
+  made every run test a different dataset) and **non-circular** (the
+  generator's continuation table is a fixed, published constant)
+- per-voter attribution is computed from each voter's OWN vote, exposing
+  e.g. the regime anti-signal that got fixed
 
-| Var | Required? | Purpose |
-|-----|-----------|---------|
-| `QX_TOKEN` | **Recommended** | SSID cookie from a logged-in browser session. Bypasses the Cloudflare-protected login form entirely. Can also be pasted in the Settings tab (takes priority). |
-| `QX_HOST` | Optional | Defaults to `qxbroker.com`. |
-| `QX_PAYOUT_FLOOR` | Optional | Min payout % for a pair to be streamable. Default `81`. |
-| `QX_DB_PATH` | Optional | SQLite path. Set this to a Railway volume for persistence across redeploys. |
-| `QX_ROOT` | Optional | Browser profile cache dir. Defaults to a temp dir. |
-| `QX_UA` | Optional | Override User-Agent string. |
-| `QX_MAX_STREAMS` | Optional | Default `45`. |
-| `QX_STAGGER_GAP_SEC` | Optional | Default `1.5`. |
-| `PORT` | Set by Railway | — |
+Honest note: this is a synthetic-feed result that validates CALIBRATION and
+REGRESSION, not live profitability. 1-minute OTC remains near-memoryless.
 
-There is **no** `QX_EMAIL`, `QX_PASSWORD`, `PLYBIT_API_KEYS`, `SESSION_SECRET`,
-or `ADMIN_EMAILS` env var — those legacy paths were removed.
+## History integrity — no overrides, ever
+
+The user's explicit requirement: "অ্যাপ এ কোনো প্রকার ওভার রাইট থাকতে পারবে না।"
+
+- **Two-phase logging**: `open_signal()` writes the signal AS EMITTED the
+  instant the candle opens (result=`pending`); `finalize_signal()` writes
+  ONLY the outcome fields exactly once (`WHERE result='pending'`).
+  Signal fields written at emission can never be rewritten — `INSERT OR
+  REPLACE` on signal_log is gone.
+- **Frozen predictions**: the mid-candle re-eval that used to REPLACE the
+  direction (grading a signal nobody could trade) now produces a
+  display-only `live_view`. The strength gate (which folded the outcome
+  candle's own ticks into `strength` — pure lookahead) is deleted.
+- **Honest buckets**: `correct / wrong / draw (broker refund) / no_data
+  (candle closed with zero ticks — ungradeable) / pending`. Draw and no_data
+  are excluded from every win-rate, shown separately.
+- One canonical stats core (Wilson 95% intervals, payout break-even,
+  unified MIN_N=20) feeds every surface — no more disagreeing numbers
+  between tabs.
+- SQLite runs WAL + busy_timeout so graded rows can no longer vanish into
+  `database is locked` errors.
+
+## Win-rate analytics
+
+- **Win Rates tab** — per-pair CALL/PUT/ALL buckets with Wilson CIs judged
+  against the payout break-even; a bucket is "PROVEN" only when the whole
+  interval clears it.
+- **History tab** — filter by pair / direction / outcome (incl. draws and
+  no_data), full postmortem per row.
+- Endpoints: `GET /api/winrate-calls?days=7`, `GET /api/pair-winrate?days=7`,
+  `GET /api/stats?asset=&period=&days=`, `GET /api/signals?...`.
 
 ## Pair list
 
-The app streams exactly 16 pairs (whitelist-curated, see `_WANTED_PAIRS` in `feed.py`):
+16 pairs (whitelist, see `_WANTED_PAIRS` in `feed.py`):
 
 **OTC (11):** BRL/USD, USD/INR, USD/IDR, USD/COP, USD/BDT, USD/MXN, NZD/USD, USD/DZD, USD/PHP, USD/PKR, USD/ZAR
 
 **Real (5):** USD/JPY, EUR/USD, GBP/USD, AUD/USD, EURGBP
 
-## Signal guarantee
+## WebSocket events
 
-**Every closed candle emits a CALL or PUT signal — no NEUTRAL is ever shown.**
-This is the user's explicit requirement:
-> "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে।"
+| type | payload |
+|------|---------|
+| `pairs` | pair catalog + payout floor |
+| `snapshot` | `{asset, period, candles, prediction}` on subscribe |
+| `eoc` | candle closed: new candles + the NEW candle's frozen prediction + `accuracy` of the previous one |
+| `signal_start` | the frozen prediction broadcast the moment the candle opens (incl. `voters`, `confluence`) |
+| `tick` | running candle + microstructure + optional display-only `live_view` |
+| `stale` | stream produced no data |
 
-The backtest (`tools/backtest_strategies.py`) enforces this invariant with a
-hard assertion — if any candle returns NEUTRAL, the backtest fails loudly.
-
-## Signal engine architecture (2026-09 overhaul)
-
-The engine was rebuilt around what is actually MEASURABLE on the 1-minute
-OTC feed. The old version summed candlestick-pattern votes as the primary
-signal; the backtest measured those paths at ~50.4% (coin flip) while the
-despised fade-the-color tiebreak was the best path (53.7%), and STRONG
-signals scored WORSE than WEAK (49.4% vs 51.0% — stacked noise patterns
-manufactured false confidence).
-
-The new scoring model is two-layer:
-
-```
-score = STAT base layer (measured statistical bias, always present)
-      + EVIDENCE layer  (patterns / ticks / market state, capped ±2.5,
-                         discounted to 35% when it OPPOSES the base bias)
-```
-
-**STAT base layer** (`_stat_bias` in strategies/runner.py):
-1. Empirical continuation rate — how often THIS pair's next candle repeated
-   the last candle's color over the trailing 120 candles, conditioned on the
-   current run length. A z-test gates when the estimate is significant
-   enough to override the archetype prior (z ≥ 1.6).
-2. Archetype prior — fade on RANGE_BOUNCE/MEAN_REVERT (the measured 47-48%
-   color-following on the OTC pegs means fade is the >50% side), follow on
-   real TREND majors, weak follow on OTC "trenders" (runs documented to
-   exhaust in 2-3 candles).
-3. Streak exhaustion — 3+ same-color candles on range pairs fade.
-4. Extension fade — price stretched ≥ 0.9 ATR from SMA20 fades toward the
-   mean (≥ 2.2 ATR on trenders).
-
-**Other fixes in the same overhaul:**
-- Regime detector rewritten: least-squares slope + R² (trendiness ≥ 0.25,
-  steepness ≥ 0.12 ATR/candle) replaces the split-half high/low test that
-  labelled chop as trend.
-- Strength recalibrated: STRONG now requires STAT+EVIDENCE agreement, so
-  strength is monotonic (backtest: WEAK 52.4% < MEDIUM 53.5% < STRONG 55.9%).
-- ALL graded signals are now logged to signal_log (the old `if fired:` gate
-  silently dropped pure-tiebreak candles, biasing every win-rate report).
-- Pattern votes are capped (±2.5) and discounted when opposing the measured
-  base bias — they can refine conviction, not flip the edge.
-
-**Honest accuracy note:** the 1-minute OTC feed is near-memoryless. The
-engine's measured edge on the calibrated backtest is ~52.5% overall
-(break-even ≈ 52.1% at 92% payout) — above break-even, but nothing close to
-a guarantee. Anyone claiming 80-90% on this feed is selling something.
-
-## Win-rate analytics (per pair, per direction)
-
-The user's explicit requirement:
-> "প্রত্যেক পেয়ার ও সিগন্যাল হিস্টোরি উইন রেট আমি দেখতে পারবো। Call ও put
-> কোনো সিগন্যাল গুলো কেমন win রেট দিচ্ছে। সেই গুলো আলাদা আলাদা করে নিজের
-> মতো করে দেখতে পারবো।"
-
-- **Win Rates tab** — per-pair CALL vs PUT win rates with confidence bars,
-  n counts, direction-bias badges, and a 24h/3d/7d/30d window filter.
-- **History tab** — filter by pair + direction (CALL only / PUT only) +
-  outcome (wins/losses).
-- Endpoints: `GET /api/winrate-calls?days=7` (per-pair CALL/PUT/all buckets
-  with 95% Wilson intervals judged against the payout break-even) and
-  `GET /api/signals?direction=CALL&result=wrong&limit=150`.
-- Sidebar win-rate cells and all buckets stay colour-honest: green requires
-  the whole Wilson interval to clear break-even, never the point estimate.
-
-## Tab navigation
-
-Five tabs (mobile = bottom bar, desktop = sidebar), "Aurora" dark redesign:
-
-1. **Home** — overview dashboard: connection status, pairs streaming count,
-   overall win-rate, active signals count, plus a live signal CARD GRID for
-   all 16 pairs (click a card to jump to that chart).
-2. **Chart Signal** — main chart + deep-analysis side panel (market state,
-   theory accuracy, key levels, live micro flow, EOC analysis).
-3. **Win Rates** — per-pair CALL vs PUT win rates (the analytics tab).
-4. **History** — resolved signal log with pair / direction / outcome
-   filters + full postmortem.
-5. **Settings** — Quotex SSID token input, preferences, legal, about.
+`signal` values are `CALL`, `PUT`, or `NEUTRAL` (**NO TRADE** — not a
+direction, never graded).
 
 ## Open API
 
-All read endpoints are fully public — anyone with the URL can fetch live
-signals via `/api/v1/signals`, `/api/v1/signals/{asset}`, or
-`/api/v1/signals/{asset}/plain`. The Open API shape is documented in the
-endpoint docstrings (see `server.py`).
+All read endpoints are public: `/api/v1/signals`, `/api/v1/signals/{asset}`,
+`/api/v1/signals/{asset}/plain`, `/api/v1/pairs`, `/api/v1/strategies`,
+`/api/v1/backtest`, plus the `/api/*` endpoints the UI consumes.
 
-## Backtest
+## Environment variables
 
-Run `python tools/backtest_strategies.py --all` to generate a per-pair
-synthetic-candle backtest that verifies the every-candle signal guarantee
-and reports per-pattern accuracy. Output is saved to
-`reports/backtest_report.json` and `.md` inside the repo. Override the
-location with `--out DIR` or the `BACKTEST_OUT` env var.
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `QX_TOKEN` | — | SSID cookie (or paste in Settings; takes priority) |
+| `QX_HOST` | `qxbroker.com` | broker host |
+| `QX_PAYOUT_FLOOR` | `81` | min payout % for streaming |
+| `QX_DB_PATH` | `./candle_micro.db` | SQLite path (use a Railway volume) |
+| `QX_MIN_AGREE` | `3` | council: min agreeing voters |
+| `QX_SCORE_FLOOR` | `4.0` | council: min weighted net score |
+| `QX_WEIGHT_FLOOR` | `4.0` | council: min agreeing weight |
+| `QX_VETO_WEIGHT` | `2.5` | council: opposing-voter veto threshold |
+| `QX_REQUIRE_STAT` | `1` | council: require the STAT anchor |
+| `QX_MAX_STREAMS` | `45` | stream cap |
+| `PORT` | set by Railway | — |
 
 ## Deploy
 

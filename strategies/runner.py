@@ -1,86 +1,99 @@
 """
-Strategy runner — composes candlestick pattern detections with per-pair
-profiles, market context, and tick microstructure to produce a final
-CALL/PUT signal for the next 1-minute candle.
+CONFLUENCE COUNCIL ENGINE — the signal core (2026-09 rewrite).
 
-This is the new signal engine. It REPLACES the role of analyze_eoc for
-the live trading path while keeping analyze_eoc available for backward
-compatibility and shadow comparison.
+═══════════════════════════════════════════════════════════════════════════
+WHY THE OLD ENGINE PRODUCED WRONG SIGNALS (diagnosed, measured):
 
-Design principles (from web research + live measurement):
-  1. Each pattern detector returns (matched, direction, strength, reason).
-  2. Per-pair profile boosts/suppresses patterns based on what works
-     on that pair (USDINR range-bounce, USDMXN momentum, etc.).
-  2b. SAME-ANATOMY FAMILY DEDUP — detectors that validate byte-identical
-     candle anatomy (PIN_BAR_BULL / HAMMER / DRAGONFLY_DOJI all describe
-     one long-lower-wick shape; MARUBOZU / BELT_HOLD describe one big
-     body) are collapsed to the strongest member of their family before
-     scoring. Stacking clones triple-counted one piece of evidence and
-     produced fake "multi-theory agreement" — the measured result was
-     MEDIUM signals running 43-47% (worse than a coin flip, live n>1000).
-  2c. CONTINUATION-FAMILY REGIME GATE — momentum-continuation votes
-     (marubozu/belt-hold/soldiers/crows/separating-lines/on-neck) are
-     dampened when the regime does not actually support them (SIDEWAYS,
-     or counter-regime direction). Live measurement showed continuation
-     bets with no regime support win ~47-48% — an anti-signal.
-  3. Context gate: every directional signal is dampened unless it has
-     confluence at a key level (S/R, wick wall, round number, supply/
-     demand zone, FVG, prior swing).
-  4. Trap-wick filter: pairs with high trap_wick_sensitivity dampen
-     pin-bar / wick-rejection signals to prevent trading engineered
-     stop-hunts.
-  5. Session filter: signals outside best_windows get strength dampened
-     to 0.5..0.8.
-  6. Tick-volume confirmation: when ticks are available, check that the
-     directional pressure matches the pattern direction.
-  7. EVERY closed candle emits a CALL or PUT signal — never NEUTRAL.
-     The always-emit tiebreak guarantees this on any non-empty candle
-     window. When no pattern fires, the tiebreak falls through to:
-       (a) indep_net lean (color-independent evidence)
-       (b) regime direction (UPTREND/DOWNTREND) — FOLLOWED on TREND
-           profiles, FADED on mean-reverting archetypes
-       (c) final fallback: the just-closed candle's own color — FOLLOWED
-           on TREND profiles (continuation_edge >= 1.10), FADED on
-           RANGE_BOUNCE / MEAN_REVERT / MIXED profiles whose own research
-           notes (and the live measurements in analyze_eoc.py: doji base
-           48.3% n=232, spinning-top 47.3% n=237, marubozu 47.3% n=859)
-           show color-following wins BELOW 50% on the OTC feed.
-     Marked WEAK so the user knows it's a low-confidence tiebreak. This
-     matches the user's explicit requirement:
-       "প্রত্যেক পেয়ার এ প্রত্যেক ক্যান্ডেল এ সিগন্যাল আসতে হবে।"
+  1. It FORCED a CALL/PUT on every single candle ("every candle must
+     signal"). When no edge existed, tiebreaks manufactured a direction
+     from the last candle's colour or an unconfirmed regime — measured at
+     47-53% (coin flip or worse). The bulk of emitted signals WERE these
+     forced coin flips.  → REMOVED. This engine has NO tiebreak and NO
+     fallback of any kind. When the council does not agree, the signal is
+     NEUTRAL ("NO TRADE") and nothing is emitted, logged, or graded.
+  2. The prediction was silently REPLACED mid-candle by a re-eval that
+     used the running candle's own ticks — lookahead contamination: the
+     direction graded at close was not the direction anyone could trade.
+     → The feed now freezes the prediction at candle open. This engine
+     treats `running_ticks` as DISPLAY-ONLY information (never part of
+     the emitted signal).
+  3. Same-anatomy detectors stacked votes (one long-wick candle counted
+     as HAMMER + PIN_BAR + DRAGONFLY = 3 "theories"), manufacturing fake
+     multi-strategy agreement. → detect_all() now dedups anatomy families
+     and resolves context-twins (hammer/hanging-man) before returning.
+  4. Nine detectors could never fire on the gapless 1-minute feed and
+     continuation detectors contradicted the feed's own measured
+     statistics. → patterns.py cleaned; continuation votes are gated by
+     regime here.
 
-Output schema (consumed by feed.py + chart.js):
-  {
-    signal: "CALL" | "PUT",     # never "NEUTRAL" on non-empty candles
-    score: int,                  # signed vote sum
-    confidence: float,           # 0..1
-    strength: "STRONG" | "MEDIUM" | "WEAK" | "NONE",
-    reasons: list[str],
-    patterns_fired: list[str],  # detector names that matched
-    context: {...},
-    market_state: {...},
-  }
+═══════════════════════════════════════════════════════════════════════════
+NEW ARCHITECTURE — six independent voters, one council decision:
+
+  STAT      Empirical per-pair continuation rate (streak-bucket z-test)
+            over the trailing 120 candles + archetype prior. The only
+            measurable next-candle statistic on a near-memoryless feed.
+  REGIME    Least-squares trend (R² + steepness). Follows CONFIRMED trends,
+            fades exhausted ones, abstains on SIDEWAYS.
+  POSITION  Position-aware read ("অবস্থান বোঝে"): where price sits inside
+            its 40-candle range, how far it is stretched from SMA20, and
+            whether the rejection wick is touching a real key level.
+  PATTERN   Cleaned candlestick evidence (deduped, context-gated, regime-
+            gated continuation family). ONE net vote, never a stack.
+  STATE     Market-state read (CONTINUATION / EXHAUSTION / REVERSAL / TRAP)
+            with conviction.
+  FLOW      Closed-candle tick absorption (buyer/seller pressure vs close
+            position). Only present when >= 15 real ticks exist.
+
+EMISSION RULES (ALL must pass — else NEUTRAL, no exceptions):
+
+  R1  |net_score| >= SCORE_FLOOR          (weighted conviction exists)
+  R2  agree >= MIN_AGREE                  (several strategies agree —
+                                           the user's explicit requirement:
+                                           "High confidence বেশ কয়েকটি
+                                           স্ট্রাটেজি এক মত হতে হবে")
+  R3  agree_weight >= WEIGHT_FLOOR        (the agreement has weight)
+  R4  no veto                             (no voter of weight >= VETO_WEIGHT
+                                           points the other way)
+  R5  liquidity gates pass                (ATR floor, session quality)
+
+Output schema (consumed by feed.py + chart UI):
+  { signal: "CALL"|"PUT"|"NEUTRAL", score, confidence, agree, agree_weight,
+    strength: "STRONG"|"MEDIUM"|"NONE", reasons, patterns_fired, voters,
+    confluence, key_levels, wick_walls, regime, market_state, context }
 """
 from __future__ import annotations
+import os
 import time
 from dataclasses import dataclass
 
 from .patterns import (
-    Signal, detect_all, candle_anatomy,
+    Signal, detect_all, candle_anatomy, FAMILY_OF,
 )
 from .pair_profiles import (
     get_profile, session_quality, PairProfile,
 )
 
 
+# ── Council thresholds (env-tunable so live ops can tighten/loosen) ──────────
+
+MIN_AGREE      = int(os.environ.get("QX_MIN_AGREE", "3"))
+SCORE_FLOOR    = float(os.environ.get("QX_SCORE_FLOOR", "4.0"))
+WEIGHT_FLOOR   = float(os.environ.get("QX_WEIGHT_FLOOR", "4.0"))
+VETO_WEIGHT    = float(os.environ.get("QX_VETO_WEIGHT", "2.5"))
+REQUIRE_STAT   = os.environ.get("QX_REQUIRE_STAT", "1") == "1"
+MIN_CANDLES    = int(os.environ.get("QX_MIN_CANDLES", "25"))
+STRONG_AGREE   = int(os.environ.get("QX_STRONG_AGREE", "4"))
+STRONG_SCORE   = float(os.environ.get("QX_STRONG_SCORE", "5.0"))
+
+
 # ── Key-level / context helpers ──────────────────────────────────────────────
 
 def _key_levels(candles: list[dict], lookback: int = 40) -> list[tuple[float, int]]:
-    """Same swing-high/low clustering logic as analyze_eoc._key_levels.
-
-    Returns [(price, touches), ...] for levels with 2+ touches.
-    """
+    """Swing high/low clustering. Returns [(price, touches), ...] for levels
+    with 2+ touches. Zero-range (synthetic flat) candles are skipped — their
+    high==low is a fake level that pollutes clustering."""
     recent = candles[-lookback:] if len(candles) >= lookback else candles
+    recent = [c for c in recent if c["high"] > c["low"]]
     if len(recent) < 5:
         return []
     pivots: list[float] = []
@@ -109,8 +122,9 @@ def _key_levels(candles: list[dict], lookback: int = 40) -> list[tuple[float, in
 
 def _wick_walls(candles: list[dict], lookback: int = 20
                 ) -> tuple[list[tuple[float, float]], list[tuple[float, float]], float]:
-    """Same wick-wall clustering as analyze_eoc._wick_wall."""
+    """Wick-tip clustering → (support walls, resistance walls, avg range)."""
     recent = candles[-lookback:] if len(candles) >= lookback else candles
+    recent = [c for c in recent if c["high"] > c["low"]]
     if len(recent) < 4:
         return [], [], 0.0
     n = len(recent)
@@ -139,8 +153,7 @@ def _wick_walls(candles: list[dict], lookback: int = 20
 
 
 def _round_level(price: float) -> tuple[float, str]:
-    """Detect proximity to a round number. Returns (level, strength).
-    Strengths: BIG (1%), MID (0.5%), SMALL (0.1%), NONE."""
+    """Proximity to a round number. Returns (level, strength)."""
     import math
     if price <= 0:
         return price, "NONE"
@@ -159,27 +172,18 @@ def _round_level(price: float) -> tuple[float, str]:
     return _snap(price, step), "NONE"
 
 
-def _market_regime(candles: list[dict], lookback: int = 24) -> tuple[str, str]:
+def _market_regime(candles: list[dict], lookback: int = 24
+                   ) -> tuple[str, str, float]:
     """UPTREND / DOWNTREND / SIDEWAYS + SUPPORT / RESISTANCE / NEUTRAL zone.
 
-    FIX (regime detector rewrite): the old split-half high/low comparison
-    needed only two structurally higher highs/lows to declare a trend — on a
-    noisy 1-minute OTC feed that is 2-3 candles of ordinary drift, so chop
-    was constantly labelled UPTREND/DOWNTREND and the continuation paths
-    traded the END of engineered runs (live replay: following an unconfirmed
-    regime scored 48.1-49.5%).
-
-    The detector now fits a least-squares line over the last `lookback`
-    closes and demands BOTH:
-      - trendiness:  R^2 >= 0.25 (a straight-line move, not two half-window
-        extremes), and
-      - steepness:   |slope| >= 0.12 ATR per candle (a drift that actually
-        moves, not noise).
+    Least-squares line over the last `lookback` closes; a trend requires
+    BOTH R² >= 0.25 (straightness) and |slope| >= 0.12 ATR/candle (steepness).
     Everything else is SIDEWAYS — the honest default on this feed.
+    Also returns R² so the REGIME voter can scale conviction.
     """
     recent = candles[-lookback:] if len(candles) >= lookback else candles
     if len(recent) < 8:
-        return "SIDEWAYS", "NEUTRAL"
+        return "SIDEWAYS", "NEUTRAL", 0.0
     closes = [c["close"] for c in recent]
     n = len(closes)
     mean_x = (n - 1) / 2.0
@@ -192,7 +196,9 @@ def _market_regime(candles: list[dict], lookback: int = 24) -> tuple[str, str]:
     ss_res = sum((y - (intercept + slope * x)) ** 2
                  for x, y in zip(range(n), closes))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-    atr = sum(c["high"] - c["low"] for c in recent) / n
+    atr = sum(c["high"] - c["low"] for c in recent if c["high"] > c["low"])
+    atr_n = max(1, sum(1 for c in recent if c["high"] > c["low"]))
+    atr = atr / atr_n if atr_n else 0.0
     slope_atr = slope / atr if atr > 0 else 0.0
     if r2 >= 0.25 and abs(slope_atr) >= 0.12:
         regime = "UPTREND" if slope > 0 else "DOWNTREND"
@@ -202,7 +208,7 @@ def _market_regime(candles: list[dict], lookback: int = 24) -> tuple[str, str]:
     full_lo = min(x["low"] for x in recent)
     rng = full_hi - full_lo
     if rng == 0:
-        return regime, "NEUTRAL"
+        return regime, "NEUTRAL", r2
     pos = (candles[-1]["close"] - full_lo) / rng
     if pos <= 0.25:
         zone = "SUPPORT"
@@ -210,10 +216,10 @@ def _market_regime(candles: list[dict], lookback: int = 24) -> tuple[str, str]:
         zone = "RESISTANCE"
     else:
         zone = "NEUTRAL"
-    return regime, zone
+    return regime, zone, r2
 
 
-# ── Statistical base-bias layer ────────────────────────────────────────────
+# ── Candle colour / streak helpers ───────────────────────────────────────────
 
 def _candle_color(c: dict) -> int:
     """+1 bull, -1 bear, 0 doji (close == open)."""
@@ -226,8 +232,7 @@ def _candle_color(c: dict) -> int:
 
 def _current_streak(candles: list[dict]) -> int:
     """Length of the same-color run ENDING at the last candle.
-    Dojis are skipped (they neither extend nor break a directional run);
-    an opposite-colored candle breaks it."""
+    Dojis are skipped (they neither extend nor break a directional run)."""
     if not candles:
         return 0
     col = _candle_color(candles[-1])
@@ -250,9 +255,7 @@ def _continuation_table(candles: list[dict], window: int = 120
     """Measure THIS pair's own color-continuation behaviour over the trailing
     window. Returns (aggregate [cont, total], buckets {streak: [cont, total]})
     where the bucket key is the run length KNOWN at the prediction moment,
-    capped at 3. This is the raw material for the empirical p_cont estimate —
-    the only next-candle predictor on a near-memoryless feed that is actually
-    measurable from OHLC alone."""
+    capped at 3."""
     start = max(1, len(candles) - window)
     agg = [0, 0]
     buckets: dict[int, list[int]] = {1: [0, 0], 2: [0, 0], 3: [0, 0]}
@@ -261,7 +264,6 @@ def _continuation_table(candles: list[dict], window: int = 120
         cc = _candle_color(candles[i])
         if pc == 0 or cc == 0:
             continue
-        # run length as known at the END of candle i-1
         s = 1
         j = i - 2
         while j >= 0:
@@ -282,75 +284,48 @@ def _continuation_table(candles: list[dict], window: int = 120
     return agg, buckets
 
 
-def _stat_bias(candles: list[dict], profile: PairProfile, atr: float,
-               sess_q: float
-               ) -> tuple[float, list[str], dict]:
-    """Statistical next-candle bias — the engine's BASE layer.
+# ── VOTER 1: STAT — empirical continuation / fade ────────────────────────────
 
-    WHY THIS EXISTS: the backtest of the previous engine showed the pattern
-    paths sitting at ~50.4% (noise) while the despised fade-the-color
-    tiebreak was the BEST path (53.7%). The live feed's own measurements
-    agree (color-following bases 47.3-48.3% on the OTC pegs, n=859/237/232).
-    The base layer therefore bets on the ONLY thing that is actually
-    measurable from 1-minute OHLC on this feed:
+def _stat_bias(candles: list[dict], profile: PairProfile) -> tuple[int, float, list[str], dict]:
+    """VOTER 1 — measured statistical bias. Returns (dir, weight, reasons, meta).
 
-      1. EMPIRICAL CONTINUATION RATE — how often has THIS pair's next candle
-         repeated the last candle's color, overall and conditioned on the
-         current run length (streak buckets 1/2/3+), over the trailing 120
-         candles. A one-sided z-test decides whether the estimate is far
-         enough from 0.5 to bet on; the bet weight scales with |z|. When the
-         pair's own history is inconclusive, the archetype prior applies
-         (fade on RANGE_BOUNCE/MEAN_REVERT, follow on real TREND majors,
-         weak follow on OTC "trenders" whose runs are documented to exhaust
-         in 2-3 candles).
-      2. STREAK EXHAUSTION — 3+ same-color candles on range-persistent
-         archetypes ("run 2-3 then fade" is the documented OTC peg pattern).
-      3. EXTENSION FADE — price stretched from its SMA20 by >= 0.9 ATR on
-         range archetypes (>= 2.2 ATR on trenders) fades back toward the
-         mean.
+    dir: -1/0/+1 (bet: fade or follow the last candle's colour).
+    weight in [0..3]; 0 = abstain (no measurable edge).
 
-    Returns (score, reasons, meta). Score sign IS the directional bias;
-    magnitude is conviction in [-5, +5].
+    1. Empirical continuation rate conditioned on the current run length
+       (z-test, weight scales with |z|).
+    2. Aggregate continuation rate (higher bar).
+    3. Archetype prior when the pair's own history is inconclusive:
+       fade on RANGE_BOUNCE / MEAN_REVERT, weak follow on OTC TREND pegs
+       (documented to exhaust in 2-3 candles), follow on real TREND majors.
+    Streak exhaustion and SMA extension are POSITION voter's job — this
+    voter ONLY answers "does this pair's next candle repeat the colour?".
     """
     cur = candles[-1]
     col = _candle_color(cur)
     streak = _current_streak(candles)
-    look = candles[-20:]
-    sma = sum(c["close"] for c in look) / len(look)
-    z = (cur["close"] - sma) / atr if atr > 0 else 0.0
+    meta: dict = {"streak": streak, "p_cont": None, "bias_src": None}
 
-    reasons: list[str] = []
-    score = 0.0
-    meta: dict = {"streak": streak, "z": round(z, 2), "p_cont": None,
-                  "bias_src": None}
+    if col == 0:
+        return 0, 0.0, [], meta
 
     agg, buckets = _continuation_table(candles)
     n_agg = agg[1]
 
-    follow = 0.0        # >0 bet color repeats, <0 bet it flips, 0 no bet
-    src = None
-
-    # 1a. ARCHETYPE PRIOR first (the documented, measured behavior of this
-    # pair class). The empirical estimator may only OVERRIDE it when the
-    # deviation is clearly significant — a noisy 75-candle bucket flips
-    # sign ~30% of the time, and every wrong flip bets against the prior
-    # that matches the pair's actual character (measured cost: several
-    # accuracy points on both RANGE and TREND archetypes).
+    # Archetype prior (direction of the follow/fade bet)
     if profile.archetype == "TREND":
         prior = 1.0 if not profile.asset.endswith("_otc") else 0.6
     elif profile.archetype == "RANGE_BOUNCE":
-        prior = -1.1
+        prior = -1.0
     elif profile.archetype == "MEAN_REVERT":
-        prior = -1.3
+        prior = -1.2
     else:  # MIXED
         prior = -0.4 if profile.asset.endswith("_otc") else 0.0
 
-    # 1b. streak-conditional empirical estimate (most specific).
-    # Override bar scales with how strong the prior is: z >= 1.6 to
-    # override a directional prior (≈ two-sided p < 0.06), z >= 1.0 when
-    # no directional prior exists (MIXED real pairs) so the estimator
-    # still does its job as the live self-corrector when the feed's
-    # character genuinely changes.
+    follow = 0.0
+    src = None
+
+    # 1a. streak-conditional empirical estimate (most specific).
     b = min(max(streak, 1), 3)
     bc, bt = buckets[b]
     if bt >= 25:
@@ -361,7 +336,7 @@ def _stat_bias(candles: list[dict], profile: PairProfile, atr: float,
             src = (f"streak-{b} empirical: continuation "
                    f"{bc}/{bt} ({bc / bt:.0%})")
 
-    # 1c. aggregate empirical estimate (same override logic, higher bar).
+    # 1b. aggregate empirical estimate (same override logic, higher bar).
     if follow == 0.0 and n_agg >= 60:
         z_a = (agg[0] - n_agg / 2.0) * 2.0 / (n_agg ** 0.5)
         _bar = 1.8 if abs(prior) >= 0.5 else 1.2
@@ -369,141 +344,273 @@ def _stat_bias(candles: list[dict], profile: PairProfile, atr: float,
             follow = max(-1.8, min(1.8, z_a * 0.6))
             src = f"empirical p_cont={agg[0] / n_agg:.0%} (n={n_agg})"
 
-    # 1d. fall back to the prior
+    # 1c. fall back to the archetype prior
     if follow == 0.0:
         follow = prior
         src = f"archetype prior ({profile.archetype})"
 
     meta["bias_src"] = src
-    if col != 0 and follow != 0.0:
-        score += follow * col
-        meta["p_cont"] = round(0.5 + follow / 4.4, 3)
+    meta["p_cont"] = round(0.5 + follow / 4.4, 3)
 
-    # 2. streak exhaustion on range-persistent archetypes
-    if (col != 0 and streak >= 3
-            and profile.archetype in ("RANGE_BOUNCE", "MEAN_REVERT", "MIXED")):
-        w = min(1.8, (streak - 2) * 0.6)
-        if profile.archetype == "MIXED":
-            w *= 0.6
-        score += -col * w
-        reasons.append(f"STAT  {streak}-candle {'bull' if col > 0 else 'bear'} "
-                       f"run on {profile.archetype} pair (run-then-fade) -> "
-                       f"{'CALL' if -col > 0 else 'PUT'} (x{max(1, round(w))})")
+    weight = min(3.0, abs(follow))
+    if weight < 0.4:
+        return 0, 0.0, [], meta
 
-    # 3. extension fade from SMA20
-    if profile.archetype == "TREND":
-        if z > 2.2:
-            score -= min(1.0, (z - 2.2) * 0.8)
-        elif z < -2.2:
-            score += min(1.0, (-2.2 - z) * 0.8)
+    direction = 1 if follow > 0 else -1        # +1 = bet colour repeats
+    vote_dir = direction * col                  # actual CALL/PUT direction
+    reason = (f"{src} -> {'follow' if direction > 0 else 'fade'} the "
+              f"{'bull' if col > 0 else 'bear'} candle -> "
+              f"{'CALL' if vote_dir > 0 else 'PUT'}")
+    return vote_dir, weight, [f"STAT    {reason}"], meta
+
+
+# ── VOTER 2: REGIME — confirmed trend follow / exhaustion fade ───────────────
+
+def _regime_vote(candles: list[dict], regime: str, r2: float,
+                 profile: PairProfile) -> tuple[int, float, list[str]]:
+    """VOTER 2 — trend regime. Returns (dir, weight, reasons).
+
+    MEASURED (backtest attribution, 5206-signal portfolio): naive confirmed-
+    trend following graded 47.7% — an ANTI-SIGNAL. By the time R²+steepness
+    confirm a 1-minute trend, the move is largely spent. The voter therefore:
+
+      - follows ONLY very strong trends (R² >= 0.40, i.e. the top slice of
+        confirmations) and with a capped weight (1.6);
+      - fades the trend once a run of 3+ same-colour candles has printed
+        INSIDE it (the measured "run 2-3 then fade" OTC behaviour) — the
+        exhaustion fade is the regime voter's real edge;
+      - abstains on SIDEWAYS (honest default).
+    """
+    streak = _current_streak(candles)
+    if regime == "SIDEWAYS":
+        return 0, 0.0, []
+    tdir = 1 if regime == "UPTREND" else -1
+
+    # Exhaustion fade: 3+ same-colour candles inside a confirmed trend.
+    col = _candle_color(candles[-1])
+    if col != 0 and streak >= 3 and (col == tdir):
+        w = min(2.4, 1.2 + (streak - 2) * 0.4)
+        return (-tdir, w,
+                [f"REGIME  {regime} confirmed (R²={r2:.2f}) but "
+                 f"{streak}-candle run is exhausted -> fade to "
+                 f"{'CALL' if -tdir > 0 else 'PUT'}"])
+
+    # Follow only top-slice confirmations, capped weight.
+    if r2 >= 0.40:
+        w = min(1.6, 0.8 + (r2 - 0.40) * 3.0)
+        return (tdir, w,
+                [f"REGIME  {regime} strong (R²={r2:.2f}) -> "
+                 f"{'CALL' if tdir > 0 else 'PUT'} continuation"])
+    # Confirmed but unremarkable trend — measured <50% to follow. Abstain.
+    return 0, 0.0, []
+
+
+# ── VOTER 3: POSITION — where price IS (the অবস্থান voter) ───────────────────
+
+def _position_vote(candles: list[dict], atr: float, klevels,
+                   sup_walls, res_walls
+                   ) -> tuple[int, float, list[str]]:
+    """VOTER 3 — position-aware mean reversion & level rejection.
+
+    Three independent positional facts, combined into ONE vote:
+      A. Range position — where the close sits inside the 40-candle range.
+         Extremes (>= 85% / <= 15%) favour a snap back toward the middle.
+      B. SMA20 extension — |z| >= 1.2 ATR from the mean favours reversion.
+      C. Key-level rejection — the candle's rejection wick touched a
+         clustered swing level (2+ touches) or a wick wall.
+
+    Abstains unless at least one fact is measurable. This is the voter that
+    makes the engine "understand the position" — the same candle pattern at
+    range-bottom means reversal, mid-range means nothing, range-top means
+    fade. Weight caps at 3.
+    """
+    cur = candles[-1]
+    a = candle_anatomy(cur)
+    score = 0.0
+    parts: list[str] = []
+
+    # A. Range position over the last 40 candles (zero-range candles skipped
+    # for the high/low window — synthetic flat bars must not shrink it).
+    win = [c for c in candles[-40:] if c["high"] > c["low"]]
+    if len(win) >= 10:
+        hi = max(c["high"] for c in win)
+        lo = min(c["low"] for c in win)
+        rng = hi - lo
+        if rng > 0:
+            pos = (cur["close"] - lo) / rng
+            if pos >= 0.85:
+                w = min(2.0, 1.0 + (pos - 0.85) * 6.0)
+                score -= w
+                parts.append(f"at {pos:.0%} of 40-candle range (top) -> "
+                             f"PUT snap-back")
+            elif pos <= 0.15:
+                w = min(2.0, 1.0 + (0.15 - pos) * 6.0)
+                score += w
+                parts.append(f"at {pos:.0%} of 40-candle range (bottom) -> "
+                             f"CALL snap-back")
+
+    # B. SMA20 extension (only measurable with a real ATR)
+    if atr > 0 and len(candles) >= 20:
+        sma = sum(c["close"] for c in candles[-20:]) / 20
+        z = (cur["close"] - sma) / atr
+        if z >= 1.2:
+            score -= min(2.0, 1.0 + (z - 1.2) * 0.5)
+            parts.append(f"{z:+.1f} ATR above SMA20 (stretched) -> PUT")
+        elif z <= -1.2:
+            score += min(2.0, 1.0 + (-1.2 - z) * 0.5)
+            parts.append(f"{z:+.1f} ATR below SMA20 (stretched) -> CALL")
+
+    # C. Key-level rejection via the candle's own rejection wick
+    if atr > 0:
+        test_low = a["lower"] > a["upper"]
+        test_price = cur["low"] if test_low else cur["high"]
+        rej_dir = 1 if test_low else -1        # wick rejected downward → CALL side
+        rej_lbl = "CALL" if rej_dir > 0 else "PUT"
+        for lvl, touches in klevels:
+            if abs(test_price - lvl) <= lvl * 0.0006 and touches >= 2:
+                score += rej_dir * min(2.5, 0.8 + touches * 0.4)
+                parts.append(f"rejection wick at key level x{touches} "
+                             f"({lvl:.5f}) -> {rej_lbl}")
+                break
+        else:
+            walls = sup_walls if test_low else res_walls
+            for lvl, weight in walls:
+                if abs(test_price - lvl) <= atr * 0.25 and weight >= 2.5:
+                    score += rej_dir * min(2.0, 0.6 + weight * 0.3)
+                    parts.append(f"rejection wick at wick wall "
+                                 f"({lvl:.5f}) -> {rej_lbl}")
+                    break
+
+    if not parts or abs(score) < 0.8:
+        return 0, 0.0, []
+    direction = 1 if score > 0 else -1
+    weight = min(3.0, abs(score))
+    reason = "; ".join(parts)
+    return (direction, weight,
+            [f"POS     {reason} -> {'CALL' if direction > 0 else 'PUT'}"])
+
+
+# ── VOTER 5: STATE — market-state conviction ────────────────────────────────
+
+def _market_state(candles: list[dict], regime: str, zone: str,
+                  klevels, atr: float, ticks: list[float] | None = None,
+                  profile: PairProfile | None = None
+                  ) -> dict:
+    """Identify CONTINUATION / EXHAUSTION / REVERSAL / TRAP / RANGE / UNCLEAR.
+    Returns {state, bias, conviction, points}. The STATE voter consumes it."""
+    exh_streak = 4
+    if profile is not None and profile.archetype in (
+            "MEAN_REVERT", "RANGE_BOUNCE", "MIXED"):
+        exh_streak = 3
+    if len(candles) < 2:
+        return {"state": "UNCLEAR", "bias": "NEUTRAL", "conviction": 0,
+                "points": {}}
+    cur = candles[-1]
+    a = candle_anatomy(cur)
+    trend_dir = +1 if regime == "UPTREND" else -1 if regime == "DOWNTREND" else 0
+    if a["brr"] < 0.05:
+        cand_dir = 0
     else:
-        if z > 0.9:
-            score -= min(1.6, (z - 0.9) * 0.9)
-            reasons.append(f"STAT  price {z:+.1f} ATR above SMA20 "
-                           f"(stretched) -> PUT (x{max(1, round(min(1.6, (z - 0.9) * 0.9)))})")
-        elif z < -0.9:
-            score += min(1.6, (-0.9 - z) * 0.9)
-            reasons.append(f"STAT  price {z:+.1f} ATR below SMA20 "
-                           f"(stretched) -> CALL (x{max(1, round(min(1.6, (-0.9 - z) * 0.9)))})")
+        cand_dir = +1 if a["is_bull"] else -1
 
-    # main color-bias vote line (parsed as a theory vote code "STAT")
-    if col != 0 and abs(follow) >= 0.3:
-        _dir = follow * col
-        _mag = max(1, round(abs(follow)))
-        reasons.insert(0, f"STAT  {src} -> "
-                          f"{'CALL' if _dir > 0 else 'PUT'} (x{_mag})")
+    # Streak (dojis skipped — consistent with _current_streak)
+    streak = 0
+    if cand_dir != 0:
+        for i in range(len(candles) - 1, -1, -1):
+            cc = _candle_color(candles[i])
+            if cc == 0:
+                if i == len(candles) - 1:
+                    break
+                continue
+            if cc == cand_dir:
+                streak += 1
+            else:
+                break
 
-    # dead sessions reduce trust in the statistical edge too (softly — the
-    # base layer must never fully disappear or the tiebreak coin-flips)
-    score *= (0.55 + 0.45 * sess_q)
+    pts = {"CONTINUATION": 0.0, "EXHAUSTION": 0.0,
+           "REVERSAL": 0.0, "TRAP": 0.0, "RANGE": 0.0}
+    dirs = {k: 0.0 for k in pts}
 
-    return max(-5.0, min(5.0, score)), reasons, meta
+    def add(state, p, d):
+        pts[state] += p
+        dirs[state] += d * p
 
+    if trend_dir:
+        add("CONTINUATION", 2, trend_dir)
+        if cand_dir == trend_dir and a["brr"] >= 0.55:
+            add("CONTINUATION", 2, trend_dir)
 
-# ── Confluence detection ──────────────────────────────────────────────────────
+    if streak >= exh_streak and cand_dir != 0:
+        add("EXHAUSTION", 2 + (1 if streak >= exh_streak + 2 else 0), -cand_dir)
+    if ticks and len(ticks) >= 15:
+        bp, _ = _tick_pressure(ticks)
+        if bp >= 0.78 or bp <= 0.22:
+            add("EXHAUSTION", 1, -cand_dir)
 
-def _confluence_score(cur: dict, candles: list[dict], klevels, sup_walls, res_walls,
-                      atr: float) -> tuple[float, str]:
-    """Score how close the current candle's REJECTION wick is to a confluence
-    of key levels. Returns (bonus 0..3, description string).
-    """
-    if atr <= 0:
-        return 0.0, ""
-    a = candle_anatomy(cur)
-    # Test the wick tip closest to the candle's "rejection" direction.
-    # For a bullish pin bar (long lower wick), test the LOW.
-    # For a bearish pin bar (long upper wick), test the HIGH.
-    test_low = a["lower"] > a["upper"]
-    test_price = cur["low"] if test_low else cur["high"]
-    bonus = 0.0
-    desc_parts = []
+    if a["range"] > 1e-9 and a["upper"] / a["range"] > 0.55 and a["brr"] < 0.25:
+        add("REVERSAL", 3 if zone == "RESISTANCE" else 2, -1)
+    elif a["range"] > 1e-9 and a["lower"] / a["range"] > 0.55 and a["brr"] < 0.25:
+        add("REVERSAL", 3 if zone == "SUPPORT" else 2, +1)
 
-    # Key level touches
-    for lvl, touches in klevels:
-        if abs(test_price - lvl) <= lvl * 0.0006:
-            bonus += min(2.0, touches * 0.7)
-            desc_parts.append(f"key level x{touches} @ {lvl:.5f}")
-            break
+    if ticks and len(ticks) >= 15:
+        abs_dir, _ = _absorption(cur, ticks)
+        if abs_dir:
+            add("REVERSAL", 3, abs_dir)
 
-    # Wick wall cluster
-    walls = sup_walls if test_low else res_walls
-    for lvl, weight in walls:
-        if abs(test_price - lvl) <= atr * 0.25:
-            bonus += min(1.5, weight * 0.4)
-            desc_parts.append(f"wick wall @ {lvl:.5f}")
-            break
+    if len(candles) >= 2:
+        prev = candles[-2]
+        for lvl, t in klevels:
+            if prev["close"] > lvl >= cur["close"]:
+                add("TRAP", 2, -1)
+                break
+            if prev["close"] < lvl <= cur["close"]:
+                add("TRAP", 2, +1)
+                break
 
-    # Round number
-    _, rnd_strength = _round_level(test_price)
-    if rnd_strength == "BIG":
-        bonus += 1.0
-        desc_parts.append("BIG round number")
-    elif rnd_strength == "MID":
-        bonus += 0.5
-        desc_parts.append("MID round number")
+    if trend_dir == 0:
+        add("RANGE", 2, 0)
+        if zone == "RESISTANCE":
+            add("RANGE", 1, -1)
+        elif zone == "SUPPORT":
+            add("RANGE", 1, +1)
+    if a["brr"] <= 0.10:
+        add("RANGE", 1, 0)
 
-    return min(3.0, bonus), "; ".join(desc_parts)
-
-
-# ── Trap-wick filter ──────────────────────────────────────────────────────────
-
-def _trap_wick_dampen(cur: dict, profile: PairProfile, atr: float) -> float:
-    """Return a 0..1 multiplier to dampen wick-rejection signals when the
-    current candle looks like a Quotex-engineered trap wick.
-
-    Trap wick = extreme wick (>3x body) on a small-bodied candle that closed
-    far from the wick tip — characteristic of engineered stop-hunts.
-    """
-    if atr <= 0 or profile.trap_wick_sensitivity <= 1.0:
-        return 1.0
-    a = candle_anatomy(cur)
-    if a["body"] == 0:
-        return 1.0
-    # Trap wick detection
-    max_wick = max(a["upper"], a["lower"])
-    if max_wick <= 2.5 * a["body"]:
-        return 1.0
-    # Ratio of wick to body — the larger, the more suspicious
-    ratio = max_wick / a["body"]
-    # Range should also be a noticeable fraction of ATR
-    if a["range"] < atr * 0.6:
-        return 1.0
-    # Dampen: ratio 2.5x = 1.0 (no dampen); 5x = 0.7; 8x = 0.4
-    dampen_factor = max(0.3, 1.0 - (ratio - 2.5) * 0.12 * profile.trap_wick_sensitivity)
-    return dampen_factor
+    prio = ["TRAP", "REVERSAL", "EXHAUSTION", "CONTINUATION", "RANGE"]
+    win = max(prio, key=lambda k: (pts[k], -prio.index(k)))
+    tot = sum(pts.values())
+    if pts[win] < 3 or tot == 0:
+        return {"state": "UNCLEAR", "bias": "NEUTRAL", "conviction": 0,
+                "points": {k: round(v, 1) for k, v in pts.items()}}
+    bd = dirs[win]
+    bias = "CALL" if bd > 0 else "PUT" if bd < 0 else "NEUTRAL"
+    # Honest conviction: winner's share of (all points + 2 prior). A single
+    # state with no competition must NOT read 100% — the +2 denominator
+    # keeps the number monotonic and below certainty.
+    conv = round(100 * pts[win] / (tot + 2.0))
+    return {"state": win, "bias": bias, "conviction": conv,
+            "points": {k: round(v, 1) for k, v in pts.items()}}
 
 
-# ── Tick microstructure (RUN/LIVE equivalent) ────────────────────────────────
+def _state_vote(ms: dict) -> tuple[int, float, list[str]]:
+    """VOTER 5 — market-state conviction → one vote."""
+    if ms.get("bias") not in ("CALL", "PUT") or ms.get("conviction", 0) < 40:
+        return 0, 0.0, []
+    direction = 1 if ms["bias"] == "CALL" else -1
+    weight = min(2.6, 1.0 + ms["conviction"] / 45.0)
+    return (direction, weight,
+            [f"STATE   {ms['state']} @ {ms['conviction']}% conviction -> "
+             f"{ms['bias']}"])
+
+
+# ── VOTER 6: FLOW — closed-candle tick absorption ────────────────────────────
 
 def _tick_pressure(ticks: list[float]) -> tuple[float, str]:
-    """Return (buyer_pct, classification) from a list of tick prices.
-
-    buyer_pct > 0.6 = buyer dominated; < 0.4 = seller dominated; else neutral.
-    """
+    """Return (buyer_pct, classification) from a list of tick prices."""
     if not ticks or len(ticks) < 5:
         return 0.5, "INSUFFICIENT"
-    up = sum(1 for i in range(1, len(ticks)) if ticks[i] > ticks[i-1])
-    dn = sum(1 for i in range(1, len(ticks)) if ticks[i] < ticks[i-1])
+    up = sum(1 for i in range(1, len(ticks)) if ticks[i] > ticks[i - 1])
+    dn = sum(1 for i in range(1, len(ticks)) if ticks[i] < ticks[i - 1])
     tot = up + dn
     if tot == 0:
         return 0.5, "INSUFFICIENT"
@@ -516,315 +623,97 @@ def _tick_pressure(ticks: list[float]) -> tuple[float, str]:
 
 
 def _absorption(cur: dict, ticks: list[float]) -> tuple[int, str]:
-    """Detect absorption pattern: candle closed one way but ticks pushed the
-    other. Returns (direction, reason) — direction +1 = CALL (buyers absorbed
-    selling), -1 = PUT, 0 = none.
-    """
+    """Absorption: candle closed one way but ticks pushed the other.
+    Returns (direction, reason) — +1 = CALL, -1 = PUT, 0 = none.
+
+    Grading note: `ticks` here are the JUST-CLOSED candle's ticks. The vote
+    is formed at candle-open time for the NEXT candle, so this is legitimate
+    closed information — no lookahead."""
     if not ticks or len(ticks) < 15:
         return 0, ""
     a = candle_anatomy(cur)
-    bp, cls = _tick_pressure(ticks)
-    # Closed up but sellers pushed -> bearish absorption
+    bp, _ = _tick_pressure(ticks)
     if a["close_pos"] >= 0.72 and bp <= 0.40:
-        return -1, (f"ABSORPTION: closed up at {a['close_pos']:.0%} but only "
-                   f"{bp:.0%} up-ticks -> sellers absorbed -> PUT")
-    # Closed down but buyers pushed -> bullish absorption
+        return -1, (f"closed up at {a['close_pos']:.0%} but only "
+                    f"{bp:.0%} up-ticks -> sellers absorbed")
     if a["close_pos"] <= 0.20 and bp >= 0.60:
-        return +1, (f"ABSORPTION: closed down at {a['close_pos']:.0%} but "
-                    f"{bp:.0%} up-ticks -> buyers absorbed -> CALL")
+        return +1, (f"closed down at {a['close_pos']:.0%} but "
+                    f"{bp:.0%} up-ticks -> buyers absorbed")
     return 0, ""
 
 
-# ── Market-state deep analysis (compressed version) ──────────────────────────
-
-def _market_state(candles: list[dict], regime: str, zone: str,
-                  klevels, atr: float, ticks: list[float] | None = None,
-                  profile: PairProfile | None = None
-                  ) -> dict:
-    """Identify CONTINUATION / EXHAUSTION / REVERSAL / TRAP / RANGE / UNCLEAR.
-
-    Mirrors analyze_eoc's market-state block but with cleaner structure.
-    Returns {state, bias, conviction, points}.
-
-    FIX (profile-aware exhaustion): the exhaustion threshold is now per
-    archetype. The per-pair research notes are explicit that the OTC pegs
-    push 2-3 candles then fade ("trend 2-3 candles, then fade 4th" on
-    USDPHP; "3-candle extremes + pin-bar reversals win" on USDBDT), but
-    the old hardcoded streak >= 4 only started fading after the move was
-    already over on those pairs. MEAN_REVERT / RANGE_BOUNCE / MIXED
-    profiles now exhaust at streak >= 3; TREND profiles keep 4.
-    """
-    exh_streak = 4
-    if profile is not None and profile.archetype in (
-            "MEAN_REVERT", "RANGE_BOUNCE", "MIXED"):
-        exh_streak = 3
-    if len(candles) < 2:
-        return {"state": "UNCLEAR", "bias": "NEUTRAL", "conviction": 0,
-                "points": {}}
-    cur = candles[-1]
-    a = candle_anatomy(cur)
-    trend_dir = +1 if regime == "UPTREND" else -1 if regime == "DOWNTREND" else 0
-    # FIX: treat doji (close == open) as non-directional so EXHAUSTION
-    # doesn't fire wrongly for a streak of dojis.
-    if a["brr"] < 0.05:
-        cand_dir = 0
-    else:
-        cand_dir = +1 if a["is_bull"] else -1
-
-    # streak
-    # FIX: iterate down to index 0 (was 0 exclusive — off-by-one that
-    # suppressed EXHAUSTION for exactly-4 streaks).
-    streak = 0
-    for i in range(len(candles) - 1, -1, -1):
-        if a["brr"] < 0.05:
-            # doji doesn't extend a directional streak
-            break
-        same_color = (candles[i]["close"] >= candles[i]["open"]) == a["is_bull"]
-        if same_color:
-            streak += 1
-        else:
-            break
-
-    pts = {"CONTINUATION": 0.0, "EXHAUSTION": 0.0,
-           "REVERSAL": 0.0, "TRAP": 0.0, "RANGE": 0.0}
-    dirs = {k: 0.0 for k in pts}
-
-    def add(state, p, d):
-        pts[state] += p
-        dirs[state] += d * p
-
-    # CONTINUATION
-    if trend_dir:
-        add("CONTINUATION", 2, trend_dir)
-        if cand_dir == trend_dir and a["brr"] >= 0.55:
-            add("CONTINUATION", 2, trend_dir)
-
-    # EXHAUSTION — threshold per archetype (see docstring)
-    if streak >= exh_streak:
-        add("EXHAUSTION", 2 + (1 if streak >= exh_streak + 2 else 0), -cand_dir)
-    if ticks and len(ticks) >= 15:
-        bp, _ = _tick_pressure(ticks)
-        if bp >= 0.78 or bp <= 0.22:
-            add("EXHAUSTION", 1, -cand_dir)
-
-    # REVERSAL — pin bar shapes
-    # NOTE: candle_anatomy() floors "range" to 1e-9, so it's never falsy —
-    # the old `X if a["range"] else False and Y` form parsed (by Python's
-    # conditional-expression precedence) as `X if range else (False and Y)`,
-    # silently dropping the `and a["brr"] < 0.25` body-size filter entirely.
-    # Any large-bodied candle with a merely-large wick was wrongly counted
-    # as a pin-bar REVERSAL. Parenthesized correctly below.
-    if a["range"] and a["upper"] / a["range"] > 0.55 and a["brr"] < 0.25:
-        add("REVERSAL", 3 if zone == "RESISTANCE" else 2, -1)
-    elif a["range"] and a["lower"] / a["range"] > 0.55 and a["brr"] < 0.25:
-        add("REVERSAL", 3 if zone == "SUPPORT" else 2, +1)
-
-    # absorption reversal
-    if ticks and len(ticks) >= 15:
-        abs_dir, _ = _absorption(cur, ticks)
-        if abs_dir:
-            add("REVERSAL", 3, abs_dir)
-
-    # TRAP — failed breakout
-    if len(candles) >= 2:
-        prev = candles[-2]
-        for lvl, t in klevels:
-            if prev["close"] > lvl >= cur["close"]:
-                add("TRAP", 2, -1)
-                break
-            if prev["close"] < lvl <= cur["close"]:
-                add("TRAP", 2, +1)
-                break
-
-    # RANGE
-    if trend_dir == 0:
-        add("RANGE", 2, 0)
-        if zone == "RESISTANCE":
-            add("RANGE", 1, -1)
-        elif zone == "SUPPORT":
-            add("RANGE", 1, +1)
-        # FIX (archetype prior): wire the per-pair profile's documented
-        # persistence belief into the SCORE, not just the tiebreaks.
-        # The live measurements (color-following bases 47.3-48.3%) and the
-        # per-pair research notes (range-bounce/mean-revert dominate the
-        # OTC pegs; TREND pairs persist) define a small per-candle prior:
-        #   RANGE_BOUNCE / MEAN_REVERT: fade the last candle,
-        #   TREND (continuation_edge >= 1.10): follow it,
-        #   MIXED: no prior (p ~= 0.5 — nothing to encode).
-        # Without this the pattern votes (noise around 50% on chop)
-        # diluted the only measured edge those pairs have.
-        if profile is not None and cand_dir != 0:
-            if profile.archetype in ("RANGE_BOUNCE", "MEAN_REVERT"):
-                add("RANGE", 1.5, -cand_dir)
-            elif profile.archetype == "TREND":
-                add("CONTINUATION", 1.0, cand_dir)
-    if a["brr"] <= 0.10:
-        add("RANGE", 1, 0)
-
-    # Pick winner
-    prio = ["TRAP", "REVERSAL", "EXHAUSTION", "CONTINUATION", "RANGE"]
-    win = max(prio, key=lambda k: (pts[k], -prio.index(k)))
-    tot = sum(pts.values())
-    if pts[win] < 3 or tot == 0:
-        return {"state": "UNCLEAR", "bias": "NEUTRAL", "conviction": 0,
-                "points": {k: round(v, 1) for k, v in pts.items()}}
-    bd = dirs[win]
-    bias = "CALL" if bd > 0 else "PUT" if bd < 0 else "NEUTRAL"
-    conv = round(100 * pts[win] / tot)
-    return {"state": win, "bias": bias, "conviction": conv,
-            "points": {k: round(v, 1) for k, v in pts.items()}}
+def _flow_vote(cur: dict, ticks: list[float] | None) -> tuple[int, float, list[str]]:
+    """VOTER 6 — absorption from the just-closed candle's ticks."""
+    if not ticks or len(ticks) < 15:
+        return 0, 0.0, []
+    direction, reason = _absorption(cur, ticks)
+    if not direction:
+        return 0, 0.0, []
+    return (direction, 2.0,
+            [f"FLOW    ABSORPTION: {reason} -> "
+             f"{'CALL' if direction > 0 else 'PUT'}"])
 
 
-# ── Public entry: run_strategy ───────────────────────────────────────────────
+# ── VOTER 4: PATTERN — cleaned candlestick evidence ──────────────────────────
 
-# Momentum-continuation patterns: their direction bet is "the last move
-# keeps going". Without regime support that bet measured below 50% on the
-# live OTC feed (see module docstring 2c).
-_CONTINUATION_FAMILY = {
+_MOMENTUM_FAMILY = {
     "MARUBOZU", "BELT_HOLD_BULL", "BELT_HOLD_BEAR",
     "THREE_WHITE_SOLDIERS", "THREE_BLACK_CROWS",
     "SEPARATING_LINES_BULL", "SEPARATING_LINES_BEAR", "ON_NECK",
     "RISING_THREE_METHODS", "FALLING_THREE_METHODS",
 }
 
+_WICK_REV_FAMILY = {
+    "PIN_BAR_BULL", "PIN_BAR_BEAR", "HAMMER", "HANGING_MAN",
+    "SHOOTING_STAR", "INVERTED_HAMMER", "DRAGONFLY_DOJI", "GRAVESTONE_DOJI",
+}
 
-def run_strategy(candles: list[dict],
-                 asset: str,
-                 period: int = 60,
-                 ticks: list[float] | None = None,
-                 running_ticks: list[float] | None = None,
-                 muted: dict[str, str] | None = None) -> dict:
-    """Compute the next-candle signal for `asset`.
 
-    Returns the standard signal dict consumed by feed.py:
-      {signal, score, confidence, strength, reasons, patterns_fired,
-       context, market_state, key_levels, wick_walls, regime}
-
-    Always returns a CALL/PUT/NEUTRAL signal — never raises.
-    """
-    if not candles:
-        return _empty_signal("no candles provided")
-
-    profile = get_profile(asset)
-    cur = candles[-1]
+def _trap_wick_dampen(cur: dict, profile: PairProfile, atr: float) -> float:
+    """0..1 multiplier dampening wick-rejection votes when the closed candle
+    looks like an engineered trap wick (extreme wick, small body, closed far
+    from the wick tip)."""
+    if atr <= 0 or profile.trap_wick_sensitivity <= 1.0:
+        return 1.0
     a = candle_anatomy(cur)
+    if a["body"] == 0:
+        return 1.0
+    max_wick = max(a["upper"], a["lower"])
+    if max_wick <= 2.5 * a["body"]:
+        return 1.0
+    ratio = max_wick / a["body"]
+    if a["range"] < atr * 0.6:
+        return 1.0
+    return max(0.3, 1.0 - (ratio - 2.5) * 0.12 * profile.trap_wick_sensitivity)
 
-    # Context: key levels, wick walls, regime, ATR
-    klevels = _key_levels(candles)
-    sup_walls, res_walls, atr10 = _wick_walls(candles)
-    atr = atr10 or (cur["high"] - cur["low"]) or 0.0001
-    regime, zone = _market_regime(candles)
 
-    # Per-pair ATR floor — dampen signal if candle range is too small.
-    # FIX: cap multiplier at 1.0 so it ONLY dampens weak signals,
-    # never amplifies strong ones 20x for volatile pairs.
-    cur_atr_pct = atr / cur["close"] if cur["close"] else 0
-    atr_floor_mult = min(1.0, max(0.3, cur_atr_pct / max(profile.min_atr_pct, 1e-9)))
+def _pattern_vote(candles: list[dict], profile: PairProfile, regime: str,
+                  zone: str, atr: float, sess_q: float, atr_floor: float,
+                  trap_mult: float, muted: dict[str, str] | None) -> tuple[
+        int, float, list[str], list[str], list[Signal]]:
+    """VOTER 4 — the candlestick layer as ONE vote (never a stack).
 
-    # Hour-based session quality (UTC).
-    # FIX: derive the hour from the CANDLE's own timestamp, not the wall
-    # clock. The wall-clock version made the session filter untestable in
-    # backtests (every synthetic candle was graded at "now"), desynced it
-    # from replayed history, and produced meaningless Best/Worst-Hour
-    # report columns. Falls back to wall clock only if `time` is missing.
-    _candle_time = cur.get("time") if isinstance(cur, dict) else None
-    hour_utc = (time.gmtime(_candle_time).tm_hour
-                if _candle_time else time.gmtime().tm_hour)
-    sess_q = session_quality(profile, hour_utc)
-
-    # Trap-wick dampener
-    trap_mult = _trap_wick_dampen(cur, profile, atr)
-
-    # Pattern detection
+    detect_all() already dedups same-anatomy families and resolves the
+    hammer/hanging-man context twins. Remaining gates here:
+      - per-pair strategy weights
+      - continuation-family regime gate (momentum votes without regime
+        support measured 47-48% live — an anti-signal)
+      - trap-wick dampener for the wick-reversal family
+      - session quality + ATR floor
+    Returns (dir, weight, reasons, patterns_fired, fired_signals).
+    """
     fired = detect_all(candles)
-
-    # Filter out muted patterns
     if muted:
         fired = [s for s in fired if s.name not in muted]
 
-    # Context-gate the hammer/shooting-star family. HAMMER/HANGING_MAN (and
-    # SHOOTING_STAR/INVERTED_HAMMER) share byte-identical anatomy checks —
-    # the same small-body-long-wick shape means the OPPOSITE thing depending
-    # on whether it follows a down-move (bullish reversal) or an up-move
-    # (bearish reversal). Both docstrings in patterns.py say this context
-    # check is "the caller's job", but detect_all() runs unconditionally and
-    # nothing downstream ever applied it — so both fired together on every
-    # hammer-shaped candle and their opposite-signed votes partially
-    # cancelled regardless of the real context. regime/zone are already
-    # computed above (_market_regime).
-    _CONTEXT_GATE = {
-        "HAMMER":          lambda: regime == "DOWNTREND" or zone == "SUPPORT",
-        "INVERTED_HAMMER": lambda: regime == "DOWNTREND" or zone == "SUPPORT",
-        "HANGING_MAN":     lambda: regime == "UPTREND" or zone == "RESISTANCE",
-        "SHOOTING_STAR":   lambda: regime == "UPTREND" or zone == "RESISTANCE",
-    }
-    fired = [s for s in fired
-             if s.name not in _CONTEXT_GATE or _CONTEXT_GATE[s.name]()]
-
-    # ── Same-anatomy family dedup (see module docstring 2b) ──────────────
-    # Detectors that validate the SAME shape must not stack votes:
-    # PIN_BAR_BULL + HAMMER + DRAGONFLY_DOJI are one long-lower-wick candle
-    # counted three times; MARUBOZU + BELT_HOLD are one big body counted
-    # twice. Keep the strongest member per family.
-    _FAMILY_OF = {
-        "MARUBOZU": "body_cont", "BELT_HOLD_BULL": "body_cont",
-        "BELT_HOLD_BEAR": "body_cont",
-        "THREE_WHITE_SOLDIERS": "trend3", "THREE_BLACK_CROWS": "trend3",
-        "HAMMER": "wick_rev", "HANGING_MAN": "wick_rev",
-        "SHOOTING_STAR": "wick_rev", "INVERTED_HAMMER": "wick_rev",
-        "DRAGONFLY_DOJI": "wick_rev", "GRAVESTONE_DOJI": "wick_rev",
-        "PIN_BAR_BULL": "wick_rev", "PIN_BAR_BEAR": "wick_rev",
-        "BULLISH_ENGULFING": "engulf", "BEARISH_ENGULFING": "engulf",
-        "THREE_OUTSIDE_UP": "engulf", "THREE_OUTSIDE_DOWN": "engulf",
-        "TWEEZER_TOP": "tweezer", "TWEEZER_BOTTOM": "tweezer",
-        "BULLISH_HARAMI": "harami", "BEARISH_HARAMI": "harami",
-        "THREE_INSIDE_UP": "harami", "THREE_INSIDE_DOWN": "harami",
-        "MORNING_STAR": "star", "EVENING_STAR": "star",
-        "SEPARATING_LINES_BULL": "sep_cont", "SEPARATING_LINES_BEAR": "sep_cont",
-        "BULLISH_COUNTERATTACK": "counter", "BEARISH_COUNTERATTACK": "counter",
-    }
-    _dedup: dict[str, Signal] = {}
-    for _s in fired:
-        _key = _FAMILY_OF.get(_s.name, _s.name)
-        _prev = _dedup.get(_key)
-        if _prev is None or _s.strength > _prev.strength:
-            _dedup[_key] = _s
-    fired = list(_dedup.values())
-
-    # ── Compose score: STAT base layer + capped evidence layer ────────────
-    # ARCHITECTURE (signal-accuracy overhaul): the previous engine summed
-    # pattern votes as the primary signal and only faded when the sum was
-    # exactly 0 — the backtest measured that path mix at PATTERN_VOTE 50.4%,
-    # TIEBREAK_COLOR 53.7%. The weighting is now inverted:
-    #   score = stat_score (measured statistical bias, always present)
-    #         + evidence_score (patterns / ticks / market state, CAPPED)
-    # Patterns measured ~50% on this feed — they are EVIDENCE that can
-    # refine the base bias, never a reason to override it.
-    stat_score, stat_reasons, stat_meta = _stat_bias(
-        candles, profile, atr, sess_q)
-    stat_dir = 1 if stat_score > 0 else -1 if stat_score < 0 else 0
-
-    reasons: list[str] = list(stat_reasons)
     patterns_fired: list[str] = []
-    evidence_score = 0.0
-    indep_dirs: list[tuple[str, int]] = []
-    if abs(stat_score) >= 0.5:
-        # register the base bias as an independent voter (mag 1..3)
-        indep_dirs.append(("STAT", stat_dir,
-                           max(1, min(3, round(abs(stat_score))))))
+    net = 0.0
+    reasons: list[str] = []
 
     for sig in fired:
         patterns_fired.append(sig.name)
-        # Per-pair weight (default 1.0)
         w = profile.strategy_weights.get(sig.name, 1.0)
-        # ── Continuation-family regime gate ─────────────────────────────
-        # Momentum-continuation votes without regime support measured
-        # ~47-48% live (marubozu base n=859) — an anti-signal. On the
-        # range-persistent archetypes the base layer already fades; the
-        # patterns are dampened to near-zero so they cannot drag the
-        # score back toward the losing follow-side. Aligned continuation
-        # on a real TREND regime keeps the most weight, still < 1.0.
-        if sig.name in _CONTINUATION_FAMILY:
+        if sig.name in _MOMENTUM_FAMILY:
             if regime == "SIDEWAYS":
                 w *= 0.15 if profile.archetype in (
                     "RANGE_BOUNCE", "MEAN_REVERT", "MIXED") else 0.35
@@ -832,269 +721,238 @@ def run_strategy(candles: list[dict],
                     (regime == "DOWNTREND" and sig.direction > 0):
                 w *= 0.40
             else:
-                # vote ALIGNED with regime — still capped by archetype
                 w *= {"TREND": 0.85, "MIXED": 0.55,
                       "RANGE_BOUNCE": 0.35, "MEAN_REVERT": 0.30
                       }.get(profile.archetype, 0.55)
-        # Trap-wick dampen for pin-bar-like patterns (long-wick single candles)
-        if sig.name in ("PIN_BAR_BULL", "PIN_BAR_BEAR", "HAMMER",
-                        "HANGING_MAN", "SHOOTING_STAR", "INVERTED_HAMMER",
-                        "DRAGONFLY_DOJI", "GRAVESTONE_DOJI"):
+        if sig.name in _WICK_REV_FAMILY:
             w *= trap_mult
-        # Session quality
         w *= sess_q
-        # ATR floor
-        w *= atr_floor_mult
-        # Convert strength (0..1) to integer vote magnitude (1..4).
-        # FIX: don't floor mag=1 for marginal matches (strength near 0).
-        # The old `max(1, round(s*4))` cast 0-strength matches as full +1 votes,
-        # defeating the strength gating entirely.
-        mag = round(sig.strength * 4)
-        if mag <= 0:
+        w *= atr_floor
+        mag = sig.strength * 4 * w
+        if sig.direction == 0 or mag < 0.35:
             continue
-        mag = int(mag * w)
-        if mag == 0:
-            continue
-        evidence_score += sig.direction * mag
-        if sig.direction != 0:
-            # FIX: include magnitude in indep_dirs so agree_weight reflects
-            # conviction (was direction-only, making agree_weight == agree,
-            # making the STRONG gate unreachable).
-            indep_dirs.append((sig.name, sig.direction, mag))
+        net += sig.direction * mag
         reasons.append(
-            f"{sig.name}  {sig.reason} -> "
-            f"{'CALL' if sig.direction > 0 else 'PUT' if sig.direction < 0 else 'NEUTRAL'}"
-            f" (x{mag})")
+            f"{sig.name}  {sig.reason} (w{mag:.1f})")
 
-    # EVIDENCE CAP: patterns/ticks may refine the base bias but must never
-    # be able to overpower it (they measured ~50% — no better than noise).
-    # Without the cap, 3-4 coincident noise patterns still flipped the
-    # signal against the measured edge — the exact mechanism that made
-    # STRONG signals score WORSE than WEAK (49.4% vs 51.0%).
-    _EV_CAP = 2.5
-    evidence_score = max(-_EV_CAP, min(_EV_CAP, evidence_score))
-    # OPPOSING-EVIDENCE DISCOUNT: evidence that fights the measured base
-    # bias is noise until proven otherwise (patterns ~50% live). Discount
-    # it to 35% so it can refine conviction but can almost never flip the
-    # statistical edge — the single biggest measured leak (naive fade beat
-    # the old engine by 5-6pp on RANGE pairs purely through flips).
-    if (stat_dir != 0 and evidence_score != 0
-            and (evidence_score > 0) != (stat_dir > 0)):
-        evidence_score *= 0.35
-    score = stat_score + evidence_score
+    if abs(net) < 1.0:
+        return 0, 0.0, reasons, patterns_fired, fired
+    direction = 1 if net > 0 else -1
+    weight = min(3.0, abs(net) / 1.5)
+    reasons.append(
+        f"PATTERN net {net:+.1f} across {len(patterns_fired)} detector(s) -> "
+        f"{'CALL' if direction > 0 else 'PUT'}")
+    return direction, weight, reasons, patterns_fired, fired
 
-    # Tick absorption (independent of pattern — real tick information)
-    if ticks and len(ticks) >= 15:
-        abs_dir, abs_reason = _absorption(cur, ticks)
-        if abs_dir:
-            abs_w = profile.strategy_weights.get("ABSORPTION", 1.0) * sess_q
-            abs_mag = max(1, round(0.7 * 4 * abs_w))
-            evidence_score += abs_dir * abs_mag
-            indep_dirs.append(("ABSORPTION", abs_dir, abs_mag))
-            reasons.append(
-                f"ABSORPTION  {abs_reason} -> "
-                f"{'CALL' if abs_dir > 0 else 'PUT'} (x{abs_mag})")
-            patterns_fired.append("ABSORPTION")
 
-    # LIVE running-tick vote — uses the CURRENTLY OPEN candle's ticks
-    # (separate from `ticks` which are the JUST-CLOSED candle's ticks).
-    # Without this block the running_ticks parameter was accepted but
-    # never used, making the feed's mid-candle re-eval a complete no-op.
-    if running_ticks and len(running_ticks) >= 15:
-        # Build a synthetic "running candle" from the running ticks so
-        # _absorption sees the right close_pos / anatomy. The just-closed
-        # `cur` candle is NOT what the running ticks describe.
-        _r_open  = running_ticks[0]
-        _r_close = running_ticks[-1]
-        _r_hi    = max(running_ticks)
-        _r_lo    = min(running_ticks)
-        _running_candle = {"open": _r_open, "high": _r_hi,
-                           "low": _r_lo, "close": _r_close, "time": cur["time"]}
-        live_dir, live_reason = _absorption(_running_candle, running_ticks)
-        if live_dir:
-            live_w = profile.strategy_weights.get("LIVE", 1.0) * sess_q
-            live_mag = max(1, round(0.7 * 4 * live_w))
-            evidence_score += live_dir * live_mag
-            indep_dirs.append(("LIVE", live_dir, live_mag))
-            reasons.append(
-                f"LIVE  {live_reason} on running candle -> "
-                f"{'CALL' if live_dir > 0 else 'PUT'} (x{live_mag})")
-            patterns_fired.append("LIVE")
+# ── Council decision ─────────────────────────────────────────────────────────
 
-    # Market-state deep analysis (context read on the improved regime
-    # detector; evidence-layer voter)
+@dataclass
+class _Voter:
+    name: str
+    direction: int
+    weight: float
+    reasons: list[str]
+
+
+def _decide(voters: list[_Voter]) -> tuple[str, int, float, float, list[str]]:
+    """Apply the emission rules. Returns (signal, agree, agree_weight,
+    net_score, notes). NO fallback of any kind: when the rules fail the
+    answer is NEUTRAL.
+
+    RULE R6 (STAT ANCHOR — grid-searched on 46k candles, +2pp on every
+    bucket): the STAT voter — the measured statistical layer — must be
+    AMONG the agreeing voters. Candlestick/microstructure agreement alone
+    measured ~51.4% (below the 52.08% break-even at 92% payout); with the
+    statistical edge anchored in, the same candles graded 53.5%. When STAT
+    abstains, the council does not trade — there is no measured edge to
+    agree WITH."""
+    net = sum(v.direction * v.weight for v in voters)
+    if net == 0:
+        return "NEUTRAL", 0, 0.0, 0.0, ["no voter cast a directional vote"]
+    candidate = 1 if net > 0 else -1
+    agreeing = [v for v in voters if v.direction == candidate]
+    opposing = [v for v in voters if v.direction == -candidate]
+    agree = len(agreeing)
+    agree_weight = sum(v.weight for v in agreeing)
+    notes: list[str] = []
+
+    if abs(net) < SCORE_FLOOR:
+        notes.append(f"|net|={abs(net):.1f} < {SCORE_FLOOR} — conviction too low")
+    if agree < MIN_AGREE:
+        notes.append(f"only {agree} voter(s) agree (need {MIN_AGREE})")
+    if agree_weight < WEIGHT_FLOOR:
+        notes.append(f"agree weight {agree_weight:.1f} < {WEIGHT_FLOOR}")
+    if any(v.weight >= VETO_WEIGHT for v in opposing):
+        notes.append("VETO: strong opposing voter")
+    if REQUIRE_STAT and "STAT" not in {v.name for v in agreeing}:
+        notes.append("no STAT anchor — the measured statistical layer "
+                     "did not join the agreement")
+    if notes:
+        return "NEUTRAL", agree, agree_weight, net, notes
+    return "CALL" if candidate > 0 else "PUT", agree, agree_weight, net, notes
+
+
+# ── Public entry: run_strategy ───────────────────────────────────────────────
+
+def run_strategy(candles: list[dict],
+                 asset: str,
+                 period: int = 60,
+                 ticks: list[float] | None = None,
+                 running_ticks: list[float] | None = None,
+                 muted: dict[str, str] | None = None,
+                 chop_zone: tuple[str, str] | None = None) -> dict:
+    """Compute the next-candle signal for `asset` via the confluence council.
+
+    `ticks` = the JUST-CLOSED candle's ticks (legitimate closed information).
+    `running_ticks` = the CURRENTLY OPEN candle's ticks. They NEVER influence
+    the emitted signal — the feed may pass them for display-only live views,
+    but the council deliberately ignores them so the graded signal is exactly
+    what was broadcast at candle open.
+
+    Returns the standard signal dict. "NEUTRAL" means NO TRADE — the feed
+    emits, logs and grades nothing for it.
+    """
+    if not candles or len(candles) < MIN_CANDLES:
+        return _neutral_signal(
+            f"warming up ({len(candles)}/{MIN_CANDLES} candles)",
+            {"phase": "warmup"})
+
+    cur = candles[-1]
+
+    # A zero-range candle (synthetic flat bar or totally dead minute) carries
+    # zero information — every pattern on it is an artefact.
+    if cur["high"] <= cur["low"]:
+        return _neutral_signal("zero-range candle (no market data)",
+                               {"phase": "no_data"})
+
+    profile = get_profile(asset)
+
+    # Context
+    klevels = _key_levels(candles)
+    sup_walls, res_walls, atr10 = _wick_walls(candles)
+    atr = atr10 or (cur["high"] - cur["low"]) or 0.0001
+    regime, zone, r2 = _market_regime(candles)
+    trap_mult = _trap_wick_dampen(cur, profile, atr)
+
+    # Liquidity gates
+    cur_atr_pct = atr / cur["close"] if cur["close"] else 0
+    atr_floor_mult = min(1.0, max(0.3, cur_atr_pct / max(profile.min_atr_pct, 1e-9)))
+    _candle_time = cur.get("time") if isinstance(cur, dict) else None
+    hour_utc = (time.gmtime(_candle_time).tm_hour
+                if _candle_time else time.gmtime().tm_hour)
+    sess_q = session_quality(profile, hour_utc)
+
+    gate_notes: list[str] = []
+    if atr_floor_mult < 0.5:
+        gate_notes.append(
+            f"ATR {cur_atr_pct:.4%} below pair floor "
+            f"{profile.min_atr_pct:.4%} — market too quiet to trade")
+    if sess_q < 0.5:
+        gate_notes.append(
+            f"dead session (UTC {hour_utc:02d}h, quality {sess_q:.2f}) — "
+            f"standing down")
+
+    # ── Convene the council ───────────────────────────────────────────────
+    voters: list[_Voter] = []
+
+    s_dir, s_w, s_reasons, s_meta = _stat_bias(candles, profile)
+    if s_dir:
+        voters.append(_Voter("STAT", s_dir, s_w, s_reasons))
+
+    r_dir, r_w, r_reasons = _regime_vote(candles, regime, r2, profile)
+    if r_dir:
+        voters.append(_Voter("REGIME", r_dir, r_w, r_reasons))
+
+    p_dir, p_w, p_reasons = _position_vote(candles, atr, klevels,
+                                           sup_walls, res_walls)
+    if p_dir:
+        voters.append(_Voter("POSITION", p_dir, p_w, p_reasons))
+
+    pat_dir, pat_w, pat_reasons, patterns_fired, fired = _pattern_vote(
+        candles, profile, regime, zone, atr, sess_q, atr_floor_mult,
+        trap_mult, muted)
+    if pat_dir:
+        voters.append(_Voter("PATTERN", pat_dir, pat_w, pat_reasons))
+
     ms = _market_state(candles, regime, zone, klevels, atr, ticks,
                        profile=profile)
-    if ms["bias"] in ("CALL", "PUT") and ms["conviction"] >= 30:
-        ms_dir = +1 if ms["bias"] == "CALL" else -1
-        ms_mag = min(3, max(1, ms["conviction"] // 30))
-        ms_w = profile.strategy_weights.get("MARKET_STATE", 1.0) * sess_q
-        ms_mag = int(ms_mag * ms_w)
-        if ms_mag > 0:
-            evidence_score += ms_dir * ms_mag
-            indep_dirs.append(("MARKET_STATE", ms_dir, ms_mag))
-            reasons.append(
-                f"MARKET_STATE  {ms['state']} (bias {ms['bias']}, "
-                f"conviction {ms['conviction']}%) -> {ms['bias']} (x{ms_mag})")
+    st_dir, st_w, st_reasons = _state_vote(ms)
+    if st_dir:
+        voters.append(_Voter("STATE", st_dir, st_w, st_reasons))
 
-    # ── Confluence bonus ──────────────────────────────────────────────────
-    conf_bonus, conf_desc = _confluence_score(
-        cur, candles, klevels, sup_walls, res_walls, atr)
-    if conf_bonus > 0 and score != 0:
-        # FIX: apply the bonus in the direction of the REJECTION WICK —
-        # not blindly in the direction the score already leans. The old
-        # `score += sign(score) * bonus` strengthened a bullish lean even
-        # when the confluence was a bearish upper-wick rejection at a key
-        # resistance level — amplifying the exact wrong signal.
-        _conf_test_low = a["lower"] > a["upper"]  # same test _confluence_score uses
-        _conf_dir = 1 if _conf_test_low else -1
-        if (score > 0) == (_conf_dir > 0):
-            evidence_score += min(1.5, conf_bonus)   # capped — evidence layer
-            score = stat_score + evidence_score
-            reasons.append(
-                f"CONFLUENCE  +{int(conf_bonus)} agrees with "
-                f"{'CALL' if _conf_dir > 0 else 'PUT'} rejection ({conf_desc})")
-        else:
-            # Conflicting confluence: dampen, but never flip the signal
-            # here (cap at half the current magnitude) — the flip decision
-            # belongs to the pattern votes, not a proximity heuristic.
-            _damp = min(int(conf_bonus * 0.6), max(0, abs(score) // 2))
-            if _damp > 0:
-                score += -_damp if score > 0 else _damp
-            reasons.append(
-                f"CONFLUENCE  conflict: rejection wick points "
-                f"{'CALL' if _conf_dir > 0 else 'PUT'} vs score lean "
-                f"-> -{_damp} dampen ({conf_desc})")
+    f_dir, f_w, f_reasons = _flow_vote(cur, ticks)
+    if f_dir:
+        voters.append(_Voter("FLOW", f_dir, f_w, f_reasons))
 
-    # Information weight dampeners (low ticks, tiny range, dead session).
-    # FIX: scale dampener by min(1, |score|) so a |score|=1 weak signal
-    # is dampened by 0 (not 1) — otherwise a tiny dampener flips the
-    # signal to score=0, which then hits the last-candle-color tiebreak
-    # and can FLIP direction.
-    weak_caps: list[str] = []
-    if ticks is not None and len(ticks) < 15:
-        d = int(abs(score) * 0.30)  # may be 0 for |score|<=3
-        if d > 0:
-            score += -d if score > 0 else d
-            weak_caps.append(f"(low ticks) only {len(ticks)} ticks -> -{d} dampen")
+    # ── Decision ──────────────────────────────────────────────────────────
+    signal, agree, agree_weight, net_score, notes = _decide(voters)
 
-    if atr > 0 and a["range"] < atr * 0.30:
-        d = int(abs(score) * 0.25)
-        if d > 0:
-            score += -d if score > 0 else d
-            weak_caps.append(
-                f"(tiny range) range {a['range']/atr:.0%} of ATR -> -{d} dampen")
+    # Liquidity gates veto the whole council (they are facts about
+    # tradability, not opinion).
+    if gate_notes and signal != "NEUTRAL":
+        signal = "NEUTRAL"
+        notes.extend(gate_notes)
 
-    if sess_q < 0.6:
-        weak_caps.append(
-            f"(low-liquidity session) UTC {hour_utc:02d}h -> strength dampened")
-
-    # ── Final signal decision ─────────────────────────────────────────────
-    # The STAT base layer makes score == 0 rare (it only happens when the
-    # archetype prior is 0.0 on MIXED real pairs AND no evidence voted).
-    # The tiebreak below therefore only fires on genuinely edge-less
-    # candles — and it keeps the measured fade/follow preference.
-    indep_net = sum(d for _, d, _ in indep_dirs)
-    signal = "CALL" if score > 0 else "PUT" if score < 0 else "NEUTRAL"
-
-    # Tiebreak for NEUTRAL: every candle emits a CALL/PUT (the user's hard
-    # requirement). Order:
-    #   1. independent evidence net lean,
-    #   2. confirmed regime continuation / faded unconfirmed regime,
-    #   3. archetype-aware fade-or-follow of the last candle's color
-    #      (TREND majors follow; range/mean-revert/mixed fade — the only
-    #      measured >50% behavior on the OTC pegs).
-    follow_pref = profile.continuation_edge >= 1.10
-    if signal == "NEUTRAL":
-        if indep_net != 0:
-            signal = "CALL" if indep_net > 0 else "PUT"
-            weak_caps.append(
-                f"TIEBREAK: score 0 but indep_net leans {signal} -> WEAK")
-        elif regime in ("UPTREND", "DOWNTREND"):
-            _ms_confirms = (ms.get("state") == "CONTINUATION"
-                            and ms.get("conviction", 0) >= 30
-                            and ms.get("bias") in ("CALL", "PUT"))
-            if _ms_confirms:
-                signal = "CALL" if regime == "UPTREND" else "PUT"
-                weak_caps.append(
-                    f"TIEBREAK: regime={regime} + market_state continuation "
-                    f"@ {ms.get('conviction')}% -> {signal} (WEAK)")
-            else:
-                signal = "PUT" if regime == "UPTREND" else "CALL"
-                weak_caps.append(
-                    f"TIEBREAK: regime={regime} UNCONFIRMED (exhaustion-lag "
-                    f"moment) -> fade to {signal} (WEAK)")
-        else:
-            if a["brr"] < 0.05:
-                # doji — lean by close_pos (close > midpoint -> up-lean);
-                # a doji must not default to CALL (the old is_bull bias).
-                _lean = 1 if a["close_pos"] >= 0.5 else -1
-                _lean_lbl = f"doji (close_pos {a['close_pos']:.0%})"
-            else:
-                _lean = 1 if a["is_bull"] else -1
-                _lean_lbl = "bull" if a["is_bull"] else "bear"
-            if follow_pref:
-                signal = "CALL" if _lean > 0 else "PUT"
-                weak_caps.append(
-                    f"TIEBREAK: no edge -> follow last-candle color "
-                    f"({_lean_lbl}) -> {signal} (WEAK)")
-            else:
-                signal = "PUT" if _lean > 0 else "CALL"
-                weak_caps.append(
-                    f"TIEBREAK: no edge -> {profile.archetype} fade of "
-                    f"last-candle color ({_lean_lbl}) -> {signal} (WEAK)")
-    elif abs(score) < 1.2:
-        weak_caps.append(f"NO EDGE: |score|={abs(score):.1f} is noise-level -> WEAK")
+    # Chop guard (passed by the feed from its zone-loss streak): the exact
+    # (regime, zone) has proven unreadable — stand down here too.
+    if chop_zone is not None and signal != "NEUTRAL":
+        _reg = (regime, zone)
+        if _reg == chop_zone:
+            signal = "NEUTRAL"
+            notes.append("chop guard: this zone is on a loss streak")
 
     # ── Strength calibration ──────────────────────────────────────────────
-    # Recalibrated (fixes the measured INVERSION): the old STRONG gate
-    # required 3+ agreeing theories, but patterns are ~50% noise, so
-    # stacking three of them selected the WORST candles (STRONG 49.4% <
-    # WEAK 51.0% in backtest). Strength now demands STAT+EVIDENCE
-    # agreement — the measured statistical edge and the candle/tick
-    # structure must point the SAME way before a signal is called STRONG.
-    MAX_SCORE = 9
-    confidence = round(min(abs(score) / MAX_SCORE, 1.0), 2)
-
-    # Agreement count — distinct evidence FAMILIES (post-dedup) weighted
-    # by conviction.
-    _net_votes: dict[str, int] = {}
-    for name, d, mag in indep_dirs:
-        _net_votes[name] = _net_votes.get(name, 0) + d * mag
-    want = 1 if signal == "CALL" else -1
-    agree = sum(1 for nv in _net_votes.values() if nv * want > 0)
-    agree_weight = sum(abs(nv) for nv in _net_votes.values() if nv * want > 0)
-    ev_agrees = (stat_dir != 0 and evidence_score != 0
-                 and (evidence_score > 0) == (stat_dir > 0))
-    ev_opposes = (evidence_score != 0 and stat_dir != 0
-                  and (evidence_score > 0) != (stat_dir > 0))
-
+    opposing = [v for v in voters
+                if signal in ("CALL", "PUT")
+                and v.direction == (-1 if signal == "CALL" else 1)]
     if signal == "NEUTRAL":
         strength = "NONE"
-    elif weak_caps:
-        strength = "WEAK"
-    elif ev_agrees and abs(score) >= 4.5 and abs(stat_score) >= 1.5:
+    elif (agree >= STRONG_AGREE and abs(net_score) >= STRONG_SCORE
+            and not opposing):
         strength = "STRONG"
-    elif (abs(score) >= 2.5 and not ev_opposes
-          and (agree >= 2 or abs(stat_score) >= 2.0)):
-        strength = "MEDIUM"
     else:
-        strength = "WEAK"
+        strength = "MEDIUM"
 
-    reasons.extend(weak_caps)
+    # Honest confidence: agreement-driven, capped, never manufactured.
+    n_active = len(voters)
+    conf = 0.0 if signal == "NEUTRAL" else round(
+        min(0.95, 0.42 + 0.055 * agree_weight + 0.02 * agree), 2)
+
+    # Reasons: voter lines + decision notes
+    reasons: list[str] = []
+    for v in voters:
+        reasons.extend(v.reasons)
+    reasons.extend(pat_reasons if not pat_dir else [])
+    if signal == "NEUTRAL":
+        for n in notes:
+            reasons.append(f"NO-TRADE  {n}")
+    else:
+        reasons.append(
+            f"COUNCIL  {agree}/{n_active} voters agree "
+            f"(weight {agree_weight:.1f}, net {net_score:+.1f}) -> "
+            f"{signal} {strength}")
 
     return {
         "signal": signal,
-        # int — feed.py postmortem formats it with :+d and the DB column is
-        # INTEGER; evidence votes are ints and stat is capped, so rounding
-        # never crosses a strength boundary materially.
-        "score": int(round(score)),
-        "confidence": confidence,
+        "score": int(round(max(-9.9, min(9.9, net_score)))),
+        "confidence": conf,
         "agree": agree,
-        "agree_weight": agree_weight,
+        "agree_weight": round(agree_weight, 2),
         "strength": strength,
         "reasons": reasons,
         "patterns_fired": patterns_fired,
+        "voters": [{"name": v.name, "dir": v.direction,
+                    "weight": round(v.weight, 2)} for v in voters],
+        "confluence": {
+            "min_agree": MIN_AGREE,
+            "score_floor": SCORE_FLOOR,
+            "weight_floor": WEIGHT_FLOOR,
+            "veto_weight": VETO_WEIGHT,
+            "net_score": round(net_score, 2),
+            "emitted": signal != "NEUTRAL",
+            "blocked_by": notes,
+        },
         "key_levels": [[round(p, 6), t] for p, t in
                        sorted(klevels, key=lambda x: -x[1])[:20]],
         "wick_walls": {
@@ -1105,6 +963,7 @@ def run_strategy(candles: list[dict],
         },
         "regime": {"trend": regime, "zone": zone},
         "market_state": ms,
+        "stat_meta": s_meta,
         "context": {
             "archetype": profile.archetype,
             "session_quality": round(sess_q, 2),
@@ -1112,28 +971,29 @@ def run_strategy(candles: list[dict],
             "atr_pct": round(cur_atr_pct, 6),
             "min_atr_pct": profile.min_atr_pct,
             "pair_notes": profile.notes,
+            "voters_active": n_active,
         },
     }
 
 
-def _empty_signal(reason: str) -> dict:
-    # "Every candle gets CALL/PUT, never NEUTRAL" is a hard product
-    # requirement (README's "Signal guarantee", enforced by an assertion in
-    # tools/backtest_strategies.py). feed.py intercepts truly-empty calls
-    # before they reach run_strategy so this path is currently unreachable
-    # in production, but run_strategy is also this package's public entry
-    # point (re-exported by strategies/__init__.py) — any other/future
-    # caller invoking it directly with an empty candle list would silently
-    # get NEUTRAL and violate the guarantee. Default to CALL (a coin-flip
-    # pick, same fallback analyze_eoc.py uses) instead.
+def _neutral_signal(reason: str, extra: dict | None = None) -> dict:
+    """NO TRADE. NEUTRAL is a first-class output: nothing is emitted,
+    logged or graded for it. There is deliberately NO direction here."""
     return {
-        "signal": "CALL", "score": 0, "confidence": 0.0,
-        "agree": 0, "agree_weight": 0, "strength": "WEAK",
-        "reasons": [f"TIEBREAK: {reason} -> CALL (default pick)"],
-        "patterns_fired": [], "key_levels": [],
+        "signal": "NEUTRAL",
+        "score": 0,
+        "confidence": 0.0,
+        "agree": 0,
+        "agree_weight": 0.0,
+        "strength": "NONE",
+        "reasons": [f"NO-TRADE  {reason}"],
+        "patterns_fired": [],
+        "voters": [],
+        "confluence": {"emitted": False, "blocked_by": [reason]},
+        "key_levels": [],
         "wick_walls": {"support": [], "resistance": []},
         "regime": {"trend": "SIDEWAYS", "zone": "NEUTRAL"},
         "market_state": {"state": "UNCLEAR", "bias": "NEUTRAL",
                          "conviction": 0, "points": {}},
-        "context": {},
+        "context": extra or {},
     }
